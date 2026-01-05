@@ -1,0 +1,20 @@
+[package]
+name = "xteink-firmware"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "xteink-firmware"
+harness = false
+
+[features]
+default = []
+experimental = ["esp-idf-svc/experimental"]
+
+[dependencies]
+log = "0.4"
+esp-idf-svc = "0.51"
+xteink-ui = { path = "../xteink-ui" }
+
+[build-dependencies]
+embuild = "0.33"

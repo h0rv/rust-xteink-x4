@@ -1,0 +1,13 @@
+[package]
+name = "xteink-sim-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "xteink-sim"
+path = "src/main.rs"
+
+[dependencies]
+xteink-ui = { path = "../xteink-ui", features = ["std"] }
+embedded-graphics = "0.8"
+embedded-graphics-simulator = "0.7"

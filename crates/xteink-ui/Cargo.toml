@@ -1,0 +1,11 @@
+[package]
+name = "xteink-ui"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+embedded-graphics = "0.8"

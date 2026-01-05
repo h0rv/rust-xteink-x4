@@ -31,8 +31,8 @@ impl App {
         match btn {
             Button::Left => self.cursor_x -= step,
             Button::Right => self.cursor_x += step,
-            Button::Up => self.cursor_y -= step,
-            Button::Down => self.cursor_y += step,
+            Button::VolumeUp => self.cursor_y -= step, // Up
+            Button::VolumeDown => self.cursor_y += step, // Down
             _ => return false,
         }
 
@@ -42,18 +42,27 @@ impl App {
     }
 
     /// Render to any display.
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
+    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+    ) -> Result<(), D::Error> {
         display.clear(BinaryColor::Off)?;
 
         let style = PrimitiveStyle::with_fill(BinaryColor::On);
 
         // Crosshair
-        Rectangle::new(Point::new(self.cursor_x - 15, self.cursor_y - 1), Size::new(30, 3))
-            .into_styled(style)
-            .draw(display)?;
-        Rectangle::new(Point::new(self.cursor_x - 1, self.cursor_y - 15), Size::new(3, 30))
-            .into_styled(style)
-            .draw(display)?;
+        Rectangle::new(
+            Point::new(self.cursor_x - 15, self.cursor_y - 1),
+            Size::new(30, 3),
+        )
+        .into_styled(style)
+        .draw(display)?;
+        Rectangle::new(
+            Point::new(self.cursor_x - 1, self.cursor_y - 15),
+            Size::new(3, 30),
+        )
+        .into_styled(style)
+        .draw(display)?;
 
         Ok(())
     }

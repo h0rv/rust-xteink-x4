@@ -4,6 +4,51 @@
 
 Build an e-reader firmware in Rust. Learn embedded development. Contribute a reusable display driver to the ecosystem.
 
+## Hardware Specs
+
+```
+CPU:          ESP32-C3 (RISC-V, single core, 160MHz)
+RAM:          400KB SRAM (327KB usable)
+              128MB external PSRAM exists but NOT memory-mapped
+              (ESP32-C3 lacks hardware PSRAM support - software SPI only)
+Flash:        16MB
+Storage:      microSD, up to 512GB (ships with 32GB)
+Display:      4.3" e-ink, 800×480 native (portrait: 480×800), 220 PPI, B&W
+              Controller: SSD1677 (GDEQ0426T82 panel)
+              Physical: 69 × 114 mm
+Buttons:      7 total (see pin mapping)
+Battery:      650 mAh Li-ion (~14 days @ 1-3 hrs/day)
+Connectivity: WiFi 2.4GHz, Bluetooth
+Port:         USB-C
+Formats:      EPUB, TXT, JPG, BMP
+No:           Touchscreen, frontlight, 3rd party apps
+```
+
+**Pin mapping:**
+```
+SPI Bus (shared):
+  SCLK=8, MOSI=10, MISO=7
+
+Display:
+  CS=21, DC=4, RST=5, BUSY=6
+
+SD Card:
+  CS=12
+
+Buttons (ADC resistor ladder):
+  GPIO1: Back (~3470), Confirm (~2655), Left (~1470), Right (~3)
+  GPIO2: VolumeUp (~2205), VolumeDown (~3)
+  GPIO3: Power (digital, active LOW)
+
+Battery:
+  GPIO0 (voltage divider 2×10K, reads half voltage)
+
+USB Detection:
+  GPIO20
+```
+
+---
+
 ## Learn First
 
 Don't skip this. Embedded Rust has concepts you won't know from regular Rust.

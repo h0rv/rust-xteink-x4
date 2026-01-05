@@ -40,11 +40,15 @@ cargo run -p xteink-sim-desktop
 
 ## Controls
 
-| Key | Action |
+| Key | Button |
 |-----|--------|
-| Arrow keys / WASD | Move |
+| ← / A | Left |
+| → / D | Right |
+| ↑ / W | VolumeUp |
+| ↓ / S | VolumeDown |
 | Enter / Space | Confirm |
 | Escape | Back |
+| P | Power |
 
 ## Dependencies
 

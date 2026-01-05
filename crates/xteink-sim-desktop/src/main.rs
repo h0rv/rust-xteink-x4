@@ -39,10 +39,11 @@ fn keycode_to_button(keycode: Keycode) -> Option<Button> {
     match keycode {
         Keycode::Left | Keycode::A => Some(Button::Left),
         Keycode::Right | Keycode::D => Some(Button::Right),
-        Keycode::Up | Keycode::W => Some(Button::Up),
-        Keycode::Down | Keycode::S => Some(Button::Down),
+        Keycode::Up | Keycode::W => Some(Button::VolumeUp),
+        Keycode::Down | Keycode::S => Some(Button::VolumeDown),
         Keycode::Return | Keycode::Space => Some(Button::Confirm),
         Keycode::Escape => Some(Button::Back),
+        Keycode::P => Some(Button::Power),
         _ => None,
     }
 }

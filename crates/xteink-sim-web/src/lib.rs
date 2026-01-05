@@ -42,7 +42,10 @@ pub fn main() -> Result<(), JsValue> {
         Some(&container),
     );
 
-    let state = Rc::new(RefCell::new(State { app: App::new(), display }));
+    let state = Rc::new(RefCell::new(State {
+        app: App::new(),
+        display,
+    }));
     state.borrow_mut().render();
 
     // Keyboard handler
@@ -64,10 +67,11 @@ fn key_to_button(key: &str) -> Option<Button> {
     match key {
         "ArrowLeft" | "a" => Some(Button::Left),
         "ArrowRight" | "d" => Some(Button::Right),
-        "ArrowUp" | "w" => Some(Button::Up),
-        "ArrowDown" | "s" => Some(Button::Down),
+        "ArrowUp" | "w" => Some(Button::VolumeUp),
+        "ArrowDown" | "s" => Some(Button::VolumeDown),
         "Enter" | " " => Some(Button::Confirm),
         "Escape" => Some(Button::Back),
+        "p" => Some(Button::Power),
         _ => None,
     }
 }

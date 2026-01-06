@@ -10,34 +10,25 @@ use crate::input::{Button, InputEvent};
 use crate::{DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
 /// Application state
-pub struct App {
-    cursor_x: i32,
-    cursor_y: i32,
-}
+pub struct App {}
 
 impl App {
     pub fn new() -> Self {
-        Self {
-            cursor_x: (DISPLAY_WIDTH / 2) as i32,
-            cursor_y: (DISPLAY_HEIGHT / 2) as i32,
-        }
+        Self {}
     }
 
     /// Handle input. Returns true if redraw needed.
     pub fn handle_input(&mut self, event: InputEvent) -> bool {
         let InputEvent::Press(btn) = event;
-        let step = 20;
 
         match btn {
-            Button::Left => self.cursor_x -= step,
-            Button::Right => self.cursor_x += step,
-            Button::VolumeUp => self.cursor_y -= step, // Up
-            Button::VolumeDown => self.cursor_y += step, // Down
+            Button::Left => (),
+            Button::Right => (),
+            Button::VolumeUp => (),
+            Button::VolumeDown => (),
             _ => return false,
         }
 
-        self.cursor_x = self.cursor_x.clamp(15, (DISPLAY_WIDTH - 15) as i32);
-        self.cursor_y = self.cursor_y.clamp(15, (DISPLAY_HEIGHT - 15) as i32);
         true
     }
 
@@ -50,19 +41,9 @@ impl App {
 
         let style = PrimitiveStyle::with_fill(BinaryColor::On);
 
-        // Crosshair
-        Rectangle::new(
-            Point::new(self.cursor_x - 15, self.cursor_y - 1),
-            Size::new(30, 3),
-        )
-        .into_styled(style)
-        .draw(display)?;
-        Rectangle::new(
-            Point::new(self.cursor_x - 1, self.cursor_y - 15),
-            Size::new(3, 30),
-        )
-        .into_styled(style)
-        .draw(display)?;
+        Rectangle::new(Point::new(100, 100), Size::new(50, 50))
+            .into_styled(style)
+            .draw(display)?;
 
         Ok(())
     }

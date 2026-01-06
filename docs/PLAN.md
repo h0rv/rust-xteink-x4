@@ -116,7 +116,7 @@ Test: Toggle reset, read busy pin. If busy pin responds, SPI is working.
 
 ### 1.2 Port Init Sequence
 
-Find `GxEPD2_426_GDEQ0426T82.cpp` from original crosspoint firmware. Translate the init commands to Rust.
+Find [`GxEPD2_426_GDEQ0426T82.cpp`](https://github.com/ZinggJM/GxEPD2/blob/master/src/epd/GxEPD2_426_GDEQ0426T82.cpp) from original crosspoint firmware. Translate the init commands to Rust.
 
 Don't understand every command yet. Just port it. Understanding comes later.
 

@@ -1,3 +1,7 @@
+# Default port (override with: just --set port /dev/ttyUSB0 <command>)
+port := "/dev/ttyACM0"
+backup_file := "firmware_backup.bin"
+
 # Run web simulator
 sim-web:
     cd crates/xteink-sim-web && trunk serve --release
@@ -25,6 +29,36 @@ build-firmware:
 # Flash firmware to device
 flash:
     cd crates/xteink-firmware && cargo espflash flash --release --monitor
+
+# Flash and monitor
+flash-monitor:
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor
+
+# Just monitor serial output
+monitor:
+    espflash monitor --port {{port}}
+
+# Backup full flash (16MB, ~25 min) - DO THIS BEFORE FIRST FLASH
+backup:
+    @echo "Backing up full 16MB flash to {{backup_file}}..."
+    @echo "This takes ~25 minutes. Do not disconnect!"
+    uvx esptool --chip esp32c3 --port {{port}} read_flash 0x0 0x1000000 {{backup_file}}
+    @echo "Backup saved to {{backup_file}}"
+
+# Restore from backup
+restore:
+    @echo "Restoring from {{backup_file}}..."
+    uvx esptool --chip esp32c3 --port {{port}} write_flash 0x0 {{backup_file}}
+    @echo "Restore complete"
+
+# Get board info
+board-info:
+    espflash board-info --port {{port}}
+
+# Erase flash (danger!)
+[confirm("This will ERASE ALL FLASH. Are you sure?")]
+erase:
+    uvx esptool --chip esp32c3 --port {{port}} erase_flash
 
 # Clean all
 clean:

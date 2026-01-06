@@ -251,6 +251,12 @@ where
         self.send_byte(0x01); // Enter deep sleep
     }
 
+    pub fn load_lut(&mut self, lut: &[u8; 112]) {
+        self.send_command(WRITE_LUT);
+        self.send_data(lut);
+        self.custom_lut_active = true;
+    }
+
     fn in_width(&self, x: i32) -> bool {
         0 <= x && x < DISPLAY_WIDTH as i32
     }
@@ -263,13 +269,13 @@ where
         self.in_width(x) && self.in_height(y)
     }
 
-    fn get_buffer_location(&self, x: i32, y: i32) -> (u8, u8) {
+    fn get_buffer_location(&self, x: i32, y: i32) -> (i32, u8) {
         let pixel_index = y * DISPLAY_WIDTH as i32 + x;
 
         let pixel_byte = pixel_index / 8;
         let pixel_byte_offset = pixel_index % 8;
 
-        (pixel_byte as u8, pixel_byte_offset as u8)
+        (pixel_byte, pixel_byte_offset as u8)
     }
 
     fn set_pixel(&mut self, x: i32, y: i32, color: BinaryColor) {

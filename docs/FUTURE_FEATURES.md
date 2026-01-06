@@ -22,6 +22,29 @@ Post-MVP ideas. Don't touch until basic e-reader works.
 - **Bookmarks** - Multiple per book, with notes
 - **Search** - Find text within current book
 
+## Performance
+
+- **Embassy async runtime** - Use `embassy-executor` on ESP-IDF for cooperative multitasking
+- **EPUB pre-caching** - Parse/render next pages in background while user reads
+- **Page cache on SD** - Store rendered pages to SD, instant page turns
+- **Streaming parser** - Parse EPUB incrementally, don't load entire file to RAM
+
+```
+┌─────────────────┐     ┌──────────────────────┐
+│ Foreground      │     │ Background (async)   │
+│ - Display page  │     │ - Parse next chapter │
+│ - Handle input  │     │ - Render to buffer   │
+│                 │     │ - Cache to SD        │
+└─────────────────┘     └──────────────────────┘
+```
+
+Dependencies:
+```toml
+embassy-executor = { version = "0.7", features = ["task-arena-size-32768"] }
+embassy-time = "0.4"
+esp-idf-svc = { version = "0.51", features = ["embassy-time-driver"] }
+```
+
 ## Power
 
 - **Aggressive sleep** - Sleep between page turns, wake on button

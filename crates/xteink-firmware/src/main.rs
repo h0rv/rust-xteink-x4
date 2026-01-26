@@ -49,8 +49,8 @@ fn main() {
     let mut display = Ssd1677::new(spi_device, dc, rst, busy);
 
     display.reset_display(&mut delay);
-    display.init();
-    display.refresh_display(RefreshMode::Full, false);
+    display.init(&mut delay);
+    display.refresh_display(RefreshMode::Full, false, &mut delay);
 
     // Draw something
 
@@ -59,7 +59,7 @@ fn main() {
     app.render(&mut display);
 
     display.write_buffer();
-    display.refresh_display(RefreshMode::Full, false);
+    display.refresh_display(RefreshMode::Full, false, &mut delay);
 
     log::info!("Done!");
 }

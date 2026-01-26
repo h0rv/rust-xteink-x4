@@ -67,13 +67,16 @@ where
         self.send_data(&[byte]);
     }
 
-    fn wait_while_busy(&mut self) {
-        while self.busy.is_high().unwrap() {}
+    fn wait_while_busy(&mut self, delay: &mut impl DelayNs) {
+        // Yield to scheduler while waiting, prevents watchdog timeout
+        while self.busy.is_high().unwrap() {
+            delay.delay_ms(1);
+        }
     }
 
-    pub fn soft_reset(&mut self) {
+    pub fn soft_reset(&mut self, delay: &mut impl DelayNs) {
         self.send_command(SOFT_RESET);
-        self.wait_while_busy()
+        self.wait_while_busy(delay)
     }
 
     pub fn temperature_sensor(&mut self) {
@@ -139,14 +142,14 @@ where
         self.send_byte(((y + height - 1) / 256) as u8); // high byte
     }
 
-    pub fn clear_ram(&mut self) {
+    pub fn clear_ram(&mut self, delay: &mut impl DelayNs) {
         self.send_command(AUTO_WRITE_BW_RAM);
         self.send_byte(0xF7);
-        self.wait_while_busy();
+        self.wait_while_busy(delay);
 
         self.send_command(AUTO_WRITE_RED_RAM);
         self.send_byte(0xF7);
-        self.wait_while_busy();
+        self.wait_while_busy(delay);
     }
 
     pub fn write_buffer(&mut self) {
@@ -154,13 +157,13 @@ where
         send_data(&mut self.spi, &mut self.dc, &self.buffer);
     }
 
-    pub fn init(&mut self) {
-        self.soft_reset();
+    pub fn init(&mut self, delay: &mut impl DelayNs) {
+        self.soft_reset(delay);
         self.temperature_sensor();
         self.booster_soft_start();
         self.driver_output_control();
         self.border_waveform();
-        self.clear_ram();
+        self.clear_ram(delay);
     }
 
     pub fn reset_display(&mut self, delay: &mut impl DelayNs) {
@@ -172,7 +175,7 @@ where
         delay.delay_ms(20);
     }
 
-    pub fn refresh_display(&mut self, refresh_mode: RefreshMode, turn_off_display: bool) {
+    pub fn refresh_display(&mut self, refresh_mode: RefreshMode, turn_off_display: bool, delay: &mut impl DelayNs) {
         self.send_command(DISPLAY_UPDATE_CTRL1);
         let data = match refresh_mode {
             RefreshMode::Full | RefreshMode::Half => CTRL1_BYPASS_RED,
@@ -225,10 +228,10 @@ where
 
         self.send_command(MASTER_ACTIVATION);
 
-        self.wait_while_busy();
+        self.wait_while_busy(delay);
     }
 
-    pub fn deep_sleep(&mut self) {
+    pub fn deep_sleep(&mut self, delay: &mut impl DelayNs) {
         // First, power down the display properly
         // This shuts down the analog power rails and clock
         if self.is_display_on {
@@ -241,7 +244,7 @@ where
             self.send_command(MASTER_ACTIVATION);
 
             // Wait for the power-down sequence to complete
-            self.wait_while_busy();
+            self.wait_while_busy(delay);
 
             self.is_display_on = false;
         }

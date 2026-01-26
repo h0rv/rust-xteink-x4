@@ -68,7 +68,7 @@ where
     }
 
     fn wait_while_busy(&mut self) {
-        while self.busy.is_low().unwrap() {}
+        while self.busy.is_high().unwrap() {}
     }
 
     pub fn soft_reset(&mut self) {

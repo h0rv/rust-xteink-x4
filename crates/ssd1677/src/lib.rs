@@ -9,17 +9,21 @@ use core::convert::Infallible;
 use command::*;
 
 use embedded_graphics_core::{
-    Pixel,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::BinaryColor,
+    Pixel,
 };
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiDevice;
 
-pub const DISPLAY_WIDTH: usize = 800;
-pub const DISPLAY_HEIGHT: usize = 480;
+const PORTRAIT_MODE: bool = true;
+
+const HW_WIDTH: usize = 800;
+const HW_HEIGHT: usize = 480;
+pub const DISPLAY_WIDTH: usize = if PORTRAIT_MODE { HW_HEIGHT } else { HW_WIDTH };
+pub const DISPLAY_HEIGHT: usize = if PORTRAIT_MODE { HW_WIDTH } else { HW_HEIGHT };
 pub const DISPLAY_BUFFER_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT / 8;
 
 pub enum RefreshMode {
@@ -113,7 +117,7 @@ where
         // set display height
         self.send_byte(((DISPLAY_HEIGHT - 1) % 256) as u8); // low byte
         self.send_byte(((DISPLAY_HEIGHT - 1) / 256) as u8); // high byte
-        // scan direction
+                                                            // scan direction
         self.send_byte(0x02);
     }
 
@@ -126,7 +130,7 @@ where
         const DATA_ENTRY_X_INC_Y_DEC: u8 = 0x01;
 
         // Reverse Y coordinate (gates are reversed on this display)
-        let y = DISPLAY_HEIGHT - y - height;
+        let y = HW_HEIGHT - y - height;
 
         // Set data entry mode (X increment, Y decrement for reversed gates)
         self.send_command(DATA_ENTRY_MODE);
@@ -168,7 +172,7 @@ where
     }
 
     pub fn write_buffer(&mut self) {
-        self.set_ram_area(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        self.set_ram_area(0, 0, HW_WIDTH, HW_HEIGHT);
         self.send_command(WRITE_RAM_BW);
         send_data(&mut self.spi, &mut self.dc, &*self.buffer);
     }
@@ -307,10 +311,9 @@ where
         // and where (479, 799) should land. Draw it on paper if it helps!
         //
         // After rotation, use hw_x and hw_y below instead of x and y.
-        let hw_x = x;
-        let hw_y = y;
+        let (hw_x, hw_y) = if PORTRAIT_MODE { (y, 479 - x) } else { (x, y) };
 
-        let pixel_index = (hw_y * DISPLAY_WIDTH as i32 + hw_x) as usize;
+        let pixel_index = (hw_y * HW_WIDTH as i32 + hw_x) as usize;
         let byte_index = pixel_index / 8;
         // MSB first: bit 7 is leftmost pixel in each byte
         let bit_mask = 0x80 >> (pixel_index % 8);

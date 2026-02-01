@@ -9,10 +9,10 @@ use core::convert::Infallible;
 use command::*;
 
 use embedded_graphics_core::{
+    Pixel,
     draw_target::DrawTarget,
     geometry::{OriginDimensions, Size},
     pixelcolor::BinaryColor,
-    Pixel,
 };
 use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{InputPin, OutputPin};
@@ -83,8 +83,8 @@ where
             if iterations % 1000 == 0 {
                 log::info!("wait_while_busy: {}ms elapsed, still busy...", iterations);
             }
-            if iterations >= 10_000 {
-                log::warn!("wait_while_busy: timeout after 10s!");
+            if iterations >= 30_000 {
+                log::warn!("wait_while_busy: timeout after 30s!");
                 break;
             }
         }
@@ -114,10 +114,11 @@ where
 
     pub fn driver_output_control(&mut self) {
         self.send_command(DRIVER_OUTPUT_CONTROL);
-        // set display height
-        self.send_byte(((DISPLAY_HEIGHT - 1) % 256) as u8); // low byte
-        self.send_byte(((DISPLAY_HEIGHT - 1) / 256) as u8); // high byte
-                                                            // scan direction
+        // Always use hardware height (480), not logical height
+        // The SSD1677 controller needs to know the physical panel has 480 gates
+        self.send_byte(((HW_HEIGHT - 1) % 256) as u8); // 0xDF (479) - low byte
+        self.send_byte(((HW_HEIGHT - 1) / 256) as u8); // 0x01 - high byte
+        // scan direction
         self.send_byte(0x02);
     }
 
@@ -162,10 +163,15 @@ where
     }
 
     pub fn clear_ram(&mut self, delay: &mut impl DelayNs) {
+        // Clear local buffer to white (0xFF) to match display RAM
+        self.buffer.fill(0xFF);
+
+        // Clear display BW RAM
         self.send_command(AUTO_WRITE_BW_RAM);
         self.send_byte(0xF7);
         self.wait_while_busy(delay);
 
+        // Clear display RED RAM
         self.send_command(AUTO_WRITE_RED_RAM);
         self.send_byte(0xF7);
         self.wait_while_busy(delay);
@@ -173,7 +179,11 @@ where
 
     pub fn write_buffer(&mut self) {
         self.set_ram_area(0, 0, HW_WIDTH, HW_HEIGHT);
+        // Write to BW RAM (black/white buffer)
         self.send_command(WRITE_RAM_BW);
+        send_data(&mut self.spi, &mut self.dc, &*self.buffer);
+        // Also write to RED RAM for full refresh support (prevents ghosting)
+        self.send_command(WRITE_RAM_RED);
         send_data(&mut self.spi, &mut self.dc, &*self.buffer);
     }
 

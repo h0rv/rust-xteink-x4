@@ -16,7 +16,7 @@ fn main() {
 
     let peripherals = Peripherals::take().unwrap();
 
-    // SPI bus (shared pins)
+    // SPI bus (shared pins) - configure for 40MHz, Mode 0
     let spi = SpiDriver::new(
         peripherals.spi2,
         peripherals.pins.gpio8,       // SCLK
@@ -26,11 +26,19 @@ fn main() {
     )
     .unwrap();
 
-    // SPI device for display
+    // SPI device for display - 40MHz, Mode 0 (reference implementation settings)
+    let spi_config =
+        Config::default()
+            .baudrate(40.MHz().into())
+            .data_mode(embedded_hal::spi::Mode {
+                polarity: embedded_hal::spi::Polarity::IdleLow,
+                phase: embedded_hal::spi::Phase::CaptureOnFirstTransition,
+            });
+
     let spi_device = SpiDeviceDriver::new(
         &spi,
         Some(peripherals.pins.gpio21), // CS
-        &Config::default(),
+        &spi_config,
     )
     .unwrap();
 

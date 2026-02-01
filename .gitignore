@@ -3,3 +3,5 @@
 /target
 /Cargo.lock
 crates/xteink-sim-web/dist
+crosspoint-reader
+ssd1675

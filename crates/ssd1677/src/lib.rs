@@ -1,6 +1,9 @@
+extern crate alloc;
+
 mod command;
 mod lut;
 
+use alloc::boxed::Box;
 use core::convert::Infallible;
 
 use command::*;
@@ -15,8 +18,8 @@ use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiDevice;
 
-pub const DISPLAY_WIDTH: usize = 480;
-pub const DISPLAY_HEIGHT: usize = 800;
+pub const DISPLAY_WIDTH: usize = 800;
+pub const DISPLAY_HEIGHT: usize = 480;
 pub const DISPLAY_BUFFER_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT / 8;
 
 pub enum RefreshMode {
@@ -33,7 +36,7 @@ pub struct Ssd1677<SPI, DC, RST, BUSY> {
 
     is_display_on: bool,
     custom_lut_active: bool,
-    buffer: [u8; DISPLAY_BUFFER_SIZE],
+    buffer: Box<[u8; DISPLAY_BUFFER_SIZE]>,
 }
 
 impl<SPI, DC, RST, BUSY> Ssd1677<SPI, DC, RST, BUSY>
@@ -51,7 +54,7 @@ where
             busy,
             is_display_on: false,
             custom_lut_active: false,
-            buffer: [0; DISPLAY_BUFFER_SIZE],
+            buffer: Box::new([0xFF; DISPLAY_BUFFER_SIZE]),
         }
     }
 
@@ -69,8 +72,20 @@ where
 
     fn wait_while_busy(&mut self, delay: &mut impl DelayNs) {
         // Yield to scheduler while waiting, prevents watchdog timeout
+        let mut iterations = 0u32;
         while self.busy.is_high().unwrap() {
             delay.delay_ms(1);
+            iterations += 1;
+            if iterations % 1000 == 0 {
+                log::info!("wait_while_busy: {}ms elapsed, still busy...", iterations);
+            }
+            if iterations >= 10_000 {
+                log::warn!("wait_while_busy: timeout after 10s!");
+                break;
+            }
+        }
+        if iterations > 0 {
+            log::info!("wait_while_busy: done after {}ms", iterations);
         }
     }
 
@@ -153,8 +168,9 @@ where
     }
 
     pub fn write_buffer(&mut self) {
+        self.set_ram_area(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
         self.send_command(WRITE_RAM_BW);
-        send_data(&mut self.spi, &mut self.dc, &self.buffer);
+        send_data(&mut self.spi, &mut self.dc, &*self.buffer);
     }
 
     pub fn init(&mut self, delay: &mut impl DelayNs) {
@@ -175,7 +191,12 @@ where
         delay.delay_ms(20);
     }
 
-    pub fn refresh_display(&mut self, refresh_mode: RefreshMode, turn_off_display: bool, delay: &mut impl DelayNs) {
+    pub fn refresh_display(
+        &mut self,
+        refresh_mode: RefreshMode,
+        turn_off_display: bool,
+        delay: &mut impl DelayNs,
+    ) {
         self.send_command(DISPLAY_UPDATE_CTRL1);
         let data = match refresh_mode {
             RefreshMode::Full | RefreshMode::Half => CTRL1_BYPASS_RED,
@@ -272,26 +293,34 @@ where
         self.in_width(x) && self.in_height(y)
     }
 
-    fn get_buffer_location(&self, x: i32, y: i32) -> (i32, u8) {
-        let pixel_index = y * DISPLAY_WIDTH as i32 + x;
-
-        let pixel_byte = pixel_index / 8;
-        let pixel_byte_offset = pixel_index % 8;
-
-        (pixel_byte, pixel_byte_offset as u8)
-    }
-
     fn set_pixel(&mut self, x: i32, y: i32, color: BinaryColor) {
-        if !(self.in_bounds(x, y)) {
+        if !self.in_bounds(x, y) {
             return;
         }
 
-        let (byte_index, byte_offset) = self.get_buffer_location(x, y);
-        let buffer_byte = self.buffer.get_mut(byte_index as usize).unwrap();
+        // TODO(human): Rotate portrait coordinates (x, y) to hardware landscape coordinates (hw_x, hw_y).
+        //
+        // The UI draws in portrait: x is 0..480, y is 0..800
+        // The hardware buffer is landscape: 800 columns × 480 rows
+        //
+        // Think about where portrait pixel (0,0) should land in the hardware buffer,
+        // and where (479, 799) should land. Draw it on paper if it helps!
+        //
+        // After rotation, use hw_x and hw_y below instead of x and y.
+        let hw_x = x;
+        let hw_y = y;
 
+        let pixel_index = (hw_y * DISPLAY_WIDTH as i32 + hw_x) as usize;
+        let byte_index = pixel_index / 8;
+        // MSB first: bit 7 is leftmost pixel in each byte
+        let bit_mask = 0x80 >> (pixel_index % 8);
+
+        let buffer_byte = &mut self.buffer[byte_index];
         match color {
-            BinaryColor::On => *buffer_byte |= 1 << byte_offset, // +1 or 0 indexed?
-            BinaryColor::Off => *buffer_byte &= !(1 << byte_offset), // +1 or 0 indexed?
+            // SSD1677: 1 = white, 0 = black
+            // embedded-graphics: On = "ink on" = black, Off = white
+            BinaryColor::On => *buffer_byte &= !bit_mask, // clear bit = black
+            BinaryColor::Off => *buffer_byte |= bit_mask, // set bit = white
         }
     }
 }

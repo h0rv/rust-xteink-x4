@@ -1,6 +1,3 @@
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::PinDriver,
@@ -12,12 +9,10 @@ use ssd1677::{RefreshMode, Ssd1677};
 use xteink_ui::App;
 
 fn main() {
-    // It is necessary to call this function once. Otherwise, some patches to the runtime
-    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
-
-    // Bind the log crate to the ESP Logging facilities
     esp_idf_svc::log::EspLogger::initialize_default();
+
+    log::info!("Starting firmware...");
 
     let peripherals = Peripherals::take().unwrap();
 
@@ -45,19 +40,20 @@ fn main() {
     let busy = PinDriver::input(peripherals.pins.gpio6).unwrap();
 
     let mut delay = FreeRtos;
-
     let mut display = Ssd1677::new(spi_device, dc, rst, busy);
 
+    log::info!("Resetting display...");
     display.reset_display(&mut delay);
+
+    log::info!("Initializing display...");
     display.init(&mut delay);
-    display.refresh_display(RefreshMode::Full, false, &mut delay);
 
-    // Draw something
-
+    // Draw UI
     let app = App::new();
+    app.render(&mut display).ok();
 
-    app.render(&mut display);
-
+    // Write buffer to display and refresh once
+    log::info!("Writing buffer and refreshing...");
     display.write_buffer();
     display.refresh_display(RefreshMode::Full, false, &mut delay);
 

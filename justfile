@@ -26,13 +26,14 @@ check-firmware:
 build-firmware:
     cd crates/xteink-firmware && cargo build --release
 
-# Flash firmware to device
+# Flash firmware to device (clean rebuild every time)
 flash:
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor
+    cargo clean -p xteink-firmware -p ssd1677 -p xteink-ui
+    cd crates/xteink-firmware && cargo build --release && cargo espflash flash --release --monitor
 
-# Flash and monitor
+# Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor
+    cd crates/xteink-firmware && rm -f ../../target/riscv32imc-esp-espidf/release/xteink-firmware && cargo build --release && cargo espflash flash --release --monitor
 
 # Just monitor serial output
 monitor:

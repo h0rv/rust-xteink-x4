@@ -18,12 +18,9 @@ use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::spi::SpiDevice;
 
-const PORTRAIT_MODE: bool = true;
-
-const HW_WIDTH: usize = 800;
-const HW_HEIGHT: usize = 480;
-pub const DISPLAY_WIDTH: usize = if PORTRAIT_MODE { HW_HEIGHT } else { HW_WIDTH };
-pub const DISPLAY_HEIGHT: usize = if PORTRAIT_MODE { HW_WIDTH } else { HW_HEIGHT };
+/// Display hardware dimensions (landscape, as per SSD1677 controller)
+pub const DISPLAY_WIDTH: usize = 800;
+pub const DISPLAY_HEIGHT: usize = 480;
 pub const DISPLAY_BUFFER_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT / 8;
 
 pub enum RefreshMode {
@@ -41,6 +38,7 @@ pub struct Ssd1677<SPI, DC, RST, BUSY> {
     is_display_on: bool,
     custom_lut_active: bool,
     buffer: Box<[u8; DISPLAY_BUFFER_SIZE]>,
+    prev_buffer: Box<[u8; DISPLAY_BUFFER_SIZE]>, // Previous frame for differential refresh
 }
 
 impl<SPI, DC, RST, BUSY> Ssd1677<SPI, DC, RST, BUSY>
@@ -59,6 +57,7 @@ where
             is_display_on: false,
             custom_lut_active: false,
             buffer: Box::new([0xFF; DISPLAY_BUFFER_SIZE]),
+            prev_buffer: Box::new([0xFF; DISPLAY_BUFFER_SIZE]),
         }
     }
 
@@ -114,10 +113,9 @@ where
 
     pub fn driver_output_control(&mut self) {
         self.send_command(DRIVER_OUTPUT_CONTROL);
-        // Always use hardware height (480), not logical height
-        // The SSD1677 controller needs to know the physical panel has 480 gates
-        self.send_byte(((HW_HEIGHT - 1) % 256) as u8); // 0xDF (479) - low byte
-        self.send_byte(((HW_HEIGHT - 1) / 256) as u8); // 0x01 - high byte
+        // Set display height (480 gates)
+        self.send_byte(((DISPLAY_HEIGHT - 1) % 256) as u8); // 0xDF (479) - low byte
+        self.send_byte(((DISPLAY_HEIGHT - 1) / 256) as u8); // 0x01 - high byte
         // scan direction
         self.send_byte(0x02);
     }
@@ -131,7 +129,7 @@ where
         const DATA_ENTRY_X_INC_Y_DEC: u8 = 0x01;
 
         // Reverse Y coordinate (gates are reversed on this display)
-        let y = HW_HEIGHT - y - height;
+        let y = DISPLAY_HEIGHT - y - height;
 
         // Set data entry mode (X increment, Y decrement for reversed gates)
         self.send_command(DATA_ENTRY_MODE);
@@ -177,14 +175,33 @@ where
         self.wait_while_busy(delay);
     }
 
-    pub fn write_buffer(&mut self) {
-        self.set_ram_area(0, 0, HW_WIDTH, HW_HEIGHT);
-        // Write to BW RAM (black/white buffer)
+    /// Write buffers for Full/Half refresh (same frame to both BW and RED RAM)
+    pub fn write_buffer_full(&mut self) {
+        self.set_ram_area(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // Write current frame to BW RAM
         self.send_command(WRITE_RAM_BW);
         send_data(&mut self.spi, &mut self.dc, &*self.buffer);
-        // Also write to RED RAM for full refresh support (prevents ghosting)
+        // Write same frame to RED RAM
         self.send_command(WRITE_RAM_RED);
         send_data(&mut self.spi, &mut self.dc, &*self.buffer);
+    }
+
+    /// Write buffers for Fast refresh (differential update)
+    /// BW RAM = new frame, RED RAM = previous frame
+    pub fn write_buffer_fast(&mut self) {
+        self.set_ram_area(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        // Write current frame to BW RAM
+        self.send_command(WRITE_RAM_BW);
+        send_data(&mut self.spi, &mut self.dc, &*self.buffer);
+        // Write previous frame to RED RAM (for differential comparison)
+        self.send_command(WRITE_RAM_RED);
+        send_data(&mut self.spi, &mut self.dc, &*self.prev_buffer);
+    }
+
+    /// Update previous buffer after refresh (call after Fast refresh)
+    pub fn swap_buffers(&mut self) {
+        // Copy current buffer to previous buffer for next differential update
+        self.prev_buffer.copy_from_slice(&*self.buffer);
     }
 
     pub fn init(&mut self, delay: &mut impl DelayNs) {
@@ -312,18 +329,9 @@ where
             return;
         }
 
-        // TODO(human): Rotate portrait coordinates (x, y) to hardware landscape coordinates (hw_x, hw_y).
-        //
-        // The UI draws in portrait: x is 0..480, y is 0..800
-        // The hardware buffer is landscape: 800 columns × 480 rows
-        //
-        // Think about where portrait pixel (0,0) should land in the hardware buffer,
-        // and where (479, 799) should land. Draw it on paper if it helps!
-        //
-        // After rotation, use hw_x and hw_y below instead of x and y.
-        let (hw_x, hw_y) = if PORTRAIT_MODE { (y, 479 - x) } else { (x, y) };
-
-        let pixel_index = (hw_y * HW_WIDTH as i32 + hw_x) as usize;
+        // Pure hardware coordinates - x: 0..799, y: 0..479
+        // No rotation logic here - application layer handles coordinate transformation
+        let pixel_index = (y * DISPLAY_WIDTH as i32 + x) as usize;
         let byte_index = pixel_index / 8;
         // MSB first: bit 7 is leftmost pixel in each byte
         let bit_mask = 0x80 >> (pixel_index % 8);

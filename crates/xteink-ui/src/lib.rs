@@ -9,6 +9,7 @@ pub mod input;
 pub use app::App;
 pub use input::{Button, InputEvent};
 
-/// Display: 800x480 @ 220 PPI (4.3" diagonal, landscape)
-pub const DISPLAY_WIDTH: u32 = 800;
-pub const DISPLAY_HEIGHT: u32 = 480;
+/// UI Display dimensions (portrait mode)
+/// Physical display is 800x480 landscape, but UI is 480x800 portrait
+pub const DISPLAY_WIDTH: u32 = 480;
+pub const DISPLAY_HEIGHT: u32 = 800;

@@ -17,7 +17,8 @@ esp-idf-svc = "0.51"
 ssd1677 = { path = "../ssd1677" }
 xteink-ui = { path = "../xteink-ui" }
 embedded-hal = "1.0.0"
-embedded-graphics= "0.8.0"
+embedded-graphics = "0.8.0"
+embedded-sdmmc = "0.7.0"
 
 [build-dependencies]
 embuild = "0.33"

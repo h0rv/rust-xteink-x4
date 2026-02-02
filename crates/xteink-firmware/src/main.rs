@@ -109,11 +109,11 @@ fn main() {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     // Compile-time stack size verification
-    // This will fail to compile if the stack size is less than 500KB
-    const REQUIRED_STACK_SIZE: u32 = 512 * 1024;
+    // ESP32-C3 has ~191KB total RAM, so we use 64KB for stack
+    const REQUIRED_STACK_SIZE: u32 = 60 * 1024; // 60KB minimum
     const _: () = assert!(
         esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE >= REQUIRED_STACK_SIZE,
-        "Stack size must be at least 512KB. Check sdkconfig.defaults and run `cargo clean` before building."
+        "Stack size must be at least 60KB. Check sdkconfig.defaults and run `cargo clean` before building."
     );
 
     log::info!(

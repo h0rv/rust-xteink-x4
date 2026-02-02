@@ -6,6 +6,8 @@
 extern crate alloc;
 
 pub mod app;
+pub mod buffered_display;
+pub mod eink;
 pub mod file_browser;
 pub mod filesystem;
 pub mod font_render;
@@ -18,6 +20,8 @@ pub mod epub_render;
 pub mod mock_filesystem;
 
 pub use app::App;
+pub use buffered_display::BufferedDisplay;
+pub use eink::{Builder, Dimensions, EinkDisplay, EinkError, EinkInterface, RefreshMode, Rotation};
 pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;

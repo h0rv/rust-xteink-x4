@@ -1,6 +1,7 @@
 # Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
-# embedded-sdmmc requires significant stack space for file operations
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=131072
+# E-ink display driver with embedded-graphics requires significant stack space
+# Each display update traverses deep iterator chains in embedded-graphics -> ssd1677 -> esp_idf_hal::spi
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=524288
 
 # Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
 # This allows to use 1 ms granularity for thread sleeps (10 ms by default).

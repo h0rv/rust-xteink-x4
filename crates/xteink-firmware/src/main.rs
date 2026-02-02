@@ -10,159 +10,15 @@ use esp_idf_svc::hal::{
 };
 use esp_idf_svc::sys;
 
-use embedded_graphics::{draw_target::DrawTarget, pixelcolor::BinaryColor, prelude::*};
-use ssd1677::{
-    Builder, Color, Dimensions, Display, DisplayInterface, GraphicDisplay, Interface, RefreshMode,
-    Rotation,
+use xteink_ui::{
+    App, BufferedDisplay, Builder, Button, Dimensions, EinkDisplay, EinkInterface, InputEvent,
+    RefreshMode, Rotation,
 };
-use xteink_ui::{App, Button, InputEvent};
 
 use sdcard::SdCardFs;
-use std::sync::mpsc;
 
 const DISPLAY_COLS: u16 = 480;
 const DISPLAY_ROWS: u16 = 800;
-const BUFFER_SIZE: usize = (DISPLAY_COLS as usize * DISPLAY_ROWS as usize) / 8;
-
-struct ColorAdapter<D> {
-    pub display: D,
-}
-
-impl<D> ColorAdapter<D> {
-    fn new(display: D) -> Self {
-        Self { display }
-    }
-}
-
-impl<D: DrawTarget<Color = Color> + OriginDimensions> DrawTarget for ColorAdapter<D> {
-    type Color = BinaryColor;
-    type Error = D::Error;
-    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Pixel<Self::Color>>,
-    {
-        let converted = pixels.into_iter().map(|Pixel(point, color)| {
-            let ssd_color = if color == BinaryColor::On {
-                Color::Black
-            } else {
-                Color::White
-            };
-            Pixel(point, ssd_color)
-        });
-        self.display.draw_iter(converted)
-    }
-}
-
-impl<D: OriginDimensions> OriginDimensions for ColorAdapter<D> {
-    fn size(&self) -> Size {
-        self.display.size()
-    }
-}
-
-struct ChunkedInterface<I> {
-    inner: I,
-}
-
-impl<I> ChunkedInterface<I> {
-    const CHUNK_SIZE: usize = 16;
-
-    fn new(inner: I) -> Self {
-        Self { inner }
-    }
-}
-
-impl<I: DisplayInterface> DisplayInterface for ChunkedInterface<I> {
-    type Error = I::Error;
-
-    fn send_command(&mut self, command: u8) -> Result<(), Self::Error> {
-        self.inner.send_command(command)
-    }
-
-    fn send_data(&mut self, data: &[u8]) -> Result<(), Self::Error> {
-        for chunk in data.chunks(Self::CHUNK_SIZE) {
-            self.inner.send_data(chunk)?;
-        }
-        Ok(())
-    }
-
-    fn reset<D: embedded_hal::delay::DelayNs>(&mut self, delay: &mut D) {
-        self.inner.reset(delay);
-    }
-
-    fn busy_wait<D: embedded_hal::delay::DelayNs>(
-        &mut self,
-        delay: &mut D,
-    ) -> Result<(), Self::Error> {
-        self.inner.busy_wait(delay)
-    }
-}
-
-enum UiCommand {
-    Init,
-    Input {
-        event: InputEvent,
-        mode: RefreshMode,
-    },
-}
-
-fn spawn_ui_task<SPI, SD>(
-    spi_device: SpiDeviceDriver<'static, SPI>,
-    dc: PinDriver<'static, esp_idf_svc::hal::gpio::Gpio4, esp_idf_svc::hal::gpio::Output>,
-    rst: PinDriver<'static, esp_idf_svc::hal::gpio::Gpio5, esp_idf_svc::hal::gpio::Output>,
-    busy: PinDriver<'static, esp_idf_svc::hal::gpio::Gpio6, esp_idf_svc::hal::gpio::Input>,
-    sd_spi: SpiDeviceDriver<'static, SD>,
-) -> mpsc::Sender<UiCommand>
-where
-    SPI: embedded_hal::spi::SpiDevice + Send + 'static,
-    SD: embedded_hal::spi::SpiDevice + Send + 'static,
-{
-    let (tx, rx) = mpsc::channel::<UiCommand>();
-
-    std::thread::Builder::new()
-        .name("ui_task".into())
-        .stack_size(64 * 1024)
-        .spawn(move || {
-            let mut delay = FreeRtos;
-            let interface = Interface::new(spi_device, dc, rst, busy);
-            let interface = ChunkedInterface::new(interface);
-            let config = Builder::new()
-                .dimensions(Dimensions::new(DISPLAY_ROWS, DISPLAY_COLS).unwrap())
-                .rotation(Rotation::Rotate90)
-                .build()
-                .unwrap();
-            let display = Display::new(interface, config);
-            let black_buffer = vec![0xFFu8; BUFFER_SIZE];
-            let red_buffer = vec![0x00u8; BUFFER_SIZE];
-            let mut graphic_display = GraphicDisplay::new(display, black_buffer, red_buffer);
-
-            log::info!("Resetting display...");
-            graphic_display.display_mut().reset(&mut delay).ok();
-
-            let mut display = ColorAdapter::new(graphic_display);
-
-            let mut fs = SdCardFs::new(sd_spi).expect("SD card init failed");
-            let mut app = App::new();
-            app.init(&mut fs);
-
-            while let Ok(cmd) = rx.recv() {
-                match cmd {
-                    UiCommand::Init => {
-                        app.render(&mut display).ok();
-                        display.display.update(&mut delay).ok();
-                    }
-                    UiCommand::Input { event, mode } => {
-                        if app.handle_input(event, &mut fs) {
-                            app.render(&mut display).ok();
-                            display.display.update_with_mode(mode, &mut delay).ok();
-                        }
-                    }
-                }
-            }
-        })
-        .expect("failed to spawn ui task");
-
-    tx
-}
 
 const ADC_NO_BUTTON: i32 = 3800;
 const ADC_RANGES_1: [i32; 5] = [3800, 3100, 2090, 750, i32::MIN];
@@ -252,7 +108,18 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    log::info!("Starting firmware...");
+    // Compile-time stack size verification
+    // This will fail to compile if the stack size is less than 500KB
+    const REQUIRED_STACK_SIZE: u32 = 512 * 1024;
+    const _: () = assert!(
+        esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE >= REQUIRED_STACK_SIZE,
+        "Stack size must be at least 512KB. Check sdkconfig.defaults and run `cargo clean` before building."
+    );
+
+    log::info!(
+        "Starting firmware with {} bytes stack",
+        esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE
+    );
 
     let peripherals = Peripherals::take().unwrap();
 
@@ -293,9 +160,33 @@ fn main() {
 
     init_adc();
 
-    let ui_tx = spawn_ui_task(spi_device, dc, rst, busy, sd_spi);
+    // Initialize display
+    let mut delay = FreeRtos;
+    let interface = EinkInterface::new(spi_device, dc, rst, busy);
+    let config = Builder::new()
+        .dimensions(Dimensions::new(DISPLAY_ROWS, DISPLAY_COLS).unwrap())
+        .rotation(Rotation::Rotate90)
+        .build()
+        .unwrap();
+    let mut display = EinkDisplay::new(interface, config);
 
-    ui_tx.send(UiCommand::Init).ok();
+    log::info!("Resetting display...");
+    display.reset(&mut delay).ok();
+
+    // Create buffered display for UI rendering (avoids stack overflow from iterator chains)
+    let mut buffered_display = BufferedDisplay::new();
+
+    // Initialize SD card filesystem
+    let mut fs = SdCardFs::new(sd_spi).expect("SD card init failed");
+
+    // Initialize app and render initial screen
+    let mut app = App::new();
+    app.init(&mut fs);
+    buffered_display.clear();
+    app.render(&mut buffered_display).ok();
+    display
+        .update(buffered_display.buffer(), &[], &mut delay)
+        .ok();
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
@@ -322,12 +213,18 @@ fn main() {
                     log::info!("Power button held for 2s - powering off!");
                     long_press_triggered = true;
 
-                    ui_tx
-                        .send(UiCommand::Input {
-                            event: InputEvent::Press(Button::Power),
-                            mode: RefreshMode::Full,
-                        })
-                        .ok();
+                    if app.handle_input(InputEvent::Press(Button::Power), &mut fs) {
+                        buffered_display.clear();
+                        app.render(&mut buffered_display).ok();
+                        display
+                            .update_with_mode(
+                                buffered_display.buffer(),
+                                &[],
+                                RefreshMode::Full,
+                                &mut delay,
+                            )
+                            .ok();
+                    }
 
                     while power_btn.is_low() {
                         FreeRtos::delay_ms(50);
@@ -342,12 +239,18 @@ fn main() {
                     log::info!("Power button short press");
                     last_button = Some(Button::Power);
 
-                    ui_tx
-                        .send(UiCommand::Input {
-                            event: InputEvent::Press(Button::Power),
-                            mode: RefreshMode::Fast,
-                        })
-                        .ok();
+                    if app.handle_input(InputEvent::Press(Button::Power), &mut fs) {
+                        buffered_display.clear();
+                        app.render(&mut buffered_display).ok();
+                        display
+                            .update_with_mode(
+                                buffered_display.buffer(),
+                                &[],
+                                RefreshMode::Fast,
+                                &mut delay,
+                            )
+                            .ok();
+                    }
                 }
             }
             is_power_pressed = false;
@@ -359,12 +262,18 @@ fn main() {
                 log::info!("Button pressed: {:?}", btn);
                 last_button = Some(btn);
 
-                ui_tx
-                    .send(UiCommand::Input {
-                        event: InputEvent::Press(btn),
-                        mode: RefreshMode::Fast,
-                    })
-                    .ok();
+                if app.handle_input(InputEvent::Press(btn), &mut fs) {
+                    buffered_display.clear();
+                    app.render(&mut buffered_display).ok();
+                    display
+                        .update_with_mode(
+                            buffered_display.buffer(),
+                            &[],
+                            RefreshMode::Fast,
+                            &mut delay,
+                        )
+                        .ok();
+                }
             }
         } else if !power_pressed {
             last_button = None;

@@ -14,7 +14,6 @@ experimental = ["esp-idf-svc/experimental"]
 [dependencies]
 log = "0.4"
 esp-idf-svc = "0.51"
-ssd1677 = { path = "/home/h0rv/projects/ssd1677", features = ["graphics"] }
 xteink-ui = { path = "../xteink-ui" }
 embedded-hal = "1.0.0"
 embedded-graphics = "0.8.0"

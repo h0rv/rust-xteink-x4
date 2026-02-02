@@ -20,5 +20,8 @@ fontdue = { version = "0.9.3", optional = true }
 # HTML parsing for EPUB content  
 html2text = { version = "0.16.7", optional = true }
 
+# E-ink display driver (re-exported for firmware use)
+ssd1677 = "0.1"
+
 [dev-dependencies]
 # For tests

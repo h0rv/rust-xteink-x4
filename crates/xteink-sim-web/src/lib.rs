@@ -90,8 +90,7 @@ impl State {
                 let input = InputEvent::Press(btn);
                 let (needs_redraw, selected) = self.browser.handle_input(input);
 
-                if selected.is_some() {
-                    let path = selected.unwrap();
+                if let Some(path) = selected {
                     if path.is_empty() {
                         // Reload (navigated to different directory)
                         if let Err(e) = self.browser.load(&mut self.fs) {

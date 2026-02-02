@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod app;
 pub mod file_browser;
 pub mod filesystem;
+pub mod font_render;
 pub mod input;
 
 #[cfg(feature = "std")]
@@ -19,6 +20,7 @@ pub mod mock_filesystem;
 pub use app::App;
 pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
+pub use font_render::FontCache;
 pub use input::{Button, InputEvent};
 
 #[cfg(feature = "std")]

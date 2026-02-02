@@ -86,8 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             AppMode::Library => {
                                 let (needs_redraw, selected) = browser.handle_input(input);
 
-                                if selected.is_some() {
-                                    let path = selected.unwrap();
+                                if let Some(path) = selected {
                                     if path.is_empty() {
                                         // Reload (navigated to different directory)
                                         browser.load(&mut fs)?;

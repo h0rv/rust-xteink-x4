@@ -10,7 +10,6 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
-use crate::{DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
 /// Application state
 pub struct App {
@@ -58,7 +57,7 @@ impl App {
 
         // Create a raw image instance. Other image formats will require different code to load them.
         // All code after loading is the same for any image format.
-        let raw: ImageRawBE<BinaryColor> = ImageRaw::new(&data, 115);
+        let raw: ImageRawBE<BinaryColor> = ImageRaw::new(data, 115);
 
         // Create an `Image` object to position the image at `Point::zero()`.
         let image = Image::new(&raw, Point::new(200, 200));

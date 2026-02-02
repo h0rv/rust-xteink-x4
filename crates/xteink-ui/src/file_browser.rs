@@ -17,11 +17,7 @@ use embedded_graphics::{
     text::Text,
 };
 
-use embedded_text::{
-    alignment::HorizontalAlignment,
-    style::{TextBoxStyle, TextBoxStyleBuilder},
-    TextBox,
-};
+use embedded_text::{alignment::HorizontalAlignment, style::TextBoxStyleBuilder, TextBox};
 
 use crate::filesystem::{filter_by_extension, FileInfo, FileSystem};
 use crate::input::{Button, InputEvent};
@@ -193,7 +189,7 @@ impl FileBrowser {
         let header_text = if self.current_path == "/" {
             String::from("Library")
         } else {
-            format!("{}", crate::filesystem::basename(&self.current_path))
+            crate::filesystem::basename(&self.current_path).to_string()
         };
         Text::new(&header_text, Point::new(10, 25), header_style).draw(display)?;
 
@@ -268,6 +264,7 @@ impl FileBrowser {
 
 /// Text viewer using embedded-text for proper word wrapping
 pub struct TextViewer {
+    #[allow(dead_code)]
     content: String,
     current_page: usize,
     pages: Vec<String>,
@@ -275,6 +272,7 @@ pub struct TextViewer {
 
 impl TextViewer {
     const TOP_MARGIN: i32 = 50;
+    #[allow(dead_code)]
     const BOTTOM_MARGIN: i32 = 40;
     const CONTENT_HEIGHT: i32 = DISPLAY_HEIGHT as i32 - 50 - 40; // 710px
 

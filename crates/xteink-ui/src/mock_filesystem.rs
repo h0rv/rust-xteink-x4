@@ -25,6 +25,12 @@ pub struct MockFileSystem {
     current_dir: String,
 }
 
+impl Default for MockFileSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockFileSystem {
     /// Create new mock filesystem with sample files
     pub fn new() -> Self {

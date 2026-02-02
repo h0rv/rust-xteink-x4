@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
-std = ["epub", "fontdue", "html2text"]
+default = ["fontdue"]
+std = ["epub", "html2text"]
 
 [dependencies]
 embedded-graphics = "0.8"
@@ -14,10 +14,10 @@ embedded-text = "0.7.3"
 # EPUB support (desktop/simulators only due to std requirement)
 epub = { version = "2.1.5", optional = true }
 
-# TTF font rendering with no_std support
+# TTF font rendering with no_std support - always enabled
 fontdue = { version = "0.9.3", optional = true }
 
-# HTML parsing for EPUB content
+# HTML parsing for EPUB content  
 html2text = { version = "0.16.7", optional = true }
 
 [dev-dependencies]

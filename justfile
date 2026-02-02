@@ -2,6 +2,23 @@
 port := "/dev/ttyACM0"
 backup_file := "firmware_backup.bin"
 
+# Run all quality checks: format, lint, check
+all:
+    @echo "Running all quality checks..."
+    just fmt
+    just lint
+    just check
+    @echo "✅ All checks passed!"
+
+# Run all checks including firmware (requires ESP toolchain)
+all-full:
+    @echo "Running all quality checks including firmware..."
+    just fmt
+    just lint
+    just check
+    just check-firmware
+    @echo "✅ All checks passed (including firmware)!"
+
 # Run web simulator
 sim-web:
     cd crates/xteink-sim-web && trunk serve --release
@@ -71,4 +88,9 @@ fmt:
 
 # Lint
 lint:
-    cargo clippy --workspace --exclude xteink-firmware
+    cargo clippy --workspace --exclude xteink-firmware -- -D warnings
+
+# Check and lint combined (useful for CI)
+check-lint:
+    cargo check --workspace --exclude xteink-firmware
+    cargo clippy --workspace --exclude xteink-firmware -- -D warnings

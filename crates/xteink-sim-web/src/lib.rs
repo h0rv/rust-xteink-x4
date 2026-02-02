@@ -11,19 +11,22 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use xteink_ui::filesystem::FileSystem;
 use xteink_ui::{
-    Button, FileBrowser, InputEvent, MockFileSystem, TextViewer, DISPLAY_HEIGHT, DISPLAY_WIDTH,
+    Button, EpubRenderer, FileBrowser, InputEvent, MockFileSystem, TextViewer, DISPLAY_HEIGHT,
+    DISPLAY_WIDTH,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AppMode {
     Library, // File browser
     Reader,  // Text viewer
+    Epub,
 }
 
 struct State {
     mode: AppMode,
     browser: FileBrowser,
     viewer: Option<TextViewer>,
+    epub_renderer: Option<EpubRenderer>,
     current_file: String,
     fs: MockFileSystem,
     display: WebSimulatorDisplay<BinaryColor>,
@@ -43,6 +46,7 @@ impl State {
             mode: AppMode::Library,
             browser,
             viewer: None,
+            epub_renderer: None,
             current_file: String::new(),
             fs,
             display,
@@ -64,6 +68,11 @@ impl State {
                         .unwrap();
                 }
             }
+            AppMode::Epub => {
+                if let Some(ref mut renderer) = self.epub_renderer {
+                    renderer.render(&mut self.display).unwrap();
+                }
+            }
         }
         self.display.flush().unwrap();
     }
@@ -80,6 +89,7 @@ impl State {
                     }
                 }
                 AppMode::Reader => AppMode::Library,
+                AppMode::Epub => AppMode::Library,
             };
             self.render();
             return;
@@ -100,6 +110,15 @@ impl State {
                     } else {
                         // Open file
                         web_sys::console::log_1(&format!("Opening: {}", path).into());
+                        if path.to_lowercase().ends_with(".epub") {
+                            let mut renderer = EpubRenderer::new();
+                            if renderer.load(&path).is_ok() {
+                                self.epub_renderer = Some(renderer);
+                                self.mode = AppMode::Epub;
+                                self.render();
+                                return;
+                            }
+                        }
                         match self.fs.read_file(&path) {
                             Ok(content) => {
                                 self.current_file = path.clone();
@@ -126,6 +145,28 @@ impl State {
                     } else if btn == Button::Back {
                         // Go back to library
                         self.mode = AppMode::Library;
+                        self.render();
+                    }
+                }
+            }
+            AppMode::Epub => {
+                if let Some(ref mut renderer) = self.epub_renderer {
+                    let mut changed = false;
+                    match btn {
+                        Button::Left | Button::VolumeUp => {
+                            changed = renderer.prev_page();
+                        }
+                        Button::Right | Button::VolumeDown => {
+                            changed = renderer.next_page();
+                        }
+                        Button::Back => {
+                            self.mode = AppMode::Library;
+                            self.render();
+                            return;
+                        }
+                        _ => {}
+                    }
+                    if changed {
                         self.render();
                     }
                 }

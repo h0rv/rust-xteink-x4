@@ -61,6 +61,10 @@ impl MockFileSystem {
             "/books/war_and_peace_ch1.txt",
             include_str!("../../../sample_books/war_and_peace_ch1.txt"),
         );
+        fs.add_file(
+            "/books/sample.epub",
+            "(EPUB placeholder)\nAdd a real .epub file to /books on your SD card to test EPUB rendering.",
+        );
         fs.add_file("/documents/notes.txt", "My reading notes:\n\n- War and Peace: 1225 pages\n- Sample book: 1 page\n\nTotal: 1226 pages read");
 
         fs

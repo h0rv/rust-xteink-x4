@@ -153,31 +153,36 @@ mod tests {
     #[test]
     fn test_set_pixel_native() {
         let mut display = BufferedDisplay::new();
-        // Set pixel at native (0, 0) - top-left
+        // Set pixel at portrait (0, 0)
         display.set_pixel(0, 0, BinaryColor::On);
-        // byte_index = 0 * 100 + 0 = 0, bit 7 cleared
-        assert_eq!(display.buffer[0], 0x7F);
+        // Transpose: native_x = 0, native_y = 479
+        // byte_index = 479 * 100 + 0 = 47900, bit 7 cleared
+        assert_eq!(display.buffer[47900], 0x7F);
     }
 
     #[test]
     fn test_set_pixel_coordinates() {
         let mut display = BufferedDisplay::new();
-        // Set pixel at (7, 0) - should be bit 0 of first byte
+        // Set pixel at portrait (7, 0)
         display.set_pixel(7, 0, BinaryColor::On);
-        assert_eq!(display.buffer[0], 0xFE); // Bit 0 cleared (LSB)
+        // Transpose: native_x = 0, native_y = 472 (479 - 7)
+        let idx = 472 * 100;
+        assert_eq!(display.buffer[idx], 0x7F); // Bit 7 cleared
 
-        // Set pixel at (8, 0) - should be bit 7 of second byte
+        // Set pixel at portrait (8, 0)
         display.clear();
         display.set_pixel(8, 0, BinaryColor::On);
-        assert_eq!(display.buffer[1], 0x7F); // Bit 7 cleared (MSB of byte 1)
+        // native_y = 471
+        let idx = 471 * 100;
+        assert_eq!(display.buffer[idx], 0x7F);
     }
 
     #[test]
     fn test_dimensions() {
         let display = BufferedDisplay::new();
         let size = display.size();
-        assert_eq!(size.width, 800);
-        assert_eq!(size.height, 480);
+        assert_eq!(size.width, 480);
+        assert_eq!(size.height, 800);
     }
 
     #[test]

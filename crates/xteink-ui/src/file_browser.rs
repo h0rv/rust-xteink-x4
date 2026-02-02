@@ -5,6 +5,7 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -13,7 +14,7 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::Rectangle,
+    primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
 
@@ -30,13 +31,17 @@ pub struct FileBrowser {
     selected_index: usize,
     scroll_offset: usize,
     visible_items: usize,
+    directory_state: BTreeMap<String, (usize, usize)>,
 }
 
 impl FileBrowser {
-    /// Number of items visible on screen
-    const ITEMS_PER_PAGE: usize = 14;
+    /// Number of items visible on screen (each entry can be up to 2 lines)
+    const ITEMS_PER_PAGE: usize = 8;
     /// Line height in pixels
-    const LINE_HEIGHT: i32 = 24;
+    #[allow(dead_code)]
+    const LINE_HEIGHT: i32 = 20;
+    /// Entry height in pixels
+    const ENTRY_HEIGHT: i32 = 40;
     /// Top margin
     const TOP_MARGIN: i32 = 48;
 
@@ -48,6 +53,7 @@ impl FileBrowser {
             selected_index: 0,
             scroll_offset: 0,
             visible_items: Self::ITEMS_PER_PAGE,
+            directory_state: BTreeMap::new(),
         }
     }
 
@@ -56,6 +62,20 @@ impl FileBrowser {
         self.current_path = path.to_string();
         self.selected_index = 0;
         self.scroll_offset = 0;
+    }
+
+    fn save_state(&mut self) {
+        self.directory_state.insert(
+            self.current_path.clone(),
+            (self.selected_index, self.scroll_offset),
+        );
+    }
+
+    fn restore_state(&mut self) {
+        if let Some((selected, scroll)) = self.directory_state.get(&self.current_path).copied() {
+            self.selected_index = selected.min(self.files.len().saturating_sub(1));
+            self.scroll_offset = scroll.min(self.selected_index);
+        }
     }
 
     /// Load files from filesystem
@@ -90,6 +110,7 @@ impl FileBrowser {
         self.files = files;
         self.selected_index = 0;
         self.scroll_offset = 0;
+        self.restore_state();
 
         // Log loaded directory contents
         log::info!(
@@ -159,39 +180,43 @@ impl FileBrowser {
                 }
             }
             InputEvent::Press(Button::Confirm) => {
-                if let Some(file) = self.files.get(self.selected_index) {
-                    log::info!(
-                        "CONFIRM pressed - selected: {} (is_dir: {})",
-                        file.name,
-                        file.is_directory
-                    );
-                    if file.is_directory {
-                        // Navigate into directory
-                        if file.name == ".." {
-                            // Go up
-                            let old_path = self.current_path.clone();
-                            self.current_path =
-                                crate::filesystem::dirname(&self.current_path).to_string();
-                            log::info!("Navigating UP: {} -> {}", old_path, self.current_path);
-                        } else {
-                            // Go down
-                            let old_path = self.current_path.clone();
-                            self.current_path =
-                                crate::filesystem::join_path(&self.current_path, &file.name);
-                            log::info!("Navigating DOWN: {} -> {}", old_path, self.current_path);
-                        }
-                        return (true, Some(String::new())); // Signal to reload
+                let file = match self.files.get(self.selected_index) {
+                    Some(file) => file.clone(),
+                    None => return (false, None),
+                };
+                log::info!(
+                    "CONFIRM pressed - selected: {} (is_dir: {})",
+                    file.name,
+                    file.is_directory
+                );
+                if file.is_directory {
+                    // Navigate into directory
+                    if file.name == ".." {
+                        // Go up
+                        self.save_state();
+                        let old_path = self.current_path.clone();
+                        self.current_path =
+                            crate::filesystem::dirname(&self.current_path).to_string();
+                        log::info!("Navigating UP: {} -> {}", old_path, self.current_path);
                     } else {
-                        // Selected a file - return its path
-                        let full_path =
+                        // Go down
+                        self.save_state();
+                        let old_path = self.current_path.clone();
+                        self.current_path =
                             crate::filesystem::join_path(&self.current_path, &file.name);
-                        log::info!("Opening file: {}", full_path);
-                        return (true, Some(full_path));
+                        log::info!("Navigating DOWN: {} -> {}", old_path, self.current_path);
                     }
+                    return (true, Some(String::new())); // Signal to reload
+                } else {
+                    // Selected a file - return its path
+                    let full_path = crate::filesystem::join_path(&self.current_path, &file.name);
+                    log::info!("Opening file: {}", full_path);
+                    return (true, Some(full_path));
                 }
             }
             InputEvent::Press(Button::Back) => {
                 if self.current_path != "/" {
+                    self.save_state();
                     let old_path = self.current_path.clone();
                     self.current_path = crate::filesystem::dirname(&self.current_path).to_string();
                     log::info!("BACK pressed: {} -> {}", old_path, self.current_path);
@@ -230,7 +255,7 @@ impl FileBrowser {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        let (_width, _height) = portrait_dimensions(display);
+        let (width, height) = portrait_dimensions(display);
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
@@ -247,12 +272,22 @@ impl FileBrowser {
         // File list (no icons, minimal chrome)
         let normal_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let selected_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let bar_style = PrimitiveStyle::with_fill(BinaryColor::On);
 
         let end_index = (self.scroll_offset + self.visible_items).min(self.files.len());
 
         for (i, file) in self.files[self.scroll_offset..end_index].iter().enumerate() {
             let actual_index = self.scroll_offset + i;
-            let y = Self::TOP_MARGIN + (i as i32 * Self::LINE_HEIGHT);
+            let y = Self::TOP_MARGIN + (i as i32 * Self::ENTRY_HEIGHT);
+
+            if actual_index == self.selected_index {
+                Rectangle::new(
+                    Point::new(0, y - 2),
+                    Size::new(6, Self::ENTRY_HEIGHT as u32),
+                )
+                .into_styled(bar_style)
+                .draw(display)?;
+            }
 
             // File name (truncated if too long)
             let mut name = if file.name.len() > 38 {
@@ -265,19 +300,35 @@ impl FileBrowser {
                 name.push('/');
             }
 
-            let display_text = if actual_index == self.selected_index {
-                format!("> {}", name)
-            } else {
-                format!("  {}", name)
-            };
+            let display_text = name;
             let style = if actual_index == self.selected_index {
                 selected_style
             } else {
                 normal_style
             };
 
-            Text::new(&display_text, Point::new(6, y), style).draw(display)?;
+            let bounds = Rectangle::new(
+                Point::new(10, y - 2),
+                Size::new(width.saturating_sub(16), Self::ENTRY_HEIGHT as u32),
+            );
+
+            TextBox::new(&display_text, bounds, style).draw(display)?;
         }
+
+        // Footer hints + position
+        let footer_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let position = if self.files.is_empty() {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", self.selected_index + 1, self.files.len())
+        };
+        let footer_text = format!("Vol=Move  OK=Open  Back=Up   {}", position);
+        Text::new(
+            &footer_text,
+            Point::new(6, height as i32 - 10),
+            footer_style,
+        )
+        .draw(display)?;
 
         Ok(())
     }

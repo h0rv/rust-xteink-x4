@@ -31,7 +31,7 @@ sim-web:
 
 # Run desktop simulator
 sim-desktop:
-    cargo run -p xteink-sim-desktop
+    cargo run -p xteink-sim-desktop --target x86_64-unknown-linux-gnu
 
 # Build web simulator
 build-web:

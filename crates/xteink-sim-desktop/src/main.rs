@@ -7,15 +7,18 @@ use embedded_graphics::prelude::*;
 use embedded_graphics_simulator::{
     sdl2::Keycode, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
 };
+use std::path::Path;
 use xteink_ui::filesystem::FileSystem;
 use xteink_ui::{
-    Button, FileBrowser, InputEvent, MockFileSystem, TextViewer, DISPLAY_HEIGHT, DISPLAY_WIDTH,
+    Button, EpubRenderer, FileBrowser, InputEvent, MockFileSystem, TextViewer, DISPLAY_HEIGHT,
+    DISPLAY_WIDTH,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum AppMode {
     Library, // File browser
     Reader,  // Text viewer
+    Epub,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,6 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Text viewer (starts empty)
     let mut viewer: Option<TextViewer> = None;
+    let mut epub_renderer: Option<EpubRenderer> = None;
     let mut current_file: String = String::new();
 
     let mut mode = AppMode::Library;
@@ -64,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             AppMode::Reader => AppMode::Library,
+                            AppMode::Epub => AppMode::Library,
                         };
 
                         // Redraw
@@ -72,6 +77,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             AppMode::Reader => {
                                 if let Some(ref v) = viewer {
                                     v.render(&mut display, &current_file)?;
+                                }
+                            }
+                            AppMode::Epub => {
+                                if let Some(ref mut r) = epub_renderer {
+                                    r.render(&mut display)?;
                                 }
                             }
                         }
@@ -95,6 +105,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     } else {
                                         // Open file
                                         println!("Opening: {}", path);
+                                        if path.to_lowercase().ends_with(".epub") {
+                                            let mut renderer = EpubRenderer::new();
+                                            // Prefer real EPUB if present on disk
+                                            let real_epub = "/home/h0rv/projects/rust-xteink-x4/sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub";
+                                            let epub_path = if Path::new(real_epub).exists() {
+                                                real_epub
+                                            } else {
+                                                &path
+                                            };
+                                            if renderer.load(epub_path).is_ok() {
+                                                epub_renderer = Some(renderer);
+                                                mode = AppMode::Epub;
+                                                if let Some(ref mut r) = epub_renderer {
+                                                    r.render(&mut display)?;
+                                                }
+                                                window.update(&display);
+                                                continue;
+                                            }
+                                        }
+
                                         match fs.read_file(&path) {
                                             Ok(content) => {
                                                 current_file = path.clone();
@@ -124,6 +154,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // Go back to library
                                         mode = AppMode::Library;
                                         browser.render(&mut display)?;
+                                        window.update(&display);
+                                    }
+                                }
+                            }
+                            AppMode::Epub => {
+                                if let Some(ref mut r) = epub_renderer {
+                                    let mut changed = false;
+                                    match btn {
+                                        Button::Left | Button::VolumeUp => {
+                                            changed = r.prev_page();
+                                        }
+                                        Button::Right | Button::VolumeDown => {
+                                            changed = r.next_page();
+                                        }
+                                        Button::Back => {
+                                            mode = AppMode::Library;
+                                            browser.render(&mut display)?;
+                                            window.update(&display);
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
+                                    if changed {
+                                        r.render(&mut display)?;
                                         window.update(&display);
                                     }
                                 }

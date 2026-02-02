@@ -33,6 +33,37 @@ impl<SPI> SdCardFs<SPI>
 where
     SPI: embedded_hal::spi::SpiDevice,
 {
+    fn open_dir_by_path<'a>(
+        &mut self,
+        volume: &'a mut embedded_sdmmc::Volume,
+        path: &str,
+    ) -> Result<embedded_sdmmc::Directory<'a>, FileSystemError> {
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+
+        let clean = path.trim_matches('/');
+        if clean.is_empty() {
+            return Ok(dir);
+        }
+
+        for part in clean.split('/') {
+            dir = dir
+                .open_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        }
+
+        Ok(dir)
+    }
+
+    fn split_dir_file(path: &str) -> (&str, &str) {
+        match path.rfind('/') {
+            Some(0) => ("/", &path[1..]),
+            Some(i) => (&path[..i], &path[i + 1..]),
+            None => ("/", path),
+        }
+    }
+
     pub fn new(spi: SPI) -> Result<Self, FileSystemError> {
         let sdcard = SdCard::new(spi, DummyCsPin, FreeRtos);
 
@@ -53,67 +84,33 @@ where
             .open_volume(VolumeIdx(0))
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
-        let mut root_dir = volume
-            .open_root_dir()
-            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = self.open_dir_by_path(&mut volume, path)?;
 
         let mut files = Vec::new();
 
-        if path == "/" {
-            root_dir
-                .iterate_dir(|entry| {
-                    let base = core::str::from_utf8(entry.name.base_name())
-                        .unwrap_or("")
-                        .trim_end();
-                    let ext = core::str::from_utf8(entry.name.extension())
-                        .unwrap_or("")
-                        .trim_end();
+        dir.iterate_dir(|entry| {
+            let base = core::str::from_utf8(entry.name.base_name())
+                .unwrap_or("")
+                .trim_end();
+            let ext = core::str::from_utf8(entry.name.extension())
+                .unwrap_or("")
+                .trim_end();
 
-                    let full_name = if ext.is_empty() {
-                        base.to_string()
-                    } else {
-                        format!("{}.{}", base, ext)
-                    };
+            let full_name = if ext.is_empty() {
+                base.to_string()
+            } else {
+                format!("{}.{}", base, ext)
+            };
 
-                    if !full_name.is_empty() && !full_name.starts_with('.') {
-                        files.push(FileInfo {
-                            name: full_name.to_lowercase(),
-                            size: entry.size as u64,
-                            is_directory: entry.attributes.is_directory(),
-                        });
-                    }
-                })
-                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-        } else {
-            let mut sub_dir = root_dir
-                .open_dir(path.trim_start_matches('/'))
-                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-
-            sub_dir
-                .iterate_dir(|entry| {
-                    let base = core::str::from_utf8(entry.name.base_name())
-                        .unwrap_or("")
-                        .trim_end();
-                    let ext = core::str::from_utf8(entry.name.extension())
-                        .unwrap_or("")
-                        .trim_end();
-
-                    let full_name = if ext.is_empty() {
-                        base.to_string()
-                    } else {
-                        format!("{}.{}", base, ext)
-                    };
-
-                    if !full_name.is_empty() && !full_name.starts_with('.') {
-                        files.push(FileInfo {
-                            name: full_name.to_lowercase(),
-                            size: entry.size as u64,
-                            is_directory: entry.attributes.is_directory(),
-                        });
-                    }
-                })
-                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-        }
+            if !full_name.is_empty() && !full_name.starts_with('.') {
+                files.push(FileInfo {
+                    name: full_name,
+                    size: entry.size as u64,
+                    is_directory: entry.attributes.is_directory(),
+                });
+            }
+        })
+        .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
         Ok(files)
     }
@@ -124,12 +121,9 @@ where
             .open_volume(VolumeIdx(0))
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
-        let mut root_dir = volume
-            .open_root_dir()
-            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-
-        let filename = path.trim_start_matches('/');
-        let mut file = root_dir
+        let (dir_path, filename) = Self::split_dir_file(path);
+        let mut dir = self.open_dir_by_path(&mut volume, dir_path)?;
+        let mut file = dir
             .open_file_in_dir(filename, embedded_sdmmc::Mode::ReadOnly)
             .map_err(|_| FileSystemError::NotFound)?;
 
@@ -160,8 +154,8 @@ where
     }
 
     fn file_info(&mut self, path: &str) -> Result<FileInfo, FileSystemError> {
-        let files = self.list_files("/")?;
-        let filename = path.trim_start_matches('/').to_lowercase();
+        let (dir_path, filename) = Self::split_dir_file(path);
+        let files = self.list_files(dir_path)?;
         files
             .into_iter()
             .find(|f| f.name == filename)

@@ -10,4 +10,4 @@ path = "src/main.rs"
 [dependencies]
 xteink-ui = { path = "../xteink-ui", features = ["std"] }
 embedded-graphics = "0.8"
-embedded-graphics-simulator = "0.7"
+embedded-graphics-simulator = "0.8.0"

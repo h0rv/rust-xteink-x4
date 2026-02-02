@@ -1,3 +1,7 @@
+extern crate alloc;
+
+mod sdcard;
+
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{Input, PinDriver, Pull},
@@ -7,43 +11,157 @@ use esp_idf_svc::hal::{
 use esp_idf_svc::sys;
 
 use embedded_graphics::{draw_target::DrawTarget, pixelcolor::BinaryColor, prelude::*};
-use ssd1677::{RefreshMode, Ssd1677};
+use ssd1677::{
+    Builder, Color, Dimensions, Display, DisplayInterface, GraphicDisplay, Interface, RefreshMode,
+    Rotation,
+};
 use xteink_ui::{App, Button, InputEvent};
 
-struct PortraitDisplay<D> {
+use sdcard::SdCardFs;
+use std::sync::mpsc;
+
+const DISPLAY_COLS: u16 = 480;
+const DISPLAY_ROWS: u16 = 800;
+const BUFFER_SIZE: usize = (DISPLAY_COLS as usize * DISPLAY_ROWS as usize) / 8;
+
+struct ColorAdapter<D> {
     pub display: D,
 }
 
-impl<D> PortraitDisplay<D> {
+impl<D> ColorAdapter<D> {
     fn new(display: D) -> Self {
         Self { display }
     }
-    fn rotate(x: i32, y: i32) -> (i32, i32) {
-        let hw_x = y;
-        let hw_y = 479 - x;
-        (hw_x, hw_y)
-    }
 }
 
-impl<D: DrawTarget<Color = BinaryColor>> DrawTarget for PortraitDisplay<D> {
+impl<D: DrawTarget<Color = Color> + OriginDimensions> DrawTarget for ColorAdapter<D> {
     type Color = BinaryColor;
     type Error = D::Error;
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
-        let rotated_pixels = pixels.into_iter().map(|Pixel(point, color)| {
-            let (hw_x, hw_y) = Self::rotate(point.x, point.y);
-            Pixel(Point::new(hw_x, hw_y), color)
+        let converted = pixels.into_iter().map(|Pixel(point, color)| {
+            let ssd_color = if color == BinaryColor::On {
+                Color::Black
+            } else {
+                Color::White
+            };
+            Pixel(point, ssd_color)
         });
-        self.display.draw_iter(rotated_pixels)
+        self.display.draw_iter(converted)
     }
 }
 
-impl<D> OriginDimensions for PortraitDisplay<D> {
+impl<D: OriginDimensions> OriginDimensions for ColorAdapter<D> {
     fn size(&self) -> Size {
-        Size::new(480, 800)
+        self.display.size()
     }
+}
+
+struct ChunkedInterface<I> {
+    inner: I,
+}
+
+impl<I> ChunkedInterface<I> {
+    const CHUNK_SIZE: usize = 16;
+
+    fn new(inner: I) -> Self {
+        Self { inner }
+    }
+}
+
+impl<I: DisplayInterface> DisplayInterface for ChunkedInterface<I> {
+    type Error = I::Error;
+
+    fn send_command(&mut self, command: u8) -> Result<(), Self::Error> {
+        self.inner.send_command(command)
+    }
+
+    fn send_data(&mut self, data: &[u8]) -> Result<(), Self::Error> {
+        for chunk in data.chunks(Self::CHUNK_SIZE) {
+            self.inner.send_data(chunk)?;
+        }
+        Ok(())
+    }
+
+    fn reset<D: embedded_hal::delay::DelayNs>(&mut self, delay: &mut D) {
+        self.inner.reset(delay);
+    }
+
+    fn busy_wait<D: embedded_hal::delay::DelayNs>(
+        &mut self,
+        delay: &mut D,
+    ) -> Result<(), Self::Error> {
+        self.inner.busy_wait(delay)
+    }
+}
+
+enum UiCommand {
+    Init,
+    Input {
+        event: InputEvent,
+        mode: RefreshMode,
+    },
+}
+
+fn spawn_ui_task<SPI, SD>(
+    spi_device: SpiDeviceDriver<'static, SPI>,
+    dc: PinDriver<'static, esp_idf_svc::hal::gpio::Gpio4, esp_idf_svc::hal::gpio::Output>,
+    rst: PinDriver<'static, esp_idf_svc::hal::gpio::Gpio5, esp_idf_svc::hal::gpio::Output>,
+    busy: PinDriver<'static, esp_idf_svc::hal::gpio::Gpio6, esp_idf_svc::hal::gpio::Input>,
+    sd_spi: SpiDeviceDriver<'static, SD>,
+) -> mpsc::Sender<UiCommand>
+where
+    SPI: embedded_hal::spi::SpiDevice + Send + 'static,
+    SD: embedded_hal::spi::SpiDevice + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<UiCommand>();
+
+    std::thread::Builder::new()
+        .name("ui_task".into())
+        .stack_size(64 * 1024)
+        .spawn(move || {
+            let mut delay = FreeRtos;
+            let interface = Interface::new(spi_device, dc, rst, busy);
+            let interface = ChunkedInterface::new(interface);
+            let config = Builder::new()
+                .dimensions(Dimensions::new(DISPLAY_ROWS, DISPLAY_COLS).unwrap())
+                .rotation(Rotation::Rotate90)
+                .build()
+                .unwrap();
+            let display = Display::new(interface, config);
+            let black_buffer = vec![0xFFu8; BUFFER_SIZE];
+            let red_buffer = vec![0x00u8; BUFFER_SIZE];
+            let mut graphic_display = GraphicDisplay::new(display, black_buffer, red_buffer);
+
+            log::info!("Resetting display...");
+            graphic_display.display_mut().reset(&mut delay).ok();
+
+            let mut display = ColorAdapter::new(graphic_display);
+
+            let mut fs = SdCardFs::new(sd_spi).expect("SD card init failed");
+            let mut app = App::new();
+            app.init(&mut fs);
+
+            while let Ok(cmd) = rx.recv() {
+                match cmd {
+                    UiCommand::Init => {
+                        app.render(&mut display).ok();
+                        display.display.update(&mut delay).ok();
+                    }
+                    UiCommand::Input { event, mode } => {
+                        if app.handle_input(event, &mut fs) {
+                            app.render(&mut display).ok();
+                            display.display.update_with_mode(mode, &mut delay).ok();
+                        }
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn ui task");
+
+    tx
 }
 
 const ADC_NO_BUTTON: i32 = 3800;
@@ -157,6 +275,15 @@ fn main() {
     let spi_device =
         SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio21), &spi_config).unwrap();
 
+    // SD card SPI device (same bus, different CS)
+    let sd_spi_config = Config::default()
+        .baudrate(esp_idf_svc::hal::units::Hertz(20_000_000))
+        .data_mode(embedded_hal::spi::Mode {
+            polarity: embedded_hal::spi::Polarity::IdleLow,
+            phase: embedded_hal::spi::Phase::CaptureOnFirstTransition,
+        });
+    let sd_spi = SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio12), &sd_spi_config).unwrap();
+
     let dc = PinDriver::output(peripherals.pins.gpio4).unwrap();
     let rst = PinDriver::output(peripherals.pins.gpio5).unwrap();
     let busy = PinDriver::input(peripherals.pins.gpio6).unwrap();
@@ -166,23 +293,9 @@ fn main() {
 
     init_adc();
 
-    let mut delay = FreeRtos;
-    let display = Ssd1677::new(spi_device, dc, rst, busy);
-    let mut portrait_display = PortraitDisplay::new(display);
+    let ui_tx = spawn_ui_task(spi_device, dc, rst, busy, sd_spi);
 
-    log::info!("Resetting display...");
-    portrait_display.display.reset_display(&mut delay);
-
-    log::info!("Initializing display...");
-    portrait_display.display.init(&mut delay);
-
-    let mut app = App::new();
-    app.render(&mut portrait_display).ok();
-    portrait_display.display.write_buffer_full();
-    portrait_display
-        .display
-        .refresh_display(RefreshMode::Full, false, &mut delay);
-    portrait_display.display.swap_buffers();
+    ui_tx.send(UiCommand::Init).ok();
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
@@ -191,9 +304,7 @@ fn main() {
     let mut power_press_counter: u32 = 0;
     let mut is_power_pressed: bool = false;
     let mut long_press_triggered: bool = false;
-    let mut refresh_count: u32 = 0;
     const DEBUG_ADC: bool = false;
-    const FULL_REFRESH_EVERY_N: u32 = 15;
     const POWER_LONG_PRESS_ITERATIONS: u32 = POWER_LONG_PRESS_MS / 50;
 
     loop {
@@ -211,12 +322,12 @@ fn main() {
                     log::info!("Power button held for 2s - powering off!");
                     long_press_triggered = true;
 
-                    app.handle_input(InputEvent::Press(Button::Power));
-                    app.render(&mut portrait_display).ok();
-                    portrait_display.display.write_buffer_full();
-                    portrait_display
-                        .display
-                        .refresh_display(RefreshMode::Full, false, &mut delay);
+                    ui_tx
+                        .send(UiCommand::Input {
+                            event: InputEvent::Press(Button::Power),
+                            mode: RefreshMode::Full,
+                        })
+                        .ok();
 
                     while power_btn.is_low() {
                         FreeRtos::delay_ms(50);
@@ -231,28 +342,12 @@ fn main() {
                     log::info!("Power button short press");
                     last_button = Some(Button::Power);
 
-                    let event = InputEvent::Press(Button::Power);
-                    if app.handle_input(event) {
-                        app.render(&mut portrait_display).ok();
-                        refresh_count += 1;
-                        if refresh_count % FULL_REFRESH_EVERY_N == 0 {
-                            portrait_display.display.write_buffer_full();
-                            portrait_display.display.refresh_display(
-                                RefreshMode::Half,
-                                false,
-                                &mut delay,
-                            );
-                            portrait_display.display.swap_buffers();
-                        } else {
-                            portrait_display.display.write_buffer_fast();
-                            portrait_display.display.refresh_display(
-                                RefreshMode::Fast,
-                                false,
-                                &mut delay,
-                            );
-                            portrait_display.display.swap_buffers();
-                        }
-                    }
+                    ui_tx
+                        .send(UiCommand::Input {
+                            event: InputEvent::Press(Button::Power),
+                            mode: RefreshMode::Fast,
+                        })
+                        .ok();
                 }
             }
             is_power_pressed = false;
@@ -264,30 +359,12 @@ fn main() {
                 log::info!("Button pressed: {:?}", btn);
                 last_button = Some(btn);
 
-                let event = InputEvent::Press(btn);
-                if app.handle_input(event) {
-                    app.render(&mut portrait_display).ok();
-
-                    refresh_count += 1;
-                    if refresh_count % FULL_REFRESH_EVERY_N == 0 {
-                        log::info!("Half refresh...");
-                        portrait_display.display.write_buffer_full();
-                        portrait_display.display.refresh_display(
-                            RefreshMode::Half,
-                            false,
-                            &mut delay,
-                        );
-                        portrait_display.display.swap_buffers();
-                    } else {
-                        portrait_display.display.write_buffer_fast();
-                        portrait_display.display.refresh_display(
-                            RefreshMode::Fast,
-                            false,
-                            &mut delay,
-                        );
-                        portrait_display.display.swap_buffers();
-                    }
-                }
+                ui_tx
+                    .send(UiCommand::Input {
+                        event: InputEvent::Press(btn),
+                        mode: RefreshMode::Fast,
+                    })
+                    .ok();
             }
         } else if !power_pressed {
             last_button = None;

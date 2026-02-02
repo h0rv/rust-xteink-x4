@@ -1,74 +1,95 @@
 //! Main application state.
 
-use embedded_graphics::{
-    image::{Image, ImageRaw, ImageRawBE},
-    mono_font::{ascii::FONT_10X20, MonoTextStyle},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
-};
+extern crate alloc;
 
+use alloc::string::String;
+
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+
+use crate::file_browser::{FileBrowser, TextViewer};
+use crate::filesystem::{basename, FileSystem};
 use crate::input::{Button, InputEvent};
+
+/// Application screen state
+pub enum Screen {
+    FileBrowser,
+    TextViewer { title: String },
+}
 
 /// Application state
 pub struct App {
-    label: &'static str,
+    screen: Screen,
+    file_browser: FileBrowser,
+    text_viewer: Option<TextViewer>,
 }
 
 impl App {
     pub fn new() -> Self {
         Self {
-            label: "No button pressed.",
+            screen: Screen::FileBrowser,
+            file_browser: FileBrowser::new("/"),
+            text_viewer: None,
         }
     }
 
+    /// Initialize with filesystem - call after creation
+    pub fn init<FS: FileSystem>(&mut self, fs: &mut FS) {
+        let _ = self.file_browser.load(fs);
+    }
+
     /// Handle input. Returns true if redraw needed.
-    pub fn handle_input(&mut self, event: InputEvent) -> bool {
-        let InputEvent::Press(btn) = event;
+    pub fn handle_input<FS: FileSystem>(&mut self, event: InputEvent, fs: &mut FS) -> bool {
+        match &self.screen {
+            Screen::FileBrowser => {
+                let (redraw, selected) = self.file_browser.handle_input(event);
 
-        self.label = match btn {
-            Button::Left => "Left button pressed!",
-            Button::Right => "Right button pressed!",
-            Button::Confirm => "Confirm button pressed!",
-            Button::Back => "Back button pressed!",
-            Button::VolumeUp => "Volume up button pressed!",
-            Button::VolumeDown => "Volume down button pressed!",
-            Button::Power => "Power button pressed!",
-        };
+                if let Some(path) = selected {
+                    if path.is_empty() {
+                        let _ = self.file_browser.load(fs);
+                        return true;
+                    }
 
-        true
+                    if let Ok(content) = fs.read_file(&path) {
+                        let title = basename(&path).into();
+                        self.text_viewer = Some(TextViewer::new(content));
+                        self.screen = Screen::TextViewer { title };
+                        return true;
+                    }
+                }
+
+                redraw
+            }
+            Screen::TextViewer { .. } => {
+                if let InputEvent::Press(Button::Back) = event {
+                    self.screen = Screen::FileBrowser;
+                    self.text_viewer = None;
+                    return true;
+                }
+
+                if let Some(viewer) = &mut self.text_viewer {
+                    viewer.handle_input(event)
+                } else {
+                    false
+                }
+            }
+        }
     }
 
     /// Render to any display.
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+    pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        display.clear(BinaryColor::Off)?;
-
-        let style = PrimitiveStyle::with_fill(BinaryColor::On);
-
-        Rectangle::new(Point::new(100, 100), Size::new(50, 100))
-            .into_styled(style)
-            .draw(display)?;
-
-        let data: &[u8] = include_bytes!("ferris_small.raw");
-
-        // Create a raw image instance. Other image formats will require different code to load them.
-        // All code after loading is the same for any image format.
-        let raw: ImageRawBE<BinaryColor> = ImageRaw::new(data, 115);
-
-        // Create an `Image` object to position the image at `Point::zero()`.
-        let image = Image::new(&raw, Point::new(200, 200));
-
-        // Draw the image to the display.
-        image.draw(display)?;
-
-        let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        Text::new(self.label, Point::new(50, 50), text_style).draw(display)?;
-
-        Ok(())
+        match &self.screen {
+            Screen::FileBrowser => self.file_browser.render(display),
+            Screen::TextViewer { title } => {
+                if let Some(viewer) = &self.text_viewer {
+                    viewer.render(display, title)
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 }
 

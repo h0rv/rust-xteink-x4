@@ -8,6 +8,7 @@ all:
     just fmt
     just lint
     just check
+    just check-firmware
     @echo "✅ All checks passed!"
 
 # Run all checks including firmware (requires ESP toolchain)
@@ -43,8 +44,12 @@ check-firmware:
 build-firmware:
     cd crates/xteink-firmware && cargo build --release
 
-# Flash firmware to device (clean rebuild every time)
+# Flash firmware to device (incremental build)
 flash:
+    cd crates/xteink-firmware && cargo build --release && cargo espflash flash --release --monitor
+
+# Flash firmware to device (clean rebuild)
+flash-clean:
     cargo clean -p xteink-firmware -p ssd1677 -p xteink-ui
     cd crates/xteink-firmware && cargo build --release && cargo espflash flash --release --monitor
 

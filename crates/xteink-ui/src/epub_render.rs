@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
 
 use crate::font_render::FontCache;
+use crate::portrait_dimensions;
 
 /// EPUB book renderer
 ///
@@ -532,10 +533,11 @@ impl EpubRenderer {
     }
 
     /// Render current page to display
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+    pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
         &mut self,
         display: &mut D,
     ) -> Result<(), D::Error> {
+        let (width, height) = portrait_dimensions(display);
         use embedded_graphics::primitives::PrimitiveStyle;
 
         // Collect page data first to avoid borrow issues
@@ -563,7 +565,7 @@ impl EpubRenderer {
             .render_text(display, &header_text, &font_name, 10, 25)?;
 
         // Header line
-        Rectangle::new(Point::new(0, 32), Size::new(480, 2))
+        Rectangle::new(Point::new(0, 32), Size::new(width, 2))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
@@ -584,7 +586,7 @@ impl EpubRenderer {
             self.total_chapters
         );
         self.font_cache
-            .render_text(display, &footer_text, &font_name, 10, 790)?;
+            .render_text(display, &footer_text, &font_name, 10, height as i32 - 10)?;
 
         Ok(())
     }

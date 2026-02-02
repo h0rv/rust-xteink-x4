@@ -30,6 +30,16 @@ pub use epub_render::EpubRenderer;
 pub use mock_filesystem::MockFileSystem;
 
 /// UI Display dimensions (portrait mode)
-/// Physical display is 800x480 landscape, but UI is 480x800 portrait
+/// SSD1677 panel is 480x800 pixels in its native orientation
 pub const DISPLAY_WIDTH: u32 = 480;
 pub const DISPLAY_HEIGHT: u32 = 800;
+
+/// Normalize a draw target's size to portrait (width <= height).
+pub fn portrait_dimensions<D: embedded_graphics::prelude::OriginDimensions>(
+    display: &D,
+) -> (u32, u32) {
+    let size = display.size();
+    let width = size.width.min(size.height);
+    let height = size.width.max(size.height);
+    (width, height)
+}

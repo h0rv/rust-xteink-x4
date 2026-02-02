@@ -21,7 +21,7 @@ use embedded_text::{alignment::HorizontalAlignment, style::TextBoxStyleBuilder, 
 
 use crate::filesystem::{filter_by_extension, FileInfo, FileSystem};
 use crate::input::{Button, InputEvent};
-use crate::{DISPLAY_HEIGHT, DISPLAY_WIDTH};
+use crate::portrait_dimensions;
 
 /// File browser state
 pub struct FileBrowser {
@@ -177,10 +177,12 @@ impl FileBrowser {
     }
 
     /// Render file browser
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+    pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
+        let (width, height) = portrait_dimensions(display);
+
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
@@ -194,7 +196,7 @@ impl FileBrowser {
         Text::new(&header_text, Point::new(10, 25), header_style).draw(display)?;
 
         // Draw header line
-        Rectangle::new(Point::new(0, 32), Size::new(DISPLAY_WIDTH, 2))
+        Rectangle::new(Point::new(0, 32), Size::new(width, 2))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
@@ -216,7 +218,7 @@ impl FileBrowser {
             if actual_index == self.selected_index {
                 Rectangle::new(
                     Point::new(0, y - 22),
-                    Size::new(DISPLAY_WIDTH, Self::LINE_HEIGHT as u32),
+                    Size::new(width, Self::LINE_HEIGHT as u32),
                 )
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)?;
@@ -251,12 +253,7 @@ impl FileBrowser {
         // Footer with help
         let help_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let help_text = format!("{} files | VOL=Navigate | ENT=Open", self.files.len());
-        Text::new(
-            &help_text,
-            Point::new(10, DISPLAY_HEIGHT as i32 - 10),
-            help_style,
-        )
-        .draw(display)?;
+        Text::new(&help_text, Point::new(10, height as i32 - 10), help_style).draw(display)?;
 
         Ok(())
     }
@@ -274,7 +271,8 @@ impl TextViewer {
     const TOP_MARGIN: i32 = 50;
     #[allow(dead_code)]
     const BOTTOM_MARGIN: i32 = 40;
-    const CONTENT_HEIGHT: i32 = DISPLAY_HEIGHT as i32 - 50 - 40; // 710px
+    const CONTENT_TOP_MARGIN: i32 = 50;
+    const CONTENT_BOTTOM_MARGIN: i32 = 40;
 
     /// Create new text viewer with content
     /// Automatically paginates the content to fit the display
@@ -340,11 +338,14 @@ impl TextViewer {
     }
 
     /// Render text viewer using embedded-text for proper word wrapping
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+    pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
         &self,
         display: &mut D,
         title: &str,
     ) -> Result<(), D::Error> {
+        let (width, height) = portrait_dimensions(display);
+        let content_height = height as i32 - Self::CONTENT_TOP_MARGIN - Self::CONTENT_BOTTOM_MARGIN;
+
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
@@ -358,7 +359,7 @@ impl TextViewer {
         Text::new(&truncated_title, Point::new(10, 25), header_style).draw(display)?;
 
         // Header line
-        Rectangle::new(Point::new(0, 32), Size::new(DISPLAY_WIDTH, 2))
+        Rectangle::new(Point::new(0, 32), Size::new(width, 2))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
@@ -372,7 +373,7 @@ impl TextViewer {
         // Define content area (480x710)
         let bounds = Rectangle::new(
             Point::new(10, Self::TOP_MARGIN),
-            Size::new(DISPLAY_WIDTH - 20, Self::CONTENT_HEIGHT as u32),
+            Size::new(width.saturating_sub(20), content_height as u32),
         );
 
         // Get current page content
@@ -392,7 +393,7 @@ impl TextViewer {
         );
         Text::new(
             &footer_text,
-            Point::new(10, DISPLAY_HEIGHT as i32 - 10),
+            Point::new(10, height as i32 - 10),
             footer_style,
         )
         .draw(display)?;

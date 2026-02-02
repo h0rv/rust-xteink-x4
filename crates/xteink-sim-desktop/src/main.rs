@@ -53,9 +53,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  P - Power (toggle mode)");
 
     loop {
-        for event in window.events().collect::<Vec<_>>() {
+        let events = window.events().collect::<Vec<_>>();
+        let ignore_quit = events.iter().any(|event| {
+            matches!(
+                event,
+                SimulatorEvent::KeyDown {
+                    keycode: Keycode::Escape,
+                    ..
+                }
+            )
+        });
+
+        for event in events {
             match event {
-                SimulatorEvent::Quit => return Ok(()),
+                SimulatorEvent::Quit => {
+                    // SDL can emit Quit on Esc on some platforms; ignore once
+                    if ignore_quit {
+                        continue;
+                    }
+                    return Ok(());
+                }
                 SimulatorEvent::KeyDown { keycode, .. } => {
                     if keycode == Keycode::P {
                         // Toggle between library and reader modes
@@ -114,14 +131,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             } else {
                                                 &path
                                             };
-                                            if renderer.load(epub_path).is_ok() {
-                                                epub_renderer = Some(renderer);
-                                                mode = AppMode::Epub;
-                                                if let Some(ref mut r) = epub_renderer {
-                                                    r.render(&mut display)?;
+                                            match renderer.load(epub_path) {
+                                                Ok(()) => {
+                                                    epub_renderer = Some(renderer);
+                                                    mode = AppMode::Epub;
+                                                    if let Some(ref mut r) = epub_renderer {
+                                                        r.render(&mut display)?;
+                                                    }
+                                                    window.update(&display);
+                                                    continue;
                                                 }
-                                                window.update(&display);
-                                                continue;
+                                                Err(err) => {
+                                                    println!("EPUB load failed: {}", err);
+                                                }
                                             }
                                         }
 

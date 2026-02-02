@@ -9,7 +9,13 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use embedded_graphics::{pixelcolor::BinaryColor, prelude::*, primitives::Rectangle};
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::Rectangle,
+    text::Text,
+};
 
 use crate::font_render::FontCache;
 use crate::portrait_dimensions;
@@ -317,8 +323,14 @@ impl EpubRenderer {
         let content_width =
             metrics.page_width as f32 - Self::LEFT_MARGIN as f32 - Self::RIGHT_MARGIN as f32;
 
+        let has_font = self
+            .font_cache
+            .metrics(&self.current_font_name, 'M')
+            .is_some();
+
         // Get font metrics for line height calculation
         let line_height = self.font_cache.line_height(&self.current_font_name);
+        let max_chars = ((content_width / 6.0).floor() as usize).max(1);
 
         let lines_per_page = (content_height as f32 / line_height) as usize;
 
@@ -333,20 +345,24 @@ impl EpubRenderer {
                 continue;
             }
 
-            // Use FontCache to layout text into lines with actual font metrics
-            let text_lines =
+            let text_lines: Vec<String> = if has_font {
                 self.font_cache
-                    .layout_text(trimmed, &self.current_font_name, content_width);
+                    .layout_text(trimmed, &self.current_font_name, content_width)
+                    .into_iter()
+                    .map(|text_line| {
+                        text_line
+                            .words
+                            .iter()
+                            .map(|w| w.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .collect()
+            } else {
+                Self::wrap_text(trimmed, max_chars)
+            };
 
-            for text_line in text_lines {
-                // Extract the text from the laid out line
-                let line_text: String = text_line
-                    .words
-                    .iter()
-                    .map(|w| w.text.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-
+            for line_text in text_lines {
                 if line_count >= lines_per_page {
                     // Start new page
                     pages.push(Page {
@@ -551,6 +567,11 @@ impl EpubRenderer {
             })
             .unwrap_or_default();
         let font_name = self.current_font_name.clone();
+        let has_font = self
+            .font_cache
+            .metrics(&self.current_font_name, 'M')
+            .is_some();
+        let fallback_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
@@ -561,8 +582,12 @@ impl EpubRenderer {
             Self::truncate(&self.title, 25),
             self.current_chapter + 1
         );
-        self.font_cache
-            .render_text(display, &header_text, &font_name, 10, 25)?;
+        if has_font {
+            self.font_cache
+                .render_text(display, &header_text, &font_name, 10, 25)?;
+        } else {
+            Text::new(&header_text, Point::new(10, 25), fallback_style).draw(display)?;
+        }
 
         // Header line
         Rectangle::new(Point::new(0, 32), Size::new(width, 2))
@@ -571,9 +596,14 @@ impl EpubRenderer {
 
         // Draw page content using FontCache
         for (text, y) in page_lines {
-            if !text.is_empty() {
+            if text.is_empty() {
+                continue;
+            }
+            if has_font {
                 self.font_cache
                     .render_text(display, &text, &font_name, 10, y)?;
+            } else {
+                Text::new(&text, Point::new(10, y), fallback_style).draw(display)?;
             }
         }
 
@@ -585,8 +615,22 @@ impl EpubRenderer {
             self.current_chapter(),
             self.total_chapters
         );
-        self.font_cache
-            .render_text(display, &footer_text, &font_name, 10, height as i32 - 10)?;
+        if has_font {
+            self.font_cache.render_text(
+                display,
+                &footer_text,
+                &font_name,
+                10,
+                height as i32 - 10,
+            )?;
+        } else {
+            Text::new(
+                &footer_text,
+                Point::new(10, height as i32 - 10),
+                fallback_style,
+            )
+            .draw(display)?;
+        }
 
         Ok(())
     }

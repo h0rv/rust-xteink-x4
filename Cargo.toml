@@ -4,7 +4,8 @@ members = [
     "crates/xteink-ui",
     "crates/xteink-sim-web",
     "crates/xteink-sim-desktop",
-    "crates/xteink-firmware", "crates/ssd1677",
+    "crates/xteink-firmware",
+    "crates/ssd1677",
 ]
 
 [profile.release]

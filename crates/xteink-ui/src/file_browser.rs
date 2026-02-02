@@ -1,6 +1,7 @@
 //! Simple file browser UI component
 //!
 //! Displays a list of files and allows navigation/selection.
+//! Uses embedded-text for text rendering.
 
 extern crate alloc;
 
@@ -14,6 +15,12 @@ use embedded_graphics::{
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
+};
+
+use embedded_text::{
+    alignment::HorizontalAlignment,
+    style::{TextBoxStyle, TextBoxStyleBuilder},
+    TextBox,
 };
 
 use crate::filesystem::{filter_by_extension, FileInfo, FileSystem};
@@ -259,36 +266,58 @@ impl FileBrowser {
     }
 }
 
-/// Simple text viewer for reading files
+/// Text viewer using embedded-text for proper word wrapping
 pub struct TextViewer {
     content: String,
     current_page: usize,
-    lines_per_page: usize,
-    lines: Vec<String>,
+    pages: Vec<String>,
 }
 
 impl TextViewer {
-    const LINE_HEIGHT: i32 = 24;
     const TOP_MARGIN: i32 = 50;
     const BOTTOM_MARGIN: i32 = 40;
+    const CONTENT_HEIGHT: i32 = DISPLAY_HEIGHT as i32 - 50 - 40; // 710px
 
     /// Create new text viewer with content
+    /// Automatically paginates the content to fit the display
     pub fn new(content: String) -> Self {
-        let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        let lines_per_page = ((DISPLAY_HEIGHT as i32 - Self::TOP_MARGIN - Self::BOTTOM_MARGIN)
-            / Self::LINE_HEIGHT) as usize;
+        // Paginate content into screen-sized chunks
+        let pages = Self::paginate_content(&content);
 
         Self {
             content,
             current_page: 0,
-            lines_per_page,
-            lines,
+            pages,
         }
+    }
+
+    /// Paginate content by measuring with embedded-text
+    fn paginate_content(content: &str) -> Vec<String> {
+        // For now, simple pagination by line count
+        // TODO: Use embedded-text to measure actual rendered height
+        let lines: Vec<&str> = content.lines().collect();
+        let lines_per_page = 25; // Approximate for 710px / 24px line height
+
+        let mut pages = Vec::new();
+        for chunk in lines.chunks(lines_per_page) {
+            pages.push(chunk.join("\n"));
+        }
+
+        if pages.is_empty() {
+            pages.push(String::new());
+        }
+
+        pages
     }
 
     /// Get total pages
     pub fn total_pages(&self) -> usize {
-        (self.lines.len() + self.lines_per_page - 1) / self.lines_per_page
+        self.pages.len()
+    }
+
+    /// Get current page content
+    pub fn current_content(&self) -> &str {
+        &self.pages[self.current_page]
     }
 
     /// Handle input
@@ -312,7 +341,7 @@ impl TextViewer {
         false
     }
 
-    /// Render text viewer
+    /// Render text viewer using embedded-text for proper word wrapping
     pub fn render<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
@@ -335,21 +364,26 @@ impl TextViewer {
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
-        // Content
-        let text_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let start_line = self.current_page * self.lines_per_page;
-        let end_line = (start_line + self.lines_per_page).min(self.lines.len());
+        // Use embedded-text TextBox for proper word wrapping
+        let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let textbox_style = TextBoxStyleBuilder::new()
+            .alignment(HorizontalAlignment::Left)
+            .paragraph_spacing(6)
+            .build();
 
-        for (i, line) in self.lines[start_line..end_line].iter().enumerate() {
-            let y = Self::TOP_MARGIN + (i as i32 * Self::LINE_HEIGHT);
-            // Truncate long lines
-            let display_line = if line.len() > 45 {
-                format!("{}...", &line[..42])
-            } else {
-                line.clone()
-            };
-            Text::new(&display_line, Point::new(10, y), text_style).draw(display)?;
-        }
+        // Define content area (480x710)
+        let bounds = Rectangle::new(
+            Point::new(10, Self::TOP_MARGIN),
+            Size::new(DISPLAY_WIDTH - 20, Self::CONTENT_HEIGHT as u32),
+        );
+
+        // Get current page content
+        let page_content = &self.pages[self.current_page];
+
+        // Create and draw text box
+        let text_box =
+            TextBox::with_textbox_style(page_content, bounds, character_style, textbox_style);
+        text_box.draw(display)?;
 
         // Footer with page number
         let footer_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);

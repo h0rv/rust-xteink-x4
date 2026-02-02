@@ -11,12 +11,18 @@ pub mod filesystem;
 pub mod input;
 
 #[cfg(feature = "std")]
+pub mod epub_render;
+
+#[cfg(feature = "std")]
 pub mod mock_filesystem;
 
 pub use app::App;
 pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use input::{Button, InputEvent};
+
+#[cfg(feature = "std")]
+pub use epub_render::EpubRenderer;
 
 #[cfg(feature = "std")]
 pub use mock_filesystem::MockFileSystem;

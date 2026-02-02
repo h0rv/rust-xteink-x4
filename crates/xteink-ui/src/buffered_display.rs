@@ -21,18 +21,24 @@ use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 /// - 800 columns (sources, must be <= 960 and multiple of 8)
 /// - 100 bytes per row (800 pixels / 8 bits per byte)
 ///
-/// The SSD1677 driver is configured with Rotate90 to handle the physical
-/// portrait mounting of the panel.
+/// The SSD1677 driver is configured with Rotate0. We handle the portrait
+/// mounting here by transposing coordinates before writing to the buffer.
 pub struct BufferedDisplay {
     buffer: Vec<u8>,
 }
 
 impl BufferedDisplay {
-    /// Buffer dimensions (480 rows x 800 cols for driver compatibility)
-    const WIDTH: u32 = 800; // columns (sources)
-    const HEIGHT: u32 = 480; // rows (gates)
-    const WIDTH_BYTES: usize = 100; // 800 / 8
+    /// Native buffer dimensions (800x480 landscape for driver)
+    #[allow(dead_code)]
+    const NATIVE_WIDTH: u32 = 800; // columns (sources)
+    #[allow(dead_code)]
+    const NATIVE_HEIGHT: u32 = 480; // rows (gates)
+    const NATIVE_WIDTH_BYTES: usize = 100; // 800 / 8
     const BUFFER_SIZE: usize = 100 * 480; // 48KB
+
+    /// Portrait dimensions (what the UI should see)
+    const PORTRAIT_WIDTH: u32 = 480;
+    const PORTRAIT_HEIGHT: u32 = 800;
 
     /// Create new buffered display initialized to white
     pub fn new() -> Self {
@@ -46,17 +52,25 @@ impl BufferedDisplay {
         self.buffer.fill(0xFF);
     }
 
-    /// Set a pixel in native coordinates (x: 0-799, y: 0-479)
+    /// Set a pixel using portrait coordinates (x: 0-479, y: 0-799)
+    /// Internally transposes to native 800x480 for the SSD1677 driver
     ///
-    /// Bit format: MSB first (bit 7 = x=0, bit 0 = x=7)
+    /// Bit format: MSB first (bit 7 = leftmost pixel in byte)
     /// Color: On = black (clear bit), Off = white (set bit)
     pub fn set_pixel(&mut self, x: u32, y: u32, color: BinaryColor) {
-        if x >= Self::WIDTH || y >= Self::HEIGHT {
+        if x >= Self::PORTRAIT_WIDTH || y >= Self::PORTRAIT_HEIGHT {
             return;
         }
 
-        let byte_index = (y as usize * Self::WIDTH_BYTES) + (x as usize / 8);
-        let bit_index = 7 - (x % 8); // MSB first
+        // Transpose portrait (x,y) to native coordinates
+        // For 90-degree rotation to match portrait mounting:
+        // native_x = y
+        // native_y = (PORTRAIT_WIDTH - 1) - x
+        let native_x = y;
+        let native_y = (Self::PORTRAIT_WIDTH - 1) - x;
+
+        let byte_index = (native_y as usize * Self::NATIVE_WIDTH_BYTES) + (native_x as usize / 8);
+        let bit_index = 7 - (native_x % 8); // MSB first
 
         if color == BinaryColor::On {
             self.buffer[byte_index] &= !(1 << bit_index); // Black: clear bit
@@ -65,9 +79,24 @@ impl BufferedDisplay {
         }
     }
 
-    /// Get the raw buffer for the driver
+    /// Get the raw buffer for the driver (in native 800x480 format)
     pub fn buffer(&self) -> &[u8] {
         &self.buffer
+    }
+
+    /// Width in pixels (native columns)
+    pub fn width_pixels(&self) -> u32 {
+        Self::NATIVE_WIDTH
+    }
+
+    /// Height in pixels (native rows)
+    pub fn height_pixels(&self) -> u32 {
+        Self::NATIVE_HEIGHT
+    }
+
+    /// Width in bytes per row (native)
+    pub fn width_bytes(&self) -> usize {
+        Self::NATIVE_WIDTH_BYTES
     }
 
     /// Get mutable buffer (for direct manipulation)
@@ -99,9 +128,9 @@ impl DrawTarget for BufferedDisplay {
 
 impl OriginDimensions for BufferedDisplay {
     fn size(&self) -> Size {
-        // Report native dimensions (800x480)
-        // The SSD1677 driver with Rotate90 handles physical rotation
-        Size::new(Self::WIDTH, Self::HEIGHT)
+        // Report portrait dimensions (480x800) for UI drawing
+        // Internal buffer is native 800x480, set_pixel transposes coordinates
+        Size::new(Self::PORTRAIT_WIDTH, Self::PORTRAIT_HEIGHT)
     }
 }
 

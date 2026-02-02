@@ -21,7 +21,10 @@ pub mod mock_filesystem;
 
 pub use app::App;
 pub use buffered_display::BufferedDisplay;
-pub use eink::{Builder, Dimensions, EinkDisplay, EinkError, EinkInterface, RefreshMode, Rotation};
+pub use eink::{
+    Builder, Dimensions, DisplayInterface, EinkDisplay, EinkError, EinkInterface, RamXAddressing,
+    RefreshMode, Region, Rotation, UpdateRegion,
+};
 pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;

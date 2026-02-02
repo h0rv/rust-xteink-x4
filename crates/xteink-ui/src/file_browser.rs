@@ -84,6 +84,20 @@ impl FileBrowser {
         self.selected_index = 0;
         self.scroll_offset = 0;
 
+        // Log loaded directory contents
+        log::info!(
+            "LOAD: {} files in '{}'",
+            self.files.len(),
+            self.current_path
+        );
+        for (i, file) in self.files.iter().take(5).enumerate() {
+            let file_type = if file.is_directory { "DIR" } else { "FILE" };
+            log::info!("  [{}] {} ({})", i, file.name, file_type);
+        }
+        if self.files.len() > 5 {
+            log::info!("  ... and {} more files", self.files.len() - 5);
+        }
+
         Ok(())
     }
 
@@ -96,6 +110,13 @@ impl FileBrowser {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                     self.adjust_scroll();
+                    if let Some(file) = self.files.get(self.selected_index) {
+                        log::info!(
+                            "NAV: UP -> selected [{}] {}",
+                            self.selected_index,
+                            file.name
+                        );
+                    }
                     return (true, None);
                 }
             }
@@ -103,6 +124,13 @@ impl FileBrowser {
                 if self.selected_index + 1 < self.files.len() {
                     self.selected_index += 1;
                     self.adjust_scroll();
+                    if let Some(file) = self.files.get(self.selected_index) {
+                        log::info!(
+                            "NAV: DOWN -> selected [{}] {}",
+                            self.selected_index,
+                            file.name
+                        );
+                    }
                     return (true, None);
                 }
             }
@@ -125,30 +153,44 @@ impl FileBrowser {
             }
             InputEvent::Press(Button::Confirm) => {
                 if let Some(file) = self.files.get(self.selected_index) {
+                    log::info!(
+                        "CONFIRM pressed - selected: {} (is_dir: {})",
+                        file.name,
+                        file.is_directory
+                    );
                     if file.is_directory {
                         // Navigate into directory
                         if file.name == ".." {
                             // Go up
+                            let old_path = self.current_path.clone();
                             self.current_path =
                                 crate::filesystem::dirname(&self.current_path).to_string();
+                            log::info!("Navigating UP: {} -> {}", old_path, self.current_path);
                         } else {
                             // Go down
+                            let old_path = self.current_path.clone();
                             self.current_path =
                                 crate::filesystem::join_path(&self.current_path, &file.name);
+                            log::info!("Navigating DOWN: {} -> {}", old_path, self.current_path);
                         }
                         return (true, Some(String::new())); // Signal to reload
                     } else {
                         // Selected a file - return its path
                         let full_path =
                             crate::filesystem::join_path(&self.current_path, &file.name);
+                        log::info!("Opening file: {}", full_path);
                         return (true, Some(full_path));
                     }
                 }
             }
             InputEvent::Press(Button::Back) => {
                 if self.current_path != "/" {
+                    let old_path = self.current_path.clone();
                     self.current_path = crate::filesystem::dirname(&self.current_path).to_string();
+                    log::info!("BACK pressed: {} -> {}", old_path, self.current_path);
                     return (true, Some(String::new())); // Signal to reload
+                } else {
+                    log::info!("BACK pressed at root - no action");
                 }
             }
             _ => {}

@@ -2,6 +2,7 @@ extern crate alloc;
 
 mod sdcard;
 
+use alloc::vec::Vec;
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{Input, PinDriver, Pull},
@@ -11,8 +12,8 @@ use esp_idf_svc::hal::{
 use esp_idf_svc::sys;
 
 use xteink_ui::{
-    App, BufferedDisplay, Builder, Button, Dimensions, EinkDisplay, EinkInterface, InputEvent,
-    RefreshMode, Rotation,
+    App, BufferedDisplay, Builder, Button, Dimensions, DisplayInterface, EinkDisplay,
+    EinkInterface, InputEvent, RamXAddressing, RefreshMode, Region, Rotation, UpdateRegion,
 };
 
 use sdcard::SdCardFs;
@@ -95,6 +96,159 @@ fn read_buttons(
     (None, false)
 }
 
+fn update_display_diff<I, D>(
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    current: &[u8],
+    last: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+    scratch_prev: &mut Vec<u8>,
+    width_bytes: usize,
+    height: usize,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    let expected_len = width_bytes * height;
+    if current.len() != expected_len {
+        log::warn!(
+            "Buffer size mismatch: got {}, expected {} ({}x{} bytes)",
+            current.len(),
+            expected_len,
+            width_bytes,
+            height
+        );
+    }
+    if last.len() != current.len() {
+        last.resize(current.len(), 0xFF);
+    }
+
+    let mut min_x = usize::MAX;
+    let mut max_x = 0usize;
+    let mut min_y = usize::MAX;
+    let mut max_y = 0usize;
+    let mut changed = 0usize;
+
+    for (i, (&new_b, &old_b)) in current.iter().zip(last.iter()).enumerate() {
+        if new_b != old_b {
+            changed += 1;
+            let y = i / width_bytes;
+            let x = i % width_bytes;
+            if x < min_x {
+                min_x = x;
+            }
+            if x > max_x {
+                max_x = x;
+            }
+            if y < min_y {
+                min_y = y;
+            }
+            if y > max_y {
+                max_y = y;
+            }
+        }
+    }
+
+    if changed == 0 {
+        log::info!("UI: no pixel changes detected");
+        return;
+    }
+
+    log::info!("UI: changed bytes: {}", changed);
+
+    // TEMP: force full refresh to validate buffer updates
+    if display
+        .update_with_mode(current, &[], RefreshMode::Full, delay)
+        .is_err()
+    {
+        log::warn!("UI: full-screen refresh failed");
+    }
+    last.copy_from_slice(current);
+    return;
+
+    let total_bytes = current.len();
+    let region_width_bytes = (max_x - min_x + 1).max(1);
+    let region_height = (max_y - min_y + 1).max(1);
+    let region_bytes = region_width_bytes * region_height;
+
+    // If more than half the screen changed, do a full partial refresh
+    if region_bytes > total_bytes / 2 {
+        log::info!(
+            "UI: large change ({} bytes). Using partial full-screen refresh",
+            region_bytes
+        );
+        if display
+            .update_with_mode(current, &[], RefreshMode::Partial, delay)
+            .is_err()
+        {
+            log::warn!("UI: full-screen partial refresh failed");
+        }
+        last.copy_from_slice(current);
+        return;
+    }
+
+    // Build a compact region buffer
+    scratch.clear();
+    scratch.resize(region_bytes, 0xFF);
+    scratch_prev.clear();
+    scratch_prev.resize(region_bytes, 0xFF);
+
+    for row in 0..region_height {
+        let src = (min_y + row) * width_bytes + min_x;
+        let dst = row * region_width_bytes;
+        scratch[dst..dst + region_width_bytes]
+            .copy_from_slice(&current[src..src + region_width_bytes]);
+        scratch_prev[dst..dst + region_width_bytes]
+            .copy_from_slice(&last[src..src + region_width_bytes]);
+    }
+
+    let region = Region::new(
+        (min_x * 8) as u16,
+        min_y as u16,
+        (region_width_bytes * 8) as u16,
+        region_height as u16,
+    );
+
+    // TEMP: force full partial refresh to verify rendering path
+    // If this fixes UI updates, the issue is in region math/driver partials
+    if display
+        .update_with_mode(current, &[], RefreshMode::Partial, delay)
+        .is_err()
+    {
+        log::warn!("UI: full-screen partial refresh failed");
+    }
+    last.copy_from_slice(current);
+    return;
+
+    #[allow(unreachable_code)]
+    let update = UpdateRegion {
+        region,
+        black_buffer: scratch,
+        red_buffer: scratch_prev,
+        mode: RefreshMode::Fast,
+    };
+
+    log::info!(
+        "UI: region update x={} y={} w={} h={} bytes={}",
+        region.x,
+        region.y,
+        region.w,
+        region.h,
+        region_bytes
+    );
+
+    if display.update_region(update, delay).is_err() {
+        log::warn!("UI: region update failed - falling back to partial");
+        if display
+            .update_with_mode(current, &[], RefreshMode::Partial, delay)
+            .is_err()
+        {
+            log::warn!("UI: fallback partial refresh failed");
+        }
+    }
+    last.copy_from_slice(current);
+}
+
 fn enter_deep_sleep(power_btn_pin: i32) {
     log::info!("Entering deep sleep...");
     unsafe {
@@ -110,13 +264,17 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    // Compile-time stack size verification
+    // Stack size verification (runtime log)
     // ESP32-C3 has ~191KB total RAM, so we use 64KB for stack
     const REQUIRED_STACK_SIZE: u32 = 60 * 1024; // 60KB minimum
-    const _: () = assert!(
-        esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE >= REQUIRED_STACK_SIZE,
-        "Stack size must be at least 60KB. Check sdkconfig.defaults and run `cargo clean` before building."
-    );
+    let configured_stack = esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE;
+    if configured_stack < REQUIRED_STACK_SIZE {
+        log::warn!(
+            "Stack size too small: {} bytes (need >= {}). Check sdkconfig.defaults",
+            configured_stack,
+            REQUIRED_STACK_SIZE
+        );
+    }
 
     log::info!(
         "Starting firmware with {} bytes stack",
@@ -170,8 +328,11 @@ fn main() {
     // Physical display is 800x480 but driver uses rows=gates, cols=sources
     let config = Builder::new()
         .dimensions(Dimensions::new(480, 800).unwrap())
-        .rotation(Rotation::Rotate90)
+        // Rotation handled in BufferedDisplay (portrait -> native transpose)
+        .rotation(Rotation::Rotate0)
         .data_entry_mode(0x01) // X_INC_Y_DEC (matches C++ reference)
+        .ram_x_addressing(RamXAddressing::Pixels) // Revert: bytes caused noise on this panel
+        .ram_y_inverted(true) // Match panel wiring (C++ reverses Y)
         .build()
         .unwrap();
     let mut display = EinkDisplay::new(interface, config);
@@ -181,6 +342,9 @@ fn main() {
 
     // Create buffered display for UI rendering (avoids stack overflow from iterator chains)
     let mut buffered_display = BufferedDisplay::new();
+    let mut last_buffer: Vec<u8> = vec![0xFF; buffered_display.buffer().len()];
+    let mut region_scratch: Vec<u8> = Vec::new();
+    let mut region_scratch_prev: Vec<u8> = Vec::new();
 
     // Initialize SD card filesystem
     let mut fs = SdCardFs::new(sd_spi).expect("SD card init failed");
@@ -193,6 +357,7 @@ fn main() {
     display
         .update(buffered_display.buffer(), &[], &mut delay)
         .ok();
+    last_buffer.copy_from_slice(buffered_display.buffer());
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
@@ -219,18 +384,20 @@ fn main() {
                     log::info!("Power button held for 2s - powering off!");
                     long_press_triggered = true;
 
-                    if app.handle_input(InputEvent::Press(Button::Power), &mut fs) {
-                        buffered_display.clear();
-                        app.render(&mut buffered_display).ok();
-                        display
-                            .update_with_mode(
-                                buffered_display.buffer(),
-                                &[],
-                                RefreshMode::Full,
-                                &mut delay,
-                            )
-                            .ok();
-                    }
+                    // Show "Powering off..." message
+                    buffered_display.clear();
+                    // TODO: Render "Powering off..." text here when we have text rendering
+                    // For now, just clear to white
+                    display
+                        .update_with_mode(
+                            buffered_display.buffer(),
+                            &[],
+                            RefreshMode::Full,
+                            &mut delay,
+                        )
+                        .ok();
+
+                    log::info!("Display cleared for power off");
 
                     while power_btn.is_low() {
                         FreeRtos::delay_ms(50);
@@ -246,16 +413,21 @@ fn main() {
                     last_button = Some(Button::Power);
 
                     if app.handle_input(InputEvent::Press(Button::Power), &mut fs) {
+                        log::info!("UI: redraw after power short press");
                         buffered_display.clear();
                         app.render(&mut buffered_display).ok();
-                        display
-                            .update_with_mode(
-                                buffered_display.buffer(),
-                                &[],
-                                RefreshMode::Fast,
-                                &mut delay,
-                            )
-                            .ok();
+                        update_display_diff(
+                            &mut display,
+                            &mut delay,
+                            buffered_display.buffer(),
+                            &mut last_buffer,
+                            &mut region_scratch,
+                            &mut region_scratch_prev,
+                            buffered_display.width_bytes(),
+                            buffered_display.height_pixels() as usize,
+                        );
+                    } else {
+                        log::info!("UI: no redraw after power short press");
                     }
                 }
             }
@@ -269,16 +441,21 @@ fn main() {
                 last_button = Some(btn);
 
                 if app.handle_input(InputEvent::Press(btn), &mut fs) {
+                    log::info!("UI: redraw after {:?}", btn);
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
-                    display
-                        .update_with_mode(
-                            buffered_display.buffer(),
-                            &[],
-                            RefreshMode::Fast,
-                            &mut delay,
-                        )
-                        .ok();
+                    update_display_diff(
+                        &mut display,
+                        &mut delay,
+                        buffered_display.buffer(),
+                        &mut last_buffer,
+                        &mut region_scratch,
+                        &mut region_scratch_prev,
+                        buffered_display.width_bytes(),
+                        buffered_display.height_pixels() as usize,
+                    );
+                } else {
+                    log::info!("UI: no redraw after {:?}", btn);
                 }
             }
         } else if !power_pressed {

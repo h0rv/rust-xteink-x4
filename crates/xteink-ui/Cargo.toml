@@ -11,6 +11,9 @@ std = ["epub", "html2text"]
 embedded-graphics = "0.8"
 embedded-text = "0.7.3"
 
+# Logging (no_std compatible)
+log = "0.4"
+
 # EPUB support (desktop/simulators only due to std requirement)
 epub = { version = "2.1.5", optional = true }
 

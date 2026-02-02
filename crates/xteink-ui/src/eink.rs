@@ -14,6 +14,8 @@ pub type EinkInterface<SPI, DC, RST, BUSY> = ssd1677::Interface<SPI, DC, RST, BU
 
 /// Display refresh modes
 pub use ssd1677::RefreshMode;
+/// Partial update region helpers
+pub use ssd1677::{Region, UpdateRegion};
 
 /// Display configuration builder
 pub use ssd1677::Builder;
@@ -21,6 +23,10 @@ pub use ssd1677::Builder;
 /// Display dimensions
 pub use ssd1677::Dimensions;
 
+/// Display interface trait
+pub use ssd1677::DisplayInterface;
+/// RAM X addressing unit (pixels or bytes)
+pub use ssd1677::RamXAddressing;
 /// Display rotation
 pub use ssd1677::Rotation;
 

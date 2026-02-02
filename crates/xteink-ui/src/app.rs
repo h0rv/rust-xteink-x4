@@ -11,6 +11,7 @@ use crate::filesystem::{basename, FileSystem};
 use crate::input::{Button, InputEvent};
 
 /// Application screen state
+#[derive(Debug)]
 pub enum Screen {
     FileBrowser,
     TextViewer { title: String },
@@ -39,9 +40,16 @@ impl App {
 
     /// Handle input. Returns true if redraw needed.
     pub fn handle_input<FS: FileSystem>(&mut self, event: InputEvent, fs: &mut FS) -> bool {
+        log::info!("APP: handle_input {:?} in {:?}", event, self.screen);
+
         match &self.screen {
             Screen::FileBrowser => {
                 let (redraw, selected) = self.file_browser.handle_input(event);
+                log::info!(
+                    "APP: FileBrowser result - redraw: {}, selected: {:?}",
+                    redraw,
+                    selected
+                );
 
                 if let Some(path) = selected {
                     if path.is_empty() {

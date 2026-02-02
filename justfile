@@ -113,3 +113,15 @@ fmt:
 # Lint
 lint:
     cargo clippy --workspace --exclude xteink-firmware -- -D warnings
+
+# Run tests for UI logic (std feature enabled, host target)
+test-ui:
+    cargo test -p xteink-ui --features std --target x86_64-unknown-linux-gnu
+
+# Run only diff tests (fast, host target)
+test-diff:
+    cargo test -p xteink-ui --features std --target x86_64-unknown-linux-gnu diff
+
+# Run all tests (host target)
+test:
+    cargo test --workspace --features std --target x86_64-unknown-linux-gnu

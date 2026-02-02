@@ -35,6 +35,10 @@ impl App {
 
     /// Initialize with filesystem - call after creation
     pub fn init<FS: FileSystem>(&mut self, fs: &mut FS) {
+        // Prefer /books if it exists to avoid system folders
+        if fs.exists("/books") {
+            self.file_browser.set_path("/books");
+        }
         let _ = self.file_browser.load(fs);
     }
 
@@ -98,6 +102,39 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+    use crate::input::Button;
+    use crate::mock_filesystem::MockFileSystem;
+
+    #[test]
+    fn app_file_browser_navigation_changes_selection() {
+        let mut fs = MockFileSystem::new();
+        let mut app = App::new();
+        app.init(&mut fs);
+
+        // Navigate down in file browser
+        let changed = app.handle_input(InputEvent::Press(Button::VolumeDown), &mut fs);
+        assert!(changed, "Expected redraw after VolumeDown");
+    }
+
+    #[test]
+    fn app_open_and_close_file() {
+        let mut fs = MockFileSystem::new();
+        let mut app = App::new();
+        app.init(&mut fs);
+
+        // Open first entry (if it is a directory or file, should trigger redraw)
+        let changed = app.handle_input(InputEvent::Press(Button::Confirm), &mut fs);
+        assert!(changed, "Expected redraw after Confirm");
+
+        // Back should return to file browser
+        let changed = app.handle_input(InputEvent::Press(Button::Back), &mut fs);
+        assert!(changed, "Expected redraw after Back");
     }
 }
 

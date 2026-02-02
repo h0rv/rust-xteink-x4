@@ -12,11 +12,21 @@ use esp_idf_svc::hal::{
 use esp_idf_svc::sys;
 
 use xteink_ui::{
-    App, BufferedDisplay, Builder, Button, Dimensions, DisplayInterface, EinkDisplay,
-    EinkInterface, InputEvent, RamXAddressing, RefreshMode, Region, Rotation, UpdateRegion,
+    compute_diff_region, extract_region, App, BufferedDisplay, Builder, Button, Dimensions,
+    DisplayInterface, EinkDisplay, EinkInterface, InputEvent, RamXAddressing, RefreshMode, Region,
+    Rotation, UpdateRegion,
 };
 
 use sdcard::SdCardFs;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)]
+enum UpdateStrategy {
+    Full,
+    PartialFull,
+    FastFull,
+    DiffFast,
+}
 
 #[allow(dead_code)]
 const DISPLAY_COLS: u16 = 480;
@@ -119,66 +129,29 @@ fn update_display_diff<I, D>(
             height
         );
     }
+
     if last.len() != current.len() {
         last.resize(current.len(), 0xFF);
     }
 
-    let mut min_x = usize::MAX;
-    let mut max_x = 0usize;
-    let mut min_y = usize::MAX;
-    let mut max_y = 0usize;
-    let mut changed = 0usize;
-
-    for (i, (&new_b, &old_b)) in current.iter().zip(last.iter()).enumerate() {
-        if new_b != old_b {
-            changed += 1;
-            let y = i / width_bytes;
-            let x = i % width_bytes;
-            if x < min_x {
-                min_x = x;
-            }
-            if x > max_x {
-                max_x = x;
-            }
-            if y < min_y {
-                min_y = y;
-            }
-            if y > max_y {
-                max_y = y;
-            }
+    let region = match compute_diff_region(current, last, width_bytes, height) {
+        Some(region) => region,
+        None => {
+            log::info!("UI: no pixel changes detected");
+            return;
         }
-    }
-
-    if changed == 0 {
-        log::info!("UI: no pixel changes detected");
-        return;
-    }
-
-    log::info!("UI: changed bytes: {}", changed);
-
-    // TEMP: force full refresh to validate buffer updates
-    if display
-        .update_with_mode(current, &[], RefreshMode::Full, delay)
-        .is_err()
-    {
-        log::warn!("UI: full-screen refresh failed");
-    }
-    last.copy_from_slice(current);
-    return;
+    };
 
     let total_bytes = current.len();
-    let region_width_bytes = (max_x - min_x + 1).max(1);
-    let region_height = (max_y - min_y + 1).max(1);
-    let region_bytes = region_width_bytes * region_height;
+    let region_bytes = region.byte_count();
 
-    // If more than half the screen changed, do a full partial refresh
     if region_bytes > total_bytes / 2 {
         log::info!(
             "UI: large change ({} bytes). Using partial full-screen refresh",
             region_bytes
         );
         if display
-            .update_with_mode(current, &[], RefreshMode::Partial, delay)
+            .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
             .is_err()
         {
             log::warn!("UI: full-screen partial refresh failed");
@@ -187,42 +160,11 @@ fn update_display_diff<I, D>(
         return;
     }
 
-    // Build a compact region buffer
-    scratch.clear();
-    scratch.resize(region_bytes, 0xFF);
-    scratch_prev.clear();
-    scratch_prev.resize(region_bytes, 0xFF);
+    extract_region(current, width_bytes, region, scratch);
+    extract_region(last, width_bytes, region, scratch_prev);
 
-    for row in 0..region_height {
-        let src = (min_y + row) * width_bytes + min_x;
-        let dst = row * region_width_bytes;
-        scratch[dst..dst + region_width_bytes]
-            .copy_from_slice(&current[src..src + region_width_bytes]);
-        scratch_prev[dst..dst + region_width_bytes]
-            .copy_from_slice(&last[src..src + region_width_bytes]);
-    }
-
-    let region = Region::new(
-        (min_x * 8) as u16,
-        min_y as u16,
-        (region_width_bytes * 8) as u16,
-        region_height as u16,
-    );
-
-    // TEMP: force full partial refresh to verify rendering path
-    // If this fixes UI updates, the issue is in region math/driver partials
-    if display
-        .update_with_mode(current, &[], RefreshMode::Partial, delay)
-        .is_err()
-    {
-        log::warn!("UI: full-screen partial refresh failed");
-    }
-    last.copy_from_slice(current);
-    return;
-
-    #[allow(unreachable_code)]
     let update = UpdateRegion {
-        region,
+        region: Region::new(region.x_px(), region.y_px(), region.w_px(), region.h_px()),
         black_buffer: scratch,
         red_buffer: scratch_prev,
         mode: RefreshMode::Fast,
@@ -230,23 +172,83 @@ fn update_display_diff<I, D>(
 
     log::info!(
         "UI: region update x={} y={} w={} h={} bytes={}",
-        region.x,
-        region.y,
-        region.w,
-        region.h,
+        region.x_px(),
+        region.y_px(),
+        region.w_px(),
+        region.h_px(),
         region_bytes
     );
 
-    if display.update_region(update, delay).is_err() {
+    if display.update_region_no_lut(update, delay).is_err() {
         log::warn!("UI: region update failed - falling back to partial");
         if display
-            .update_with_mode(current, &[], RefreshMode::Partial, delay)
+            .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
             .is_err()
         {
             log::warn!("UI: fallback partial refresh failed");
         }
     }
     last.copy_from_slice(current);
+}
+
+fn apply_update<I, D>(
+    strategy: UpdateStrategy,
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    current: &[u8],
+    last: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+    scratch_prev: &mut Vec<u8>,
+    width_bytes: usize,
+    height: usize,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    match strategy {
+        UpdateStrategy::Full => {
+            log::info!("UI: applying full refresh");
+            if display
+                .update_with_mode_no_lut(current, &[], RefreshMode::Full, delay)
+                .is_err()
+            {
+                log::warn!("UI: full refresh failed");
+            }
+            last.copy_from_slice(current);
+        }
+        UpdateStrategy::PartialFull => {
+            log::info!("UI: applying partial full-screen refresh");
+            if display
+                .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
+                .is_err()
+            {
+                log::warn!("UI: partial full-screen refresh failed");
+            }
+            last.copy_from_slice(current);
+        }
+        UpdateStrategy::FastFull => {
+            log::info!("UI: applying fast full-screen refresh");
+            if display
+                .update_with_mode_no_lut(current, &[], RefreshMode::Fast, delay)
+                .is_err()
+            {
+                log::warn!("UI: fast full-screen refresh failed");
+            }
+            last.copy_from_slice(current);
+        }
+        UpdateStrategy::DiffFast => {
+            update_display_diff(
+                display,
+                delay,
+                current,
+                last,
+                scratch,
+                scratch_prev,
+                width_bytes,
+                height,
+            );
+        }
+    }
 }
 
 fn enter_deep_sleep(power_btn_pin: i32) {
@@ -333,6 +335,10 @@ fn main() {
         .data_entry_mode(0x01) // X_INC_Y_DEC (matches C++ reference)
         .ram_x_addressing(RamXAddressing::Pixels) // Revert: bytes caused noise on this panel
         .ram_y_inverted(true) // Match panel wiring (C++ reverses Y)
+        // Match crosspoint refresh control values (OTP LUT based)
+        .display_update_ctrl2_full(0x34)
+        .display_update_ctrl2_partial(0xD4)
+        .display_update_ctrl2_fast(0x1C)
         .build()
         .unwrap();
     let mut display = EinkDisplay::new(interface, config);
@@ -358,6 +364,9 @@ fn main() {
         .update(buffered_display.buffer(), &[], &mut delay)
         .ok();
     last_buffer.copy_from_slice(buffered_display.buffer());
+
+    let update_strategy = UpdateStrategy::FastFull;
+    log::info!("Update strategy: {:?}", update_strategy);
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
@@ -416,7 +425,8 @@ fn main() {
                         log::info!("UI: redraw after power short press");
                         buffered_display.clear();
                         app.render(&mut buffered_display).ok();
-                        update_display_diff(
+                        apply_update(
+                            update_strategy,
                             &mut display,
                             &mut delay,
                             buffered_display.buffer(),
@@ -444,7 +454,8 @@ fn main() {
                     log::info!("UI: redraw after {:?}", btn);
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
-                    update_display_diff(
+                    apply_update(
+                        update_strategy,
                         &mut display,
                         &mut delay,
                         buffered_display.buffer(),

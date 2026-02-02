@@ -34,11 +34,11 @@ pub struct FileBrowser {
 
 impl FileBrowser {
     /// Number of items visible on screen
-    const ITEMS_PER_PAGE: usize = 12;
+    const ITEMS_PER_PAGE: usize = 14;
     /// Line height in pixels
-    const LINE_HEIGHT: i32 = 30;
+    const LINE_HEIGHT: i32 = 24;
     /// Top margin
-    const TOP_MARGIN: i32 = 40;
+    const TOP_MARGIN: i32 = 48;
 
     /// Create new file browser starting at given path
     pub fn new(start_path: &str) -> Self {
@@ -49,6 +49,13 @@ impl FileBrowser {
             scroll_offset: 0,
             visible_items: Self::ITEMS_PER_PAGE,
         }
+    }
+
+    /// Set current path (used for startup defaults)
+    pub fn set_path(&mut self, path: &str) {
+        self.current_path = path.to_string();
+        self.selected_index = 0;
+        self.scroll_offset = 0;
     }
 
     /// Load files from filesystem
@@ -223,32 +230,23 @@ impl FileBrowser {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        let (width, height) = portrait_dimensions(display);
+        let (width, _height) = portrait_dimensions(display);
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
-        // Header
+        // Header (minimal)
         let header_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let header_text = if self.current_path == "/" {
-            String::from("Library")
+            "Library".to_string()
         } else {
             crate::filesystem::basename(&self.current_path).to_string()
         };
-        Text::new(&header_text, Point::new(10, 25), header_style).draw(display)?;
+        Text::new(&header_text, Point::new(6, 18), header_style).draw(display)?;
 
-        // Draw header line
-        Rectangle::new(Point::new(0, 32), Size::new(width, 2))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        // File list
+        // File list (no icons, minimal chrome)
         let normal_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let selected_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::Off);
-        // Use ASCII icons that render properly
-        let file_icon = "[-] ";
-        let folder_icon = "[+] ";
-        let up_icon = "[^] ";
 
         let end_index = (self.scroll_offset + self.visible_items).min(self.files.len());
 
@@ -266,36 +264,30 @@ impl FileBrowser {
                 .draw(display)?;
             }
 
-            // Icon
-            let icon = if file.name == ".." {
-                up_icon
-            } else if file.is_directory {
-                folder_icon
-            } else {
-                file_icon
-            };
-
             // File name (truncated if too long)
-            let name = if file.name.len() > 35 {
-                format!("{}...", &file.name[..32])
+            let mut name = if file.name.len() > 38 {
+                format!("{}...", &file.name[..35])
             } else {
                 file.name.clone()
             };
 
-            let display_text = format!("{}{}", icon, name);
+            if file.is_directory && file.name != ".." {
+                name.push('/');
+            }
+
+            let display_text = if actual_index == self.selected_index {
+                format!("> {}", name)
+            } else {
+                format!("  {}", name)
+            };
             let style = if actual_index == self.selected_index {
                 selected_style
             } else {
                 normal_style
             };
 
-            Text::new(&display_text, Point::new(10, y), style).draw(display)?;
+            Text::new(&display_text, Point::new(6, y), style).draw(display)?;
         }
-
-        // Footer with help
-        let help_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let help_text = format!("{} files | VOL=Navigate | ENT=Open", self.files.len());
-        Text::new(&help_text, Point::new(10, height as i32 - 10), help_style).draw(display)?;
 
         Ok(())
     }
@@ -391,19 +383,14 @@ impl TextViewer {
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
-        // Header with title
+        // Minimal header
         let header_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         let truncated_title = if title.len() > 40 {
             format!("{}...", &title[..37])
         } else {
             title.to_string()
         };
-        Text::new(&truncated_title, Point::new(10, 25), header_style).draw(display)?;
-
-        // Header line
-        Rectangle::new(Point::new(0, 32), Size::new(width, 2))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
+        Text::new(&truncated_title, Point::new(6, 18), header_style).draw(display)?;
 
         // Use embedded-text TextBox for proper word wrapping
         let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
@@ -426,16 +413,12 @@ impl TextViewer {
             TextBox::with_textbox_style(page_content, bounds, character_style, textbox_style);
         text_box.draw(display)?;
 
-        // Footer with page number
+        // Footer (page number only)
         let footer_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let footer_text = format!(
-            "Page {} of {} | <=Back | >=Next",
-            self.current_page + 1,
-            self.total_pages()
-        );
+        let footer_text = format!("{}/{}", self.current_page + 1, self.total_pages());
         Text::new(
             &footer_text,
-            Point::new(10, height as i32 - 10),
+            Point::new(width as i32 - 60, height as i32 - 10),
             footer_style,
         )
         .draw(display)?;

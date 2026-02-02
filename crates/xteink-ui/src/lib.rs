@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod app;
 pub mod buffered_display;
+pub mod diff;
 pub mod eink;
 pub mod file_browser;
 pub mod filesystem;
@@ -21,6 +22,7 @@ pub mod mock_filesystem;
 
 pub use app::App;
 pub use buffered_display::BufferedDisplay;
+pub use diff::{compute_diff_region, extract_region, DiffRegion};
 pub use eink::{
     Builder, Dimensions, DisplayInterface, EinkDisplay, EinkError, EinkInterface, RamXAddressing,
     RefreshMode, Region, Rotation, UpdateRegion,

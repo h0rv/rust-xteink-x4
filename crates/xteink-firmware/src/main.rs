@@ -17,7 +17,9 @@ use xteink_ui::{
 
 use sdcard::SdCardFs;
 
+#[allow(dead_code)]
 const DISPLAY_COLS: u16 = 480;
+#[allow(dead_code)]
 const DISPLAY_ROWS: u16 = 800;
 
 const ADC_NO_BUTTON: i32 = 3800;
@@ -163,9 +165,13 @@ fn main() {
     // Initialize display
     let mut delay = FreeRtos;
     let interface = EinkInterface::new(spi_device, dc, rst, busy);
+    // Use 480x800 dimensions (rows x cols format for SSD1677 driver)
+    // Rows must be <= 680 (gates), cols must be <= 960 (sources) and multiple of 8
+    // Physical display is 800x480 but driver uses rows=gates, cols=sources
     let config = Builder::new()
-        .dimensions(Dimensions::new(DISPLAY_ROWS, DISPLAY_COLS).unwrap())
+        .dimensions(Dimensions::new(480, 800).unwrap())
         .rotation(Rotation::Rotate90)
+        .data_entry_mode(0x01) // X_INC_Y_DEC (matches C++ reference)
         .build()
         .unwrap();
     let mut display = EinkDisplay::new(interface, config);

@@ -366,6 +366,10 @@ fn main() {
     last_buffer.copy_from_slice(buffered_display.buffer());
 
     let update_strategy = UpdateStrategy::FastFull;
+    let mut fast_refresh_counter: u32 = 0;
+    const REFRESH_FREQUENCY: u32 = 15; // Match crosspoint default
+    const IDLE_PARTIAL_THRESHOLD_US: i64 = 1_500_000; // 1.5s
+    let mut last_input_us: i64 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
     log::info!("Update strategy: {:?}", update_strategy);
 
     log::info!("Starting event loop... Press a button!");
@@ -425,8 +429,11 @@ fn main() {
                         log::info!("UI: redraw after power short press");
                         buffered_display.clear();
                         app.render(&mut buffered_display).ok();
+
+                        // Power interactions trigger a clean refresh
+                        fast_refresh_counter = 0;
                         apply_update(
-                            update_strategy,
+                            UpdateStrategy::PartialFull,
                             &mut display,
                             &mut delay,
                             buffered_display.buffer(),
@@ -450,12 +457,44 @@ fn main() {
                 log::info!("Button pressed: {:?}", btn);
                 last_button = Some(btn);
 
+                let now_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+                let idle_us = now_us - last_input_us;
+                last_input_us = now_us;
+
                 if app.handle_input(InputEvent::Press(btn), &mut fs) {
                     log::info!("UI: redraw after {:?}", btn);
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
+
+                    let mut strategy = update_strategy;
+                    match btn {
+                        Button::Confirm | Button::Back => {
+                            fast_refresh_counter = 0;
+                            strategy = UpdateStrategy::PartialFull;
+                        }
+                        _ => {
+                            if idle_us > IDLE_PARTIAL_THRESHOLD_US {
+                                fast_refresh_counter = 0;
+                                strategy = UpdateStrategy::PartialFull;
+                            } else {
+                                fast_refresh_counter += 1;
+                                if fast_refresh_counter >= REFRESH_FREQUENCY {
+                                    fast_refresh_counter = 0;
+                                    strategy = UpdateStrategy::PartialFull;
+                                }
+                            }
+                        }
+                    }
+
+                    log::info!(
+                        "UI: strategy {:?} (idle_us={}, counter={})",
+                        strategy,
+                        idle_us,
+                        fast_refresh_counter
+                    );
+
                     apply_update(
-                        update_strategy,
+                        strategy,
                         &mut display,
                         &mut delay,
                         buffered_display.buffer(),

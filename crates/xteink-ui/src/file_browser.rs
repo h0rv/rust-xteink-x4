@@ -13,7 +13,7 @@ use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::*,
-    primitives::{PrimitiveStyle, Rectangle},
+    primitives::Rectangle,
     text::Text,
 };
 
@@ -230,7 +230,7 @@ impl FileBrowser {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        let (width, _height) = portrait_dimensions(display);
+        let (_width, _height) = portrait_dimensions(display);
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
@@ -246,23 +246,13 @@ impl FileBrowser {
 
         // File list (no icons, minimal chrome)
         let normal_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let selected_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::Off);
+        let selected_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
 
         let end_index = (self.scroll_offset + self.visible_items).min(self.files.len());
 
         for (i, file) in self.files[self.scroll_offset..end_index].iter().enumerate() {
             let actual_index = self.scroll_offset + i;
             let y = Self::TOP_MARGIN + (i as i32 * Self::LINE_HEIGHT);
-
-            // Highlight selected item
-            if actual_index == self.selected_index {
-                Rectangle::new(
-                    Point::new(0, y - 22),
-                    Size::new(width, Self::LINE_HEIGHT as u32),
-                )
-                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(display)?;
-            }
 
             // File name (truncated if too long)
             let mut name = if file.name.len() > 38 {

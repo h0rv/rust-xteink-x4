@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'crates/ssd1677/**'
+      - '.github/workflows/ci.yml'
+      - 'Cargo.toml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'crates/ssd1677/**'
+      - '.github/workflows/ci.yml'
+      - 'Cargo.toml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Check formatting
+  fmt:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo fmt --package ssd1677 -- --check
+
+  # Run clippy with all warnings as errors
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --package ssd1677 -- -D warnings
+
+  # Check documentation builds without warnings
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: RUSTDOCFLAGS='-D warnings' cargo doc --package ssd1677 --no-deps --all-features
+
+  # Run cargo-deny for license and security audit
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check
+          arguments: --manifest-path crates/ssd1677/Cargo.toml
+
+  # Build the package
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --package ssd1677 --all-features

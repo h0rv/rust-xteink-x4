@@ -1,0 +1,214 @@
+# This template contains all of the possible sections and their default values
+
+# Note that all fields that take a lint level have these possible values:
+# * deny - An error will be produced and the check will fail
+# * warn - A warning will be produced, but the check will not fail
+# * allow - No warning or error will be produced, though in some cases a note will be
+
+# The values provided in this template are the default values that will be used when any
+# section or field is not specified in your own configuration
+
+# Root options
+
+# If 1 or more target triples (and optionally, target_features) are specified, only
+# the specified targets will be checked when running `cargo deny check`.
+# This means, if a particular package is only ever used as a target specific dependency,
+# such as, for example, the `nix` crate only being used via the `target_family = "unix"`
+# configuration, that only having windows targets in this list would mean the nix crate,
+# as well as any of its exclusive dependencies would not be checked as they are not used,
+# rather than simply checking the crate as if the target was being compiled, like with
+# `--target` on cargo itself.
+targets = [
+    # The triple can be any string, but only the target triples built in to
+    # rustc (as of 1.40) can be checked against actual config expressions
+    #{ triple = "x86_64-unknown-linux-musl" },
+    # You can also specify the target triple along with one or more target_features as a tuple
+    #{ triple = "wasm32-unknown-unknown", target_features = ["atomics"] },
+]
+# When creating the dependency graph used as the source of truth when checks are
+# executed, this field can be used to prune crates from the graph, removing them
+# from the view of cargo-deny. This is an extremely heavy hammer, as if a crate
+# is pruned from the graph, all of its dependencies will also be pruned unless
+# they are connected to another crate in the graph.
+# Below is an example of all the possible configuration options for the graph
+graph = {
+    # The default action if the focus is on a specific crate's dependency graph
+    # is 'both', which allows both workspace and normal dependencies. You can
+    # focus only on workspace dependencies by setting this to 'workspace', or
+    # only on third-party/normal dependencies by setting this to 'normal'
+    # dependencies: "both"
+    # Specify one or more crates that you wish to allow, regardless of the
+    # transitive dependencies they have. This is particularly useful to avoid
+    # adding the same crate to multiple different allow/deny lists
+    # allow = []
+    # Specify one or more crates that you wish to prune. If you specify the crate
+    # name only, all versions of that crate will be pruned. You can also specify
+    # version ranges as part of the name, such as "crate-name@1.2.0"
+    # prune = []
+}
+
+# This section is considered when running `cargo deny check (advisories)`
+# More documentation for the advisories section can be found here:
+# https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
+[advisories]
+# The path where the advisory databases are cloned/fetched into
+# db-path = "$CARGO_HOME/advisory-dbs"
+# The url(s) of the advisory databases to use
+# db-urls = ["https://github.com/rustsec/advisory-db"]
+# The lint level for security vulnerabilities
+vulnerability = "deny"
+# The lint level for unmaintained crates
+unmaintained = "warn"
+# The lint level for crates that have been yanked from their source registry
+yanked = "warn"
+# The lint level for crates with security notices. Note that as of
+# 2019-12-17 there are no security notice advisories in
+# https://github.com/rustsec/advisory-db
+notice = "warn"
+# A list of advisory IDs to ignore. Note that ignored advisories will still
+# output a note when they are encountered.
+# ignore = []
+# Threshold for security vulnerabilities, any vulnerability with a CVSS score
+# lower than the range specified will be ignored. Note that ignored advisories
+# will still output a note when they are encountered.
+# * None - CVSS Score 0.0
+# * Low - CVSS Score 0.1 - 3.9
+# * Medium - CVSS Score 4.0 - 6.9
+# * High - CVSS Score 7.0 - 8.9
+# * Critical - CVSS Score 9.0 - 10.0
+# severity-threshold =
+
+# If this is true, then cargo deny will use the git executable to fetch advisory database.
+# If this is false, then it uses a built-in git library.
+# Setting this to true can be helpful if you have special authentication requirements that cargo-deny does not support.
+# See Git Authentication for more information about setting up git authentication.
+# github [https://help.github.com/articles/creating-a-personal-access-token-for-the-command-line/]
+# gitlab [https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html]
+# bitbucket [https://confluence.atlassian.com/bitbucketserver/personal-access-tokens-939515499.html]
+# git-fetch-with-cli = true
+
+# This section is considered when running `cargo deny check licenses`
+# More documentation for the licenses section can be found here:
+# https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
+[licenses]
+# List of explicitly allowed licenses
+# See https://spdx.org/licenses/ for list of possible licenses
+# [possible values: any SPDX 3.11 short identifier (+ optional exception)]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "NOASSERTION", # For embedded-hal which has no license file but is under MIT OR Apache-2.0
+]
+# The confidence threshold for detecting a license from license text.
+# [possible values: any value between 0.0 and 1.0]
+confidence-threshold = 0.8
+# Comment out/uncomment the applicable lines to allow a crate to have the listed
+# license. This is useful for when there is a crate with a specific license that
+# is acceptable, but you still want to check that all other dependencies are within
+# the allowed licenses.
+exceptions = [
+    # Each entry is the crate name, the version constraint, and one or more licenses that
+    # are acceptable for that crate and version
+    # { allow = ["Zlib"], name = "adler32", version = "*" },
+]
+
+# Some crates don't have (easily) machine readable licensing information,
+# adding a clarification entry for it allows you to manually specify the
+# license for such crates.
+# Three (3) files can be included with each individual clarification, a LICENSE-* file,
+# the COPYING file, or the COPYING.md file.
+[[licenses.clarify]]
+name = "embedded-hal"
+version = "*"
+expression = "MIT OR Apache-2.0"
+license-files = [
+    { path = "LICENSE-APACHE", hash = 0xbd0c4b62 },
+    { path = "LICENSE-MIT", hash = 0xbc320e70 },
+]
+
+[[licenses.clarify]]
+name = "embedded-graphics-core"
+version = "*"
+expression = "MIT OR Apache-2.0"
+license-files = [
+    { path = "LICENSE-APACHE", hash = 0xbd0c4b62 },
+    { path = "LICENSE-MIT", hash = 0xbc320e70 },
+]
+
+# This section is considered when running `cargo deny check bans`.
+# More documentation for the bans section can be found here:
+# https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
+[bans]
+# Lint level for when multiple versions of the same crate are detected
+multiple-versions = "warn"
+# Lint level for when a crate marked as 'wildcards' is encountered
+duplicates = "warn"
+# Lint level for when a crate marked as 'wildcards' is encountered
+wildcards = "allow"
+# The graph highlighting used when creating dotgraphs for crates
+# with multiple versions
+# * lowest-version - The path to the lowest versioned duplicate is highlighted
+# * simplest-path - The path to the version with the fewest edges is highlighted
+# * all - Both lowest-version and simplest-path are used
+highlight = "all"
+# The default lint level for `default` features for these crates
+# default-features = "allow"
+# List of crates that are allowed. Use with care!
+# allow = []
+# List of crates to deny
+deny = [
+    # Each entry the name of a crate and a version range. If version is
+    # not specified, all versions will be matched.
+    #
+    # Deny all versions of a crate
+    # { name = "crate-name" },
+    # Deny specific version ranges
+    # { name = "crate-name", version = ">= 1.0.0, < 1.1.0" },
+]
+
+# List of features to allow/deny
+# Each entry the name of a crate and a version range. If version is
+# not specified, all versions will be matched.
+#[[bans.features]]
+#name = "crate-name"
+#features = []
+# If true, the allowed features must exactly match the enabled features. If
+# false, the allowed features can be a subset of the enabled features.
+#exact = true
+
+# Certain crates/versions that will be skipped when doing duplicate detection.
+# skip = []
+# Similarly to `skip` allows you to skip certain crates during duplicate
+# detection. Unlike skip, it also includes the entire tree of transitive
+# dependencies starting at the specified crate, up to a certain depth, which is
+# controlled by the `depth` field.
+# skip-tree = []
+
+# This section is considered when running `cargo deny check sources`.
+# More documentation for the sources section can be found here:
+# https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html
+[sources]
+# Lint level for what to happen when a crate from a crate registry that is not
+# in the allow list is encountered
+unknown-registry = "warn"
+# Lint level for what to happen when a crate from a git repository that is not
+# in the allow list is encountered
+unknown-git = "warn"
+# List of allowed crate registries. Defaults to the crates.io index
+# if not specified. If it is specified but empty, no registries are allowed.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# List of allowed Git repositories
+# allow-git = []
+
+[sources.allow-org]
+# 1 or more github.com organizations to allow git sources for
+# github = [""]
+# 1 or more gitlab.com organizations to allow git sources for
+# gitlab = [""]
+# 1 or more bitbucket.org organizations to allow git sources for
+# bitbucket = [""]

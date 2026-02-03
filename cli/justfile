@@ -1,5 +1,7 @@
 cli_port := env_var_or_default("XTEINK_PORT", "/dev/ttyACM0")
 cli_baud := env_var_or_default("XTEINK_BAUD", "115200")
+root_dir := justfile_directory()
+samples_dir := root_dir / "sample_books"
 
 default:
     @just --list
@@ -30,3 +32,9 @@ refresh mode="fast":
 
 sleep:
     uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} sleep
+
+load-samples:
+    if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} exists /books)" = "0" ]; then uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir /books; else echo "exists: /books"; fi
+    if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/sample.txt | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/sample.txt)" ]; then echo "exists: /books/sample.txt"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/sample.txt /books/sample.txt; fi
+    if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/war_and_peace_ch1.txt | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/war_and_peace_ch1.txt)" ]; then echo "exists: /books/war_and_peace_ch1.txt"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/war_and_peace_ch1.txt /books/war_and_peace_ch1.txt; fi
+    if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub)" ]; then echo "exists: /books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub /books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub; fi

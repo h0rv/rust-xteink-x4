@@ -146,9 +146,22 @@ impl EpubRenderer {
     #[cfg(feature = "std")]
     pub fn load(&mut self, path: &str) -> Result<(), String> {
         use epub::doc::EpubDoc;
+        use std::path::Path;
+
+        let resolved_path = if Path::new(path).exists() {
+            path.to_string()
+        } else {
+            let candidate = crate::filesystem::resolve_mount_path(path, "/sd");
+            if Path::new(&candidate).exists() {
+                candidate
+            } else {
+                return Err(format!("EPUB path not found: {}", path));
+            }
+        };
 
         // Open EPUB to extract metadata
-        let mut doc = EpubDoc::new(path).map_err(|e| format!("Failed to open EPUB: {:?}", e))?;
+        let mut doc =
+            EpubDoc::new(&resolved_path).map_err(|e| format!("Failed to open EPUB: {:?}", e))?;
 
         // Extract metadata
         if let Some(title) = doc.mdata("title") {
@@ -160,7 +173,7 @@ impl EpubRenderer {
 
         self.total_chapters = doc.spine.len();
         self.current_chapter = 0;
-        self.file_path = Some(path.to_string());
+        self.file_path = Some(resolved_path);
 
         // Load embedded fonts from EPUB resources
         self.load_embedded_fonts(&mut doc)?;

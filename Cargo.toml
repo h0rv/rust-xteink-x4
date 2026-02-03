@@ -10,3 +10,6 @@ members = [
 [profile.release]
 opt-level = "s"
 lto = true
+
+[patch.crates-io]
+epub = { path = "vendor/epub" }

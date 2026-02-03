@@ -104,6 +104,18 @@ pub fn join_path(base: &str, name: &str) -> String {
     }
 }
 
+/// Resolve a logical path against a mount prefix
+pub fn resolve_mount_path(path: &str, mount_prefix: &str) -> String {
+    let prefix = mount_prefix.trim_end_matches('/');
+    if path.starts_with(prefix) {
+        path.to_string()
+    } else if path.starts_with('/') {
+        format!("{}{}", prefix, path)
+    } else {
+        format!("{}/{}", prefix, path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +138,25 @@ mod tests {
     fn test_join_path() {
         assert_eq!(join_path("/books", "book.txt"), "/books/book.txt");
         assert_eq!(join_path("/books/", "book.txt"), "/books/book.txt");
+    }
+
+    #[test]
+    fn test_resolve_mount_path() {
+        assert_eq!(
+            resolve_mount_path("/books/book.txt", "/sd"),
+            "/sd/books/book.txt"
+        );
+        assert_eq!(
+            resolve_mount_path("books/book.txt", "/sd"),
+            "/sd/books/book.txt"
+        );
+        assert_eq!(
+            resolve_mount_path("/sd/books/book.txt", "/sd"),
+            "/sd/books/book.txt"
+        );
+        assert_eq!(
+            resolve_mount_path("/books/book.txt", "/sd/"),
+            "/sd/books/book.txt"
+        );
     }
 }

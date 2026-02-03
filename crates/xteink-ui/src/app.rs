@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
@@ -73,34 +73,44 @@ impl App {
                         return true;
                     }
 
-                    if path.to_lowercase().ends_with(".epub") {
+                    let lower = path.to_lowercase();
+                    if lower.ends_with(".epub") {
                         #[cfg(feature = "std")]
                         {
+                            log::info!("APP: opening EPUB {}", path);
                             let mut renderer = EpubRenderer::new();
-                            if renderer.load(&path).is_ok() {
-                                let title = basename(&path).into();
-                                self.epub_renderer = Some(renderer);
-                                self.screen = Screen::EpubViewer { title };
-                                return true;
+                            match renderer.load(&path) {
+                                Ok(()) => {
+                                    let title = basename(&path).into();
+                                    self.epub_renderer = Some(renderer);
+                                    self.screen = Screen::EpubViewer { title };
+                                    log::info!("APP: EPUB opened {}", path);
+                                    return true;
+                                }
+                                Err(err) => {
+                                    log::info!("APP: EPUB failed to open {} ({})", path, err);
+                                }
                             }
                         }
 
                         #[cfg(not(feature = "std"))]
                         {
-                            let title = basename(&path).into();
-                            let message = "EPUB support is not available on firmware yet.\n\nUse the desktop or web simulator for EPUB rendering.";
-                            self.text_viewer = Some(TextViewer::new(message.to_string()));
-                            self.screen = Screen::TextViewer { title };
-                            return true;
+                            return false;
                         }
                     }
 
-                    if let Ok(content) = fs.read_file(&path) {
-                        let title = basename(&path).into();
-                        self.text_viewer = Some(TextViewer::new(content));
-                        self.screen = Screen::TextViewer { title };
-                        return true;
+                    if lower.ends_with(".txt") {
+                        if let Ok(content) = fs.read_file(&path) {
+                            let title = basename(&path).into();
+                            self.text_viewer = Some(TextViewer::new(content));
+                            self.screen = Screen::TextViewer { title };
+                            return true;
+                        }
+
+                        return false;
                     }
+
+                    return false;
                 }
 
                 redraw

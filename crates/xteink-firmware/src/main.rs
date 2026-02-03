@@ -8,11 +8,10 @@ use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{Input, PinDriver, Pull},
     peripherals::Peripherals,
-    spi::{config::Config, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+    spi::{config::Config, Dma, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
 };
 use esp_idf_svc::sys;
 
-use xteink_ui::filesystem::FileSystemError;
 use xteink_ui::FileSystem;
 use xteink_ui::{
     compute_diff_region, extract_region, App, BufferedDisplay, Builder, Button, Dimensions,
@@ -139,10 +138,10 @@ fn cli_redraw<I, D>(
     last_buffer.copy_from_slice(buffered_display.buffer());
 }
 
-fn handle_cli_command<I, D, SPI>(
+fn handle_cli_command<I, D>(
     line: &str,
     cli: &SerialCli,
-    fs: &mut SdCardFs<SPI>,
+    fs: &mut SdCardFs,
     app: &mut App,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
@@ -151,7 +150,6 @@ fn handle_cli_command<I, D, SPI>(
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
-    SPI: embedded_hal::spi::SpiDevice,
 {
     let mut parts = line.split_whitespace();
     let cmd = parts.next().unwrap_or("");
@@ -159,9 +157,11 @@ fn handle_cli_command<I, D, SPI>(
     match cmd {
         "help" => {
             cli.write_line(
-                "Commands: help, ls [path], rm <path>, rmdir <path>, mkdir/md <path>, cat <path>",
+                "Commands: help, ls [path], exists <path>, stat <path>, rm <path>, rmdir <path>, mkdir/md <path>, cat <path>",
             );
-            cli.write_line("          put <path> <size>, refresh <full|partial|fast>, sleep");
+            cli.write_line(
+                "          put <path> <size> [chunk], refresh <full|partial|fast>, sleep",
+            );
             cli.write_line("OK");
         }
         "ls" => {
@@ -182,6 +182,29 @@ fn handle_cli_command<I, D, SPI>(
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
             }
         }
+        "exists" => {
+            let path = parts.next().unwrap_or("/");
+            let exists = fs.exists(path);
+            cli.write_line(if exists { "1" } else { "0" });
+            cli.write_line("OK");
+        }
+        "stat" => {
+            let path = match parts.next() {
+                Some(path) => path,
+                None => {
+                    cli.write_line("ERR missing path");
+                    return;
+                }
+            };
+            match fs.file_info(path) {
+                Ok(info) => {
+                    let kind = if info.is_directory { "dir" } else { "file" };
+                    cli.write_line(&format!("{} {}", kind, info.size));
+                    cli.write_line("OK");
+                }
+                Err(err) => cli.write_line(&format!("ERR {:?}", err)),
+            }
+        }
         "rm" => {
             let path = match parts.next() {
                 Some(path) => path,
@@ -193,7 +216,7 @@ fn handle_cli_command<I, D, SPI>(
             match fs.file_info(path) {
                 Ok(info) => {
                     if info.is_directory {
-                        cli.write_line("ERR directory delete not supported");
+                        cli.write_line("ERR use rmdir for directories");
                         return;
                     }
                 }
@@ -227,7 +250,10 @@ fn handle_cli_command<I, D, SPI>(
                     return;
                 }
             }
-            cli.write_line("ERR directory delete not supported");
+            match fs.delete_dir(path) {
+                Ok(()) => cli.write_line("OK"),
+                Err(err) => cli.write_line(&format!("ERR {:?}", err)),
+            }
         }
         "mkdir" | "md" => {
             let path = match parts.next() {
@@ -286,35 +312,35 @@ fn handle_cli_command<I, D, SPI>(
                     return;
                 }
             };
+            let chunk_size: usize = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1024);
 
-            cli.write_line("OK READY");
-            let mut idle_us: i64 = 0;
-            let mut last_read_us: i64 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-            let res = fs.write_file_chunks(path, size, |buf| {
-                let read = cli.read_bytes(buf, 200);
-                if read < 0 {
-                    return Err(FileSystemError::IoError("UART read failed".into()));
-                }
-                let read = read as usize;
-                if read == 0 {
-                    let now_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-                    idle_us += now_us - last_read_us;
-                    last_read_us = now_us;
-                    if idle_us > 5_000_000 {
-                        return Err(FileSystemError::IoError("UART timeout".into()));
-                    }
-                    return Ok(0);
-                }
-                idle_us = 0;
-                last_read_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-                Ok(read)
-            });
+            cli.write_line(&format!("OK READY {}", chunk_size));
+            let mut hasher = crc32fast::Hasher::new();
+            let res = fs.write_file_streamed(
+                path,
+                size,
+                chunk_size,
+                |buf| {
+                    cli.read_exact(buf, 5000)?;
+                    hasher.update(buf);
+                    Ok(buf.len())
+                },
+                |written| {
+                    cli.write_line(&format!("OK {}", written));
+                    Ok(())
+                },
+            );
 
             if let Err(err) = res {
                 cli.write_line(&format!("ERR {:?}", err));
                 return;
             }
-            cli.write_line("OK DONE");
+
+            let crc = hasher.finalize();
+            cli.write_line(&format!("OK DONE {:08x}", crc));
         }
         "refresh" => {
             let mode = match parts.next().unwrap_or("fast") {
@@ -518,7 +544,7 @@ fn main() {
         peripherals.pins.gpio8,
         peripherals.pins.gpio10,
         Some(peripherals.pins.gpio7),
-        &SpiDriverConfig::default(),
+        &SpiDriverConfig::new().dma(Dma::Auto(4096)),
     )
     .unwrap();
 
@@ -531,15 +557,6 @@ fn main() {
 
     let spi_device =
         SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio21), &spi_config).unwrap();
-
-    // SD card SPI device (same bus, different CS)
-    let sd_spi_config = Config::default()
-        .baudrate(esp_idf_svc::hal::units::Hertz(20_000_000))
-        .data_mode(embedded_hal::spi::Mode {
-            polarity: embedded_hal::spi::Polarity::IdleLow,
-            phase: embedded_hal::spi::Phase::CaptureOnFirstTransition,
-        });
-    let sd_spi = SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio12), &sd_spi_config).unwrap();
 
     let dc = PinDriver::output(peripherals.pins.gpio4).unwrap();
     let rst = PinDriver::output(peripherals.pins.gpio5).unwrap();
@@ -580,8 +597,8 @@ fn main() {
     let mut region_scratch: Vec<u8> = Vec::new();
     let mut region_scratch_prev: Vec<u8> = Vec::new();
 
-    // Initialize SD card filesystem
-    let mut fs = SdCardFs::new(sd_spi).expect("SD card init failed");
+    // Initialize SD card filesystem via ESP-IDF FATFS
+    let mut fs = SdCardFs::new(&spi, peripherals.pins.gpio12).expect("SD card mount failed");
 
     // Initialize app and render initial screen
     let mut app = App::new();

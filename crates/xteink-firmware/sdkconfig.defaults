@@ -10,3 +10,14 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
 # Workaround for https://github.com/espressif/esp-idf/issues/7631
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
+
+# FATFS long filename support
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
+# Use custom partition table (2MB app)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="/home/h0rv/projects/rust-xteink-x4/partitions.csv"
+
+# Flash size
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

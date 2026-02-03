@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use esp_idf_svc::sys;
+use xteink_ui::filesystem::FileSystemError;
 
 pub struct SerialCli {
     buffer: Vec<u8>,
@@ -79,5 +80,25 @@ impl SerialCli {
             ticks.max(1) as sys::TickType_t
         };
         unsafe { sys::usb_serial_jtag_read_bytes(buf.as_mut_ptr().cast(), buf.len() as u32, ticks) }
+    }
+
+    pub fn read_exact(&self, buf: &mut [u8], timeout_ms: u32) -> Result<(), FileSystemError> {
+        let mut offset = 0usize;
+        let start_us: i64 = unsafe { sys::esp_timer_get_time() };
+        while offset < buf.len() {
+            let read = self.read_bytes(&mut buf[offset..], 200);
+            if read < 0 {
+                return Err(FileSystemError::IoError("UART read failed".into()));
+            }
+            if read == 0 {
+                let now_us: i64 = unsafe { sys::esp_timer_get_time() };
+                if (now_us - start_us) > (timeout_ms as i64 * 1000) {
+                    return Err(FileSystemError::IoError("UART timeout".into()));
+                }
+                continue;
+            }
+            offset += read as usize;
+        }
+        Ok(())
     }
 }

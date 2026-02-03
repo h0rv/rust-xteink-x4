@@ -20,7 +20,7 @@ use embedded_graphics::{
 
 use embedded_text::{alignment::HorizontalAlignment, style::TextBoxStyleBuilder, TextBox};
 
-use crate::filesystem::{filter_by_extension, FileInfo, FileSystem};
+use crate::filesystem::{FileInfo, FileSystem};
 use crate::input::{Button, InputEvent};
 use crate::portrait_dimensions;
 
@@ -32,6 +32,7 @@ pub struct FileBrowser {
     scroll_offset: usize,
     visible_items: usize,
     directory_state: BTreeMap<String, (usize, usize)>,
+    status_message: Option<String>,
 }
 
 impl FileBrowser {
@@ -53,6 +54,7 @@ impl FileBrowser {
             scroll_offset: 0,
             visible_items: Self::ITEMS_PER_PAGE,
             directory_state: BTreeMap::new(),
+            status_message: None,
         }
     }
 
@@ -84,9 +86,6 @@ impl FileBrowser {
     ) -> Result<(), crate::filesystem::FileSystemError> {
         let mut files = fs.list_files(&self.current_path)?;
 
-        // Filter to show only .txt and .epub files, plus directories
-        files = filter_by_extension(&files, &[".txt", ".epub"]);
-
         // Sort: directories first, then alphabetically
         files.sort_by(|a, b| match (a.is_directory, b.is_directory) {
             (true, false) => core::cmp::Ordering::Less,
@@ -109,6 +108,7 @@ impl FileBrowser {
         self.files = files;
         self.selected_index = 0;
         self.scroll_offset = 0;
+        self.status_message = None;
         self.restore_state();
 
         // Log loaded directory contents
@@ -132,6 +132,12 @@ impl FileBrowser {
     /// Returns true if screen needs redraw
     /// Returns Some(path) if a file was selected
     pub fn handle_input(&mut self, event: InputEvent) -> (bool, Option<String>) {
+        if matches!(event, InputEvent::Press(_)) {
+            if self.status_message.is_some() {
+                self.status_message = None;
+            }
+        }
+
         match event {
             InputEvent::Press(Button::VolumeUp) => {
                 if self.selected_index > 0 {
@@ -249,6 +255,10 @@ impl FileBrowser {
         self.files.get(self.selected_index)
     }
 
+    pub fn set_status_message(&mut self, message: String) {
+        self.status_message = Some(message);
+    }
+
     /// Render file browser
     pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
         &self,
@@ -342,6 +352,18 @@ impl FileBrowser {
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
         .draw(display)?;
         Text::new(&footer_text, Point::new(8, height as i32 - 8), footer_style).draw(display)?;
+
+        if let Some(message) = &self.status_message {
+            let bar_height = 16;
+            let bar_top = height as i32 - Self::FOOTER_HEIGHT - bar_height;
+            Rectangle::new(Point::new(0, bar_top), Size::new(width, bar_height as u32))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+                .draw(display)?;
+            Rectangle::new(Point::new(0, bar_top), Size::new(width, bar_height as u32))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(display)?;
+            Text::new(message, Point::new(8, bar_top + 12), footer_style).draw(display)?;
+        }
 
         Ok(())
     }

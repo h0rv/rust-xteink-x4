@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+import binascii
 
 import serial
 
@@ -69,6 +70,29 @@ def cmd_refresh(ser: serial.Serial, mode: str, timeout: float) -> None:
     read_response(ser, timeout)
 
 
+def cmd_exists(ser: serial.Serial, path: str, timeout: float) -> None:
+    write_line(ser, f"exists {path}")
+    lines = read_response(ser, timeout)
+    if lines:
+        print(lines[0])
+    else:
+        print("0")
+
+
+def cmd_stat(ser: serial.Serial, path: str, timeout: float) -> tuple[str, int] | None:
+    write_line(ser, f"stat {path}")
+    lines = read_response(ser, timeout)
+    if not lines:
+        return None
+    parts = lines[0].split()
+    if len(parts) != 2:
+        return None
+    kind = parts[0]
+    size = int(parts[1])
+    print(f"{kind} {size}")
+    return kind, size
+
+
 def cmd_sleep(ser: serial.Serial, timeout: float) -> None:
     write_line(ser, "sleep")
     read_response(ser, timeout)
@@ -78,21 +102,49 @@ def cmd_put(
     ser: serial.Serial, local_path: str, remote_path: str, timeout: float
 ) -> None:
     size = os.path.getsize(local_path)
-    write_line(ser, f"put {remote_path} {size}")
-    line = read_line(ser, timeout)
-    if line != "OK READY":
+    chunk_size = 1024
+    write_line(ser, f"put {remote_path} {size} {chunk_size}")
+    done_timeout = max(timeout, size / 2000.0 + 8.0)
+    line = read_line(ser, done_timeout)
+    if not line.startswith("OK READY"):
         raise RuntimeError(line)
 
+    crc = 0
+    bytes_sent = 0
+    last_reported = 0
     with open(local_path, "rb") as handle:
         while True:
-            chunk = handle.read(512)
+            chunk = handle.read(chunk_size)
             if not chunk:
                 break
+            crc = binascii.crc32(chunk, crc)
             ser.write(chunk)
+            bytes_sent += len(chunk)
+            ack = read_line(ser, done_timeout)
+            if not ack.startswith("OK "):
+                raise RuntimeError(ack)
+            if bytes_sent - last_reported >= 4096 or bytes_sent == size:
+                percent = (bytes_sent / size * 100.0) if size else 100.0
+                sys.stdout.write(f"\rUpload {bytes_sent}/{size} bytes ({percent:.1f}%)")
+                sys.stdout.flush()
+                last_reported = bytes_sent
 
-    line = read_line(ser, timeout)
-    if line != "OK DONE":
+    ser.flush()
+
+    if size:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    line = read_line(ser, done_timeout)
+    if not line.startswith("OK DONE"):
         raise RuntimeError(line)
+    parts = line.split()
+    if len(parts) >= 3:
+        remote_crc = parts[2]
+        if remote_crc.strip() != f"{crc & 0xFFFFFFFF:08x}":
+            raise RuntimeError(
+                f"CRC mismatch: device={remote_crc} local={crc & 0xFFFFFFFF:08x}"
+            )
 
 
 def main() -> int:
@@ -127,6 +179,12 @@ def main() -> int:
         "mode", choices=["fast", "partial", "full"], default="fast"
     )
 
+    exists_cmd = sub.add_parser("exists")
+    exists_cmd.add_argument("path")
+
+    stat_cmd = sub.add_parser("stat")
+    stat_cmd.add_argument("path")
+
     sub.add_parser("sleep")
     sub.add_parser("help")
 
@@ -148,6 +206,10 @@ def main() -> int:
                 cmd_put(ser, args.local, args.remote, args.timeout)
             elif args.cmd == "refresh":
                 cmd_refresh(ser, args.mode, args.timeout)
+            elif args.cmd == "exists":
+                cmd_exists(ser, args.path, args.timeout)
+            elif args.cmd == "stat":
+                cmd_stat(ser, args.path, args.timeout)
             elif args.cmd == "sleep":
                 cmd_sleep(ser, args.timeout)
             elif args.cmd == "help":

@@ -1,77 +1,80 @@
-# rust_xteink_x4
+# Xteink X4 Documentation
 
-## Dev Containers
-This repository offers Dev Containers supports for:
--  [VS Code Dev Containers](https://code.visualstudio.com/docs/remote/containers#_quick-start-open-an-existing-folder-in-a-container)
--  [GitHub Codespaces](https://docs.github.com/en/codespaces/developing-in-codespaces/creating-a-codespace)
-> **Note**
->
-> In [order to use GitHub Codespaces](https://github.com/features/codespaces#faq)
-> the project needs to be published in a GitHub repository and the user needs
-> to be part of the Codespaces beta or have the project under an organization.
+Documentation for the Xteink X4 e-ink reader firmware - an ESP32-C3 based e-reader written in Rust.
 
-If using VS Code or GitHub Codespaces, you can pull the image instead of building it
-from the Dockerfile by selecting the `image` property instead of `build` in
-`.devcontainer/devcontainer.json`. Further customization of the Dev Container can
-be achived, see [.devcontainer.json reference](https://code.visualstudio.com/docs/remote/devcontainerjson-reference).
+---
 
-When using Dev Containers, some tooling to facilitate building, flashing and
-simulating in Wokwi is also added.
-### Build
-- Terminal approach:
+## Quick Links
 
-    ```
-    scripts/build.sh  [debug | release]
-    ```
-    > If no argument is passed, `release` will be used as default
+### For Developers
+- **[PLAN.md](./PLAN.md)** - Master project plan with hardware specs and critical path
+- **[GLOSSARY.md](./GLOSSARY.md)** - Terms and definitions
+- **[FUTURE_FEATURES.md](./FUTURE_FEATURES.md)** - Ideas for future development
 
+### EPUB Implementation
+- **[EPUB_ARCHITECTURE_COMPARISON.md](./EPUB_ARCHITECTURE_COMPARISON.md)** - Compare all 6 possible approaches with tradeoffs
+- **[epub-plan-revised-2026-02-03.md](./epub-plan-revised-2026-02-03.md)** - Detailed streaming EPUB implementation plan
+- **[epub-library-scan-2026-02-03.md](./epub-library-scan-2026-02-03.md)** - Rust library research for EPUB/typography
 
--  UI approach:
+### UI/UX Design
+- **[ui-paradigms.md](./ui-paradigms.md)** - UI interaction patterns
+- **[ui-mockups-complete.md](./ui-mockups-complete.md)** - Complete UI mockups
+- **[ui-creative-complete.md](./ui-creative-complete.md)** - Creative UI concepts
 
-    The default build task is already set to build the project, and it can be used
-    in VS Code and GitHub Codespaces:
-    - From the [Command Palette](https://code.visualstudio.com/docs/getstarted/userinterface#_command-palette) (`Ctrl-Shift-P` or `Cmd-Shift-P`) run the `Tasks: Run Build Task` command.
-    - `Terminal`-> `Run Build Task` in the menu.
-    - With `Ctrl-Shift-B` or `Cmd-Shift-B`.
-    - From the [Command Palette](https://code.visualstudio.com/docs/getstarted/userinterface#_command-palette) (`Ctrl-Shift-P` or `Cmd-Shift-P`) run the `Tasks: Run Task` command and
-    select `Build`.
-    - From UI: Press `Build` on the left side of the Status Bar.
+### Hardware
+- **[ssd1677-code-review.md](./ssd1677-code-review.md)** - Display driver review
+- **[ebook-libraries-2026.md](./ebook-libraries-2026.md)** - E-ink library ecosystem review
 
-### Flash
+---
 
-> **Note**
->
-> When using GitHub Codespaces, we need to make the ports
-> public, [see instructions](https://docs.github.com/en/codespaces/developing-in-codespaces/forwarding-ports-in-your-codespace#sharing-a-port).
+## Documentation Guide
 
-- Terminal approach:
-  - Using `flash.sh` script:
+### New to the project?
+1. Start with **[PLAN.md](./PLAN.md)** for hardware specs and project phases
+2. Read **[EPUB_ARCHITECTURE_COMPARISON.md](./EPUB_ARCHITECTURE_COMPARISON.md)** to understand EPUB implementation options
+3. Check **[GLOSSARY.md](./GLOSSARY.md)** for unfamiliar terms
 
-    ```
-    scripts/flash.sh [debug | release]
-    ```
-    > If no argument is passed, `release` will be used as default
+### Working on EPUB support?
+2. **[epub-plan-revised-2026-02-03.md](./epub-plan-revised-2026-02-03.md)** - Implementation details
+3. **[epub-library-scan-2026-02-03.md](./epub-library-scan-2026-02-03.md)** - Library choices
 
-- UI approach:
-    - From the [Command Palette](https://code.visualstudio.com/docs/getstarted/userinterface#_command-palette) (`Ctrl-Shift-P` or `Cmd-Shift-P`) run the `Tasks: Run Task` command and
-    select `Build & Flash`.
-    - From UI: Press `Build & Flash` on the left side of the Status Bar.
-- Any alternative flashing method from host machine.
+---
 
+## Key Decisions Documented
 
-### Wokwi Simulation
+| Decision | Document | Status |
+|----------|----------|--------|
+| EPUB Architecture | [EPUB_ARCHITECTURE_COMPARISON.md](./EPUB_ARCHITECTURE_COMPARISON.md) | ✅ **Approach 2: Streaming Reflow** recommended |
+| Library Stack | [epub-library-scan-2026-02-03.md](./epub-library-scan-2026-02-03.md) | ✅ `quick-xml` + `zip` + `fontdue` |
+| Implementation Phases | [epub-plan-revised-2026-02-03.md](./epub-plan-revised-2026-02-03.md) | ✅ 6 phases defined |
+| Hardware Specs | [PLAN.md](./PLAN.md) | ✅ ESP32-C3, 480x800, SSD1677 |
 
-#### VS Code Dev Containers and GitHub Codespaces
+---
 
-The Dev Container includes the Wokwi Vs Code installed, hence you can simulate your built projects doing the following:
-1. Press `F1`
-2. Run `Wokwi: Start Simulator`
+## Memory Constraints Summary
 
-> **Note**
->
->  We assume that the project is built in `debug` mode, if you want to simulate projects in release, please update the `elf` and  `firmware` proprieties in `wokwi.toml`.
+```
+ESP32-C3 Available Resources:
+├── Total RAM:                400KB
+├── Application heap:         ~300KB
+├── Safe EPUB budget:         ~100KB
+├── Display buffer:            48KB
+└── OOM threshold:           >150KB
 
-For more information and details on how to use the Wokwi extension, see [Getting Started] and [Debugging your code] Chapter of the Wokwi documentation.
+Target: Peak usage <100KB for EPUB operations
+```
 
-[Getting Started]: https://docs.wokwi.com/vscode/getting-started
-[Debugging your code]: https://docs.wokwi.com/vscode/debugging
+**Key Constraint:** Current implementation crashes at ~165KB (OOM). New architecture must stay under 100KB.
+
+---
+
+## Current Status
+
+**Phase 1: Display Driver** - ✅ Complete (SSD1677 working)  
+**Phase 2: Button Input** - ✅ Complete  
+**Phase 3: SD Card** - ✅ Complete (FATFS + CLI)  
+**Phase 4: EPUB Reader** - 🔄 In Progress (Architecture selected, implementation starting)
+
+---
+
+*Last Updated: 2026-02-03*

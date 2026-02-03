@@ -3,7 +3,9 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use embedded_sdmmc::{sdcard::DummyCsPin, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+use embedded_sdmmc::{
+    sdcard::DummyCsPin, Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+};
 use esp_idf_svc::hal::delay::FreeRtos;
 use xteink_ui::filesystem::{FileInfo, FileSystem, FileSystemError};
 
@@ -33,29 +35,6 @@ impl<SPI> SdCardFs<SPI>
 where
     SPI: embedded_hal::spi::SpiDevice,
 {
-    fn open_dir_by_path<'a>(
-        &mut self,
-        volume: &'a mut embedded_sdmmc::Volume,
-        path: &str,
-    ) -> Result<embedded_sdmmc::Directory<'a>, FileSystemError> {
-        let mut dir = volume
-            .open_root_dir()
-            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-
-        let clean = path.trim_matches('/');
-        if clean.is_empty() {
-            return Ok(dir);
-        }
-
-        for part in clean.split('/') {
-            dir = dir
-                .open_dir(part)
-                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-        }
-
-        Ok(dir)
-    }
-
     fn split_dir_file(path: &str) -> (&str, &str) {
         match path.rfind('/') {
             Some(0) => ("/", &path[1..]),
@@ -72,6 +51,104 @@ where
         let volume_mgr = VolumeManager::new(sdcard, DummyTimeSource);
         Ok(Self { volume_mgr })
     }
+
+    pub fn delete_file(&mut self, path: &str) -> Result<(), FileSystemError> {
+        let mut volume = self
+            .volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+
+        let (dir_path, filename) = Self::split_dir_file(path);
+        if filename.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let clean = dir_path.trim_matches('/');
+        for part in clean.split('/').filter(|part| !part.is_empty()) {
+            dir.change_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        }
+        dir.delete_file_in_dir(filename)
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Ok(())
+    }
+
+    pub fn make_dir(&mut self, path: &str) -> Result<(), FileSystemError> {
+        let mut volume = self
+            .volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+
+        let (dir_path, name) = Self::split_dir_file(path);
+        if name.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let clean = dir_path.trim_matches('/');
+        for part in clean.split('/').filter(|part| !part.is_empty()) {
+            dir.change_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        }
+        dir.make_dir_in_dir(name)
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Ok(())
+    }
+
+    pub fn write_file_chunks<F>(
+        &mut self,
+        path: &str,
+        total_size: usize,
+        mut read_chunk: F,
+    ) -> Result<(), FileSystemError>
+    where
+        F: FnMut(&mut [u8]) -> Result<usize, FileSystemError>,
+    {
+        let mut volume = self
+            .volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+
+        let (dir_path, filename) = Self::split_dir_file(path);
+        if filename.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let clean = dir_path.trim_matches('/');
+        for part in clean.split('/').filter(|part| !part.is_empty()) {
+            dir.change_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        }
+        let mut file = dir
+            .open_file_in_dir(filename, Mode::ReadWriteCreateOrTruncate)
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+
+        let mut chunk = [0u8; 512];
+        let mut remaining = total_size;
+        while remaining > 0 {
+            let to_read = remaining.min(chunk.len());
+            let read = read_chunk(&mut chunk[..to_read])?;
+            if read == 0 {
+                continue;
+            }
+            if read > to_read {
+                return Err(FileSystemError::IoError("Read overflow".into()));
+            }
+            file.write(&chunk[..read])
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+            remaining = remaining.saturating_sub(read);
+        }
+
+        Ok(())
+    }
 }
 
 impl<SPI> FileSystem for SdCardFs<SPI>
@@ -84,7 +161,14 @@ where
             .open_volume(VolumeIdx(0))
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
-        let mut dir = self.open_dir_by_path(&mut volume, path)?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let clean = path.trim_matches('/');
+        for part in clean.split('/').filter(|part| !part.is_empty()) {
+            dir.change_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        }
 
         let mut files = Vec::new();
 
@@ -122,7 +206,14 @@ where
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
         let (dir_path, filename) = Self::split_dir_file(path);
-        let mut dir = self.open_dir_by_path(&mut volume, dir_path)?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let clean = dir_path.trim_matches('/');
+        for part in clean.split('/').filter(|part| !part.is_empty()) {
+            dir.change_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        }
         let mut file = dir
             .open_file_in_dir(filename, embedded_sdmmc::Mode::ReadOnly)
             .map_err(|_| FileSystemError::NotFound)?;

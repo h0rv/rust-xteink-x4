@@ -49,20 +49,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Controls:");
     println!("  Arrow Keys / WASD - Navigate");
     println!("  Enter / Space - Open file");
-    println!("  Escape - Back");
+    println!("  Backspace - Back");
+    println!("  Escape - Quit");
     println!("  P - Power (toggle mode)");
 
     loop {
         let events = window.events().collect::<Vec<_>>();
-        let ignore_quit = events.iter().any(|event| {
-            matches!(
-                event,
-                SimulatorEvent::KeyDown {
-                    keycode: Keycode::Escape,
-                    ..
-                }
-            )
-        });
+        let ignore_quit = false;
 
         for event in events {
             match event {
@@ -220,7 +213,7 @@ fn keycode_to_button(keycode: Keycode) -> Option<Button> {
         Keycode::Up | Keycode::W => Some(Button::VolumeUp),
         Keycode::Down | Keycode::S => Some(Button::VolumeDown),
         Keycode::Return | Keycode::Space => Some(Button::Confirm),
-        Keycode::Escape => Some(Button::Back),
+        Keycode::Backspace => Some(Button::Back),
         Keycode::P => Some(Button::Power),
         _ => None,
     }

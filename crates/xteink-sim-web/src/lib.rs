@@ -209,7 +209,7 @@ pub fn main() -> Result<(), JsValue> {
     web_sys::console::log_1(&"Controls:".into());
     web_sys::console::log_1(&"  Arrow Keys / WASD - Navigate".into());
     web_sys::console::log_1(&"  Enter / Space - Open file".into());
-    web_sys::console::log_1(&"  Escape - Back".into());
+    web_sys::console::log_1(&"  Backspace - Back".into());
     web_sys::console::log_1(&"  P - Toggle Library/Reader mode".into());
 
     Ok(())
@@ -222,7 +222,7 @@ fn key_to_button(key: &str) -> Option<Button> {
         "ArrowUp" | "w" => Some(Button::VolumeUp),
         "ArrowDown" | "s" => Some(Button::VolumeDown),
         "Enter" | " " => Some(Button::Confirm),
-        "Escape" => Some(Button::Back),
+        "Backspace" => Some(Button::Back),
         "p" => Some(Button::Power),
         _ => None,
     }

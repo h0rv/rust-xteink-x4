@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 

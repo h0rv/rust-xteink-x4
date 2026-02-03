@@ -3,6 +3,8 @@
 port := "/dev/ttyACM0"
 backup_file := "firmware_backup.bin"
 
+mod cli "cli/justfile"
+
 # Set ESP-IDF sdkconfig defaults path (MUST be set before any cargo build)
 
 export ESP_IDF_SDKCONFIG_DEFAULTS := "crates/xteink-firmware/sdkconfig.defaults"
@@ -125,3 +127,7 @@ test-diff:
 # Run all tests (host target)
 test:
     cargo test --workspace --features std --target x86_64-unknown-linux-gnu
+
+# Show CLI helpers
+cli-help:
+    @just --list cli

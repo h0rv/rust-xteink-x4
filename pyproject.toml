@@ -1,0 +1,6 @@
+[project]
+name = "xteink-cli"
+version = "0.1.0"
+description = "Serial CLI for Xteink X4"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5"]

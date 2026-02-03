@@ -1,5 +1,6 @@
 extern crate alloc;
 
+mod cli;
 mod sdcard;
 
 use alloc::vec::Vec;
@@ -11,12 +12,15 @@ use esp_idf_svc::hal::{
 };
 use esp_idf_svc::sys;
 
+use xteink_ui::filesystem::FileSystemError;
+use xteink_ui::FileSystem;
 use xteink_ui::{
     compute_diff_region, extract_region, App, BufferedDisplay, Builder, Button, Dimensions,
     DisplayInterface, EinkDisplay, EinkInterface, InputEvent, RamXAddressing, RefreshMode, Region,
     Rotation, UpdateRegion,
 };
 
+use cli::SerialCli;
 use sdcard::SdCardFs;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -104,6 +108,230 @@ fn read_buttons(
     }
 
     (None, false)
+}
+
+fn format_size(size: u64) -> String {
+    if size >= 1024 * 1024 {
+        format!("{:.1}MB", size as f32 / (1024.0 * 1024.0))
+    } else if size >= 1024 {
+        format!("{:.0}KB", size as f32 / 1024.0)
+    } else {
+        format!("{}B", size)
+    }
+}
+
+fn cli_redraw<I, D>(
+    app: &mut App,
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    buffered_display: &mut BufferedDisplay,
+    last_buffer: &mut Vec<u8>,
+    mode: RefreshMode,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    buffered_display.clear();
+    app.render(buffered_display).ok();
+    display
+        .update_with_mode_no_lut(buffered_display.buffer(), &[], mode, delay)
+        .ok();
+    last_buffer.copy_from_slice(buffered_display.buffer());
+}
+
+fn handle_cli_command<I, D, SPI>(
+    line: &str,
+    cli: &SerialCli,
+    fs: &mut SdCardFs<SPI>,
+    app: &mut App,
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    buffered_display: &mut BufferedDisplay,
+    last_buffer: &mut Vec<u8>,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+    SPI: embedded_hal::spi::SpiDevice,
+{
+    let mut parts = line.split_whitespace();
+    let cmd = parts.next().unwrap_or("");
+
+    match cmd {
+        "help" => {
+            cli.write_line(
+                "Commands: help, ls [path], rm <path>, rmdir <path>, mkdir/md <path>, cat <path>",
+            );
+            cli.write_line("          put <path> <size>, refresh <full|partial|fast>, sleep");
+            cli.write_line("OK");
+        }
+        "ls" => {
+            let path = parts.next().unwrap_or("/");
+            match fs.list_files(path) {
+                Ok(files) => {
+                    for file in files {
+                        let kind = if file.is_directory { "D" } else { "F" };
+                        let name = if file.is_directory {
+                            format!("{}/", file.name)
+                        } else {
+                            file.name
+                        };
+                        cli.write_line(&format!("{} {} {}", kind, name, format_size(file.size)));
+                    }
+                    cli.write_line("OK");
+                }
+                Err(err) => cli.write_line(&format!("ERR {:?}", err)),
+            }
+        }
+        "rm" => {
+            let path = match parts.next() {
+                Some(path) => path,
+                None => {
+                    cli.write_line("ERR missing path");
+                    return;
+                }
+            };
+            match fs.file_info(path) {
+                Ok(info) => {
+                    if info.is_directory {
+                        cli.write_line("ERR directory delete not supported");
+                        return;
+                    }
+                }
+                Err(err) => {
+                    cli.write_line(&format!("ERR {:?}", err));
+                    return;
+                }
+            }
+            match fs.delete_file(path) {
+                Ok(()) => cli.write_line("OK"),
+                Err(err) => cli.write_line(&format!("ERR {:?}", err)),
+            }
+        }
+        "rmdir" => {
+            let path = match parts.next() {
+                Some(path) => path,
+                None => {
+                    cli.write_line("ERR missing path");
+                    return;
+                }
+            };
+            match fs.file_info(path) {
+                Ok(info) => {
+                    if !info.is_directory {
+                        cli.write_line("ERR not a directory");
+                        return;
+                    }
+                }
+                Err(err) => {
+                    cli.write_line(&format!("ERR {:?}", err));
+                    return;
+                }
+            }
+            cli.write_line("ERR directory delete not supported");
+        }
+        "mkdir" | "md" => {
+            let path = match parts.next() {
+                Some(path) => path,
+                None => {
+                    cli.write_line("ERR missing path");
+                    return;
+                }
+            };
+            match fs.make_dir(path) {
+                Ok(()) => cli.write_line("OK"),
+                Err(err) => cli.write_line(&format!("ERR {:?}", err)),
+            }
+        }
+        "cat" => {
+            let path = match parts.next() {
+                Some(path) => path,
+                None => {
+                    cli.write_line("ERR missing path");
+                    return;
+                }
+            };
+            match fs.file_info(path) {
+                Ok(info) => {
+                    if info.size > 16 * 1024 {
+                        cli.write_line("ERR file too large");
+                        return;
+                    }
+                }
+                Err(err) => {
+                    cli.write_line(&format!("ERR {:?}", err));
+                    return;
+                }
+            }
+            match fs.read_file(path) {
+                Ok(content) => {
+                    cli.write_str(&content);
+                    cli.write_line("");
+                    cli.write_line("OK");
+                }
+                Err(err) => cli.write_line(&format!("ERR {:?}", err)),
+            }
+        }
+        "put" => {
+            let path = match parts.next() {
+                Some(path) => path,
+                None => {
+                    cli.write_line("ERR missing path");
+                    return;
+                }
+            };
+            let size: usize = match parts.next().and_then(|value| value.parse().ok()) {
+                Some(size) => size,
+                None => {
+                    cli.write_line("ERR missing size");
+                    return;
+                }
+            };
+
+            cli.write_line("OK READY");
+            let mut idle_us: i64 = 0;
+            let mut last_read_us: i64 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+            let res = fs.write_file_chunks(path, size, |buf| {
+                let read = cli.read_bytes(buf, 200);
+                if read < 0 {
+                    return Err(FileSystemError::IoError("UART read failed".into()));
+                }
+                let read = read as usize;
+                if read == 0 {
+                    let now_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+                    idle_us += now_us - last_read_us;
+                    last_read_us = now_us;
+                    if idle_us > 5_000_000 {
+                        return Err(FileSystemError::IoError("UART timeout".into()));
+                    }
+                    return Ok(0);
+                }
+                idle_us = 0;
+                last_read_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
+                Ok(read)
+            });
+
+            if let Err(err) = res {
+                cli.write_line(&format!("ERR {:?}", err));
+                return;
+            }
+            cli.write_line("OK DONE");
+        }
+        "refresh" => {
+            let mode = match parts.next().unwrap_or("fast") {
+                "full" => RefreshMode::Full,
+                "partial" => RefreshMode::Partial,
+                _ => RefreshMode::Fast,
+            };
+            cli_redraw(app, display, delay, buffered_display, last_buffer, mode);
+            cli.write_line("OK");
+        }
+        "sleep" => {
+            cli.write_line("OK sleeping");
+            enter_deep_sleep(3);
+        }
+        "" => {}
+        _ => cli.write_line("ERR unknown command"),
+    }
 }
 
 fn update_display_diff<I, D>(
@@ -366,14 +594,11 @@ fn main() {
     last_buffer.copy_from_slice(buffered_display.buffer());
 
     let update_strategy = UpdateStrategy::FastFull;
-    let mut fast_refresh_counter: u32 = 0;
-    const REFRESH_FREQUENCY: u32 = 15; // Match crosspoint default
-    const IDLE_PARTIAL_THRESHOLD_US: i64 = 1_500_000; // 1.5s
-    let mut last_input_us: i64 = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
     log::info!("Update strategy: {:?}", update_strategy);
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
+    log::info!("CLI: connect via USB-Serial/JTAG @ 115200 (type 'help')");
 
     let mut last_button: Option<Button> = None;
     let mut power_press_counter: u32 = 0;
@@ -381,8 +606,22 @@ fn main() {
     let mut long_press_triggered: bool = false;
     const DEBUG_ADC: bool = false;
     const POWER_LONG_PRESS_ITERATIONS: u32 = POWER_LONG_PRESS_MS / 50;
+    let mut cli = SerialCli::new();
 
     loop {
+        if let Some(line) = cli.poll_line() {
+            handle_cli_command(
+                &line,
+                &cli,
+                &mut fs,
+                &mut app,
+                &mut display,
+                &mut delay,
+                &mut buffered_display,
+                &mut last_buffer,
+            );
+        }
+
         let (button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
 
         if power_pressed {
@@ -430,10 +669,8 @@ fn main() {
                         buffered_display.clear();
                         app.render(&mut buffered_display).ok();
 
-                        // Power interactions trigger a clean refresh
-                        fast_refresh_counter = 0;
                         apply_update(
-                            UpdateStrategy::PartialFull,
+                            UpdateStrategy::FastFull,
                             &mut display,
                             &mut delay,
                             buffered_display.buffer(),
@@ -457,44 +694,12 @@ fn main() {
                 log::info!("Button pressed: {:?}", btn);
                 last_button = Some(btn);
 
-                let now_us = unsafe { esp_idf_svc::sys::esp_timer_get_time() };
-                let idle_us = now_us - last_input_us;
-                last_input_us = now_us;
-
                 if app.handle_input(InputEvent::Press(btn), &mut fs) {
                     log::info!("UI: redraw after {:?}", btn);
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
-
-                    let mut strategy = update_strategy;
-                    match btn {
-                        Button::Confirm | Button::Back => {
-                            fast_refresh_counter = 0;
-                            strategy = UpdateStrategy::PartialFull;
-                        }
-                        _ => {
-                            if idle_us > IDLE_PARTIAL_THRESHOLD_US {
-                                fast_refresh_counter = 0;
-                                strategy = UpdateStrategy::PartialFull;
-                            } else {
-                                fast_refresh_counter += 1;
-                                if fast_refresh_counter >= REFRESH_FREQUENCY {
-                                    fast_refresh_counter = 0;
-                                    strategy = UpdateStrategy::PartialFull;
-                                }
-                            }
-                        }
-                    }
-
-                    log::info!(
-                        "UI: strategy {:?} (idle_us={}, counter={})",
-                        strategy,
-                        idle_us,
-                        fast_refresh_counter
-                    );
-
                     apply_update(
-                        strategy,
+                        update_strategy,
                         &mut display,
                         &mut delay,
                         buffered_display.buffer(),

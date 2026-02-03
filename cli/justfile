@@ -1,0 +1,32 @@
+cli_port := env_var_or_default("XTEINK_PORT", "/dev/ttyACM0")
+cli_baud := env_var_or_default("XTEINK_BAUD", "115200")
+
+default:
+    @just --list
+
+help:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} help
+
+ls path="/":
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} ls {{path}}
+
+rm path:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} rm {{path}}
+
+rmdir path:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} rmdir {{path}}
+
+mkdir path:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir {{path}}
+
+cat path:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} cat {{path}}
+
+put local remote:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{local}} {{remote}}
+
+refresh mode="fast":
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} refresh {{mode}}
+
+sleep:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} sleep

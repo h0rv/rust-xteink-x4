@@ -607,6 +607,19 @@ impl EpubRenderer {
             }
         }
 
+        // Progress bar
+        let bar_width = width.saturating_sub(20);
+        let bar_x = 10;
+        let bar_y = height as i32 - 18;
+        let total_pages = self.total_pages().max(1);
+        let filled = ((bar_width as usize * self.current_page_number()) / total_pages) as u32;
+        Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_width, 6))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)?;
+        Rectangle::new(Point::new(bar_x, bar_y), Size::new(filled, 6))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+
         // Draw footer with page info using FontCache
         let footer_text = format!(
             "Pg {}/{} | Ch {}/{} | <=Prev | >=Next",

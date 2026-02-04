@@ -118,6 +118,13 @@ fn format_size(size: u64) -> String {
         format!("{}B", size)
     }
 }
+/// Log heap usage statistics
+fn log_heap(label: &str) {
+    let free_heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
+    let min_free = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
+    log::info!("[HEAP] {}: free={} bytes min_free={} bytes", label, free_heap, min_free);
+}
+
 
 fn cli_redraw<I, D>(
     app: &mut App,
@@ -519,6 +526,7 @@ fn enter_deep_sleep(power_btn_pin: i32) {
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    log_heap("startup");
 
     // Stack size verification (runtime log)
     // ESP32-C3 has ~191KB total RAM, so we use 64KB for stack
@@ -602,12 +610,16 @@ fn main() {
 
     // Initialize app and render initial screen
     let mut app = App::new();
+    log_heap("before_app_init");
     app.init(&mut fs);
+    log_heap("after_app_init");
     buffered_display.clear();
     app.render(&mut buffered_display).ok();
+    log_heap("before_first_render");
     display
         .update(buffered_display.buffer(), &[], &mut delay)
         .ok();
+    log_heap("after_first_render");
     last_buffer.copy_from_slice(buffered_display.buffer());
 
     let update_strategy = UpdateStrategy::FastFull;
@@ -713,6 +725,7 @@ fn main() {
 
                 if app.handle_input(InputEvent::Press(btn), &mut fs) {
                     log::info!("UI: redraw after {:?}", btn);
+                    log_heap("before_render");
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
                     apply_update(
@@ -726,6 +739,7 @@ fn main() {
                         buffered_display.width_bytes(),
                         buffered_display.height_pixels() as usize,
                     );
+                    log_heap("after_render");
                 } else {
                     log::info!("UI: no redraw after {:?}", btn);
                 }

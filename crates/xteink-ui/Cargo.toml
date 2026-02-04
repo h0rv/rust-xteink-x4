@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["fontdue"]
-std = ["epub", "html2text"]
+std = ["epub", "html2text", "quick-xml"]
 
 [dependencies]
 embedded-graphics = "0.8"
@@ -22,6 +22,14 @@ fontdue = { version = "0.9.3", optional = true }
 
 # HTML parsing for EPUB content  
 html2text = { version = "0.16.7", optional = true }
+
+# XML parsing for EPUB metadata (SAX-style)
+quick-xml = { version = "0.37", optional = true }
+
+# ZIP streaming support for EPUB files (no_std compatible)
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+crc32fast = { version = "1.4", default-features = false }
+heapless = { version = "0.8", default-features = false }
 
 # E-ink display driver (re-exported for firmware use)
 # Using local path during development - change to crates.io version when published

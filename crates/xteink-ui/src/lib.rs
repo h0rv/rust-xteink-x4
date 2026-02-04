@@ -15,6 +15,9 @@ pub mod font_render;
 pub mod input;
 
 #[cfg(feature = "std")]
+pub mod epub;
+
+#[cfg(feature = "std")]
 pub mod epub_render;
 
 #[cfg(feature = "std")]
@@ -31,6 +34,12 @@ pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;
 pub use input::{Button, InputEvent};
+
+#[cfg(feature = "std")]
+pub use epub::{
+    EpubMetadata, ManifestItem, Spine, SpineItem,
+    parse_container_xml, parse_opf, parse_spine, extract_metadata, create_spine,
+};
 
 #[cfg(feature = "std")]
 pub use epub_render::EpubRenderer;

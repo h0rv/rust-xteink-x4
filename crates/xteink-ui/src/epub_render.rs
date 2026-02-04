@@ -1,7 +1,8 @@
 //! EPUB rendering engine for Xteink X4
 //!
-//! Provides full EPUB support with TTF font rendering using fontdue.
-//! Designed to work within 400KB RAM constraints by processing one chapter at a time.
+//! Provides EPUB support using built-in fonts only.
+//! DISABLED: TTF font loading to prevent OOM crashes.
+//! Memory target: <80KB for EPUB processing.
 
 extern crate alloc;
 
@@ -17,12 +18,11 @@ use embedded_graphics::{
     text::Text,
 };
 
-use crate::font_render::FontCache;
 use crate::portrait_dimensions;
 
 /// EPUB book renderer
 ///
-/// Manages loading and rendering of EPUB files with embedded TTF fonts.
+/// Manages loading and rendering of EPUB files using built-in fonts.
 /// Processes one chapter at a time to manage memory usage.
 pub struct EpubRenderer {
     /// Path to the EPUB file
@@ -45,11 +45,10 @@ pub struct EpubRenderer {
     title: String,
     author: String,
 
-    /// Font cache for embedded fonts
-    font_cache: FontCache,
-
-    /// Name of the current font to use
-    current_font_name: String,
+    /// Font size for rendering (pixels)
+    font_size: f32,
+    /// Line height for rendering (pixels)  
+    line_height: f32,
 }
 
 /// A single page of rendered content
@@ -116,19 +115,35 @@ impl Default for LayoutMetrics {
     }
 }
 
+/// Heap watermark logging for memory tracking
+/// Logs checkpoint with label for memory profiling
+#[cfg(feature = "std")]
+pub fn log_heap_watermark(label: &str) {
+    // Use eprintln which works on both desktop and ESP32 std builds
+    // The actual heap stats are logged separately from main.rs
+    eprintln!("[EPUB HEAP] {}: checkpoint", label);
+}
+
+#[cfg(not(feature = "std"))]
+pub fn log_heap_watermark(_label: &str) {
+    // No-op on no_std without allocator introspection
+}
+
 impl EpubRenderer {
     /// Content area height after margins
     const TOP_MARGIN: i32 = 50;
     const BOTTOM_MARGIN: i32 = 40;
     const LEFT_MARGIN: i32 = 10;
     const RIGHT_MARGIN: i32 = 10;
+    /// Character width for built-in font (FONT_6X10 is 6px wide)
+    const CHAR_WIDTH: f32 = 6.0;
+    const CHAR_HEIGHT: f32 = 10.0;
 
     /// Create empty renderer
     pub fn new() -> Self {
-        let mut font_cache = FontCache::new();
-        font_cache.set_font_size(16.0);
+        log_heap_watermark("epub_new_start");
 
-        Self {
+        let renderer = Self {
             #[cfg(feature = "std")]
             file_path: None,
             current_chapter: 0,
@@ -137,9 +152,12 @@ impl EpubRenderer {
             current_page: 0,
             title: String::from("Unknown"),
             author: String::from("Unknown"),
-            font_cache,
-            current_font_name: String::from("default"),
-        }
+            font_size: Self::CHAR_HEIGHT,
+            line_height: Self::CHAR_HEIGHT * 1.2,
+        };
+
+        log_heap_watermark("epub_new_end");
+        renderer
     }
 
     /// Load EPUB file from path
@@ -147,6 +165,8 @@ impl EpubRenderer {
     pub fn load(&mut self, path: &str) -> Result<(), String> {
         use epub::doc::EpubDoc;
         use std::path::Path;
+
+        log_heap_watermark("epub_load_start");
 
         let resolved_path = if Path::new(path).exists() {
             path.to_string()
@@ -163,7 +183,9 @@ impl EpubRenderer {
         let mut doc =
             EpubDoc::new(&resolved_path).map_err(|e| format!("Failed to open EPUB: {:?}", e))?;
 
-        // Extract metadata
+        log_heap_watermark("epub_doc_opened");
+
+        // Extract metadata (lightweight - just strings)
         if let Some(title) = doc.mdata("title") {
             self.title = title.value.clone();
         }
@@ -175,63 +197,35 @@ impl EpubRenderer {
         self.current_chapter = 0;
         self.file_path = Some(resolved_path);
 
-        // Load embedded fonts from EPUB resources
-        self.load_embedded_fonts(&mut doc)?;
+        log_heap_watermark("epub_metadata_extracted");
 
-        // Load first chapter
+        // DISABLED: Loading embedded fonts causes OOM (500KB+ allocation)
+        // self.load_embedded_fonts(&mut doc)?;
+
+        // Using built-in MonoTextStyle fonts instead - zero extra memory
+        eprintln!("[EPUB] Using built-in fonts (embedded font loading DISABLED to save memory)");
+
+        // Load first chapter only (streaming approach)
         self.load_chapter(0)?;
+
+        log_heap_watermark("epub_load_complete");
 
         Ok(())
     }
 
-    /// Load embedded TTF/OTF fonts from EPUB resources
+    /// DISABLED: Load embedded TTF/OTF fonts from EPUB resources
+    ///
+    /// This function is kept for reference but NOT called to prevent OOM crashes.
+    /// EPUB embedded fonts can be 500KB+ which exceeds ESP32-C3 RAM constraints.
     #[cfg(feature = "std")]
+    #[allow(dead_code)]
     fn load_embedded_fonts<R: std::io::Read + std::io::Seek>(
         &mut self,
-        doc: &mut epub::doc::EpubDoc<R>,
+        _doc: &mut epub::doc::EpubDoc<R>,
     ) -> Result<(), String> {
-        // Collect font paths first to avoid borrow issues
-        let font_paths: Vec<(String, String)> = doc
-            .resources
-            .iter()
-            .filter_map(|(path, resource_item)| {
-                let path_str = path.as_str();
-                let mime_str = resource_item.mime.as_str();
-                if mime_str.starts_with("font/")
-                    || path_str.ends_with(".ttf")
-                    || path_str.ends_with(".otf")
-                {
-                    // Extract font name from path
-                    let font_name = path_str
-                        .split('/')
-                        .next_back()
-                        .and_then(|name| {
-                            name.strip_suffix(".ttf")
-                                .or_else(|| name.strip_suffix(".otf"))
-                        })
-                        .unwrap_or("embedded")
-                        .to_string();
-                    Some((path_str.to_string(), font_name))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Now load the fonts
-        for (path_str, font_name) in font_paths {
-            if let Some((font_data, _)) = doc.get_resource(&path_str) {
-                if let Err(e) = self.font_cache.load_font(&font_name, &font_data) {
-                    eprintln!("Warning: Failed to load font '{}': {}", font_name, e);
-                } else {
-                    // Set as current font if it's the first one loaded
-                    if self.current_font_name == "default" {
-                        self.current_font_name = font_name.clone();
-                    }
-                }
-            }
-        }
-
+        // DISABLED: Font loading causes "memory allocation of 43280 bytes failed"
+        // and larger allocations for typical embedded fonts (500KB+)
+        eprintln!("[EPUB] Skipping embedded font loading - using built-in fonts");
         Ok(())
     }
 
@@ -240,9 +234,11 @@ impl EpubRenderer {
     pub fn load_chapter(&mut self, chapter_idx: usize) -> Result<(), String> {
         use epub::doc::EpubDoc;
 
+        log_heap_watermark(&format!("epub_chapter_{}_start", chapter_idx));
+
         let path = self.file_path.as_ref().ok_or("No EPUB loaded")?;
 
-        // Reopen the EPUB file
+        // Reopen the EPUB file (streaming - doesn't hold full book in memory)
         let mut doc = EpubDoc::new(path).map_err(|e| format!("Failed to reopen EPUB: {:?}", e))?;
 
         if chapter_idx >= doc.spine.len() {
@@ -252,25 +248,37 @@ impl EpubRenderer {
         doc.set_current_chapter(chapter_idx);
         self.current_chapter = chapter_idx;
 
-        // Get chapter content as HTML string (returns tuple of content and mime type)
+        // Get chapter content as HTML string
         let (html_content, _) = doc
             .get_current_str()
             .ok_or("Failed to read chapter content")?;
 
-        // Convert HTML to plain text (for now)
-        // TODO: Parse HTML properly to extract structure, styles, images
+        log_heap_watermark("epub_html_loaded");
+
+        // Convert HTML to plain text (lightweight processing)
         let text_content = Self::html_to_text(&html_content);
 
-        // Layout the chapter into pages using font metrics
-        let metrics = LayoutMetrics::default();
+        log_heap_watermark("epub_text_extracted");
+
+        // Layout the chapter into pages using built-in font metrics
+        let metrics = LayoutMetrics {
+            font_size: self.font_size,
+            line_height: self.line_height,
+            ..LayoutMetrics::default()
+        };
         self.pages = self.paginate_text(&text_content, &metrics);
         self.current_page = 0;
+
+        log_heap_watermark(&format!(
+            "epub_chapter_{}_paginated: {} pages",
+            chapter_idx,
+            self.pages.len()
+        ));
 
         Ok(())
     }
 
     /// Convert HTML content to plain text
-    /// This is a simple conversion - proper HTML parsing would be better
     #[cfg(feature = "std")]
     fn html_to_text(html: &str) -> String {
         // Use html2text if available
@@ -330,21 +338,16 @@ impl EpubRenderer {
         result.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
-    /// Paginate text into pages using font metrics from FontCache
-    fn paginate_text(&self, text: &str, metrics: &LayoutMetrics) -> Vec<Page> {
-        let content_height = metrics.page_height as i32 - Self::TOP_MARGIN - Self::BOTTOM_MARGIN;
+    /// Paginate text into pages using built-in font metrics
+    /// Uses MonoTextStyle (FONT_6X10) - no external font loading
+    fn paginate_text(&self, text: &str, _metrics: &LayoutMetrics) -> Vec<Page> {
+        let content_height = DISPLAY_HEIGHT as i32 - Self::TOP_MARGIN - Self::BOTTOM_MARGIN;
         let content_width =
-            metrics.page_width as f32 - Self::LEFT_MARGIN as f32 - Self::RIGHT_MARGIN as f32;
+            DISPLAY_WIDTH as f32 - Self::LEFT_MARGIN as f32 - Self::RIGHT_MARGIN as f32;
 
-        let has_font = self
-            .font_cache
-            .metrics(&self.current_font_name, 'M')
-            .is_some();
-
-        // Get font metrics for line height calculation
-        let line_height = self.font_cache.line_height(&self.current_font_name);
-        let max_chars = ((content_width / 6.0).floor() as usize).max(1);
-
+        // Built-in font metrics (FONT_6X10)
+        let line_height = self.line_height;
+        let max_chars_per_line = ((content_width / Self::CHAR_WIDTH).floor() as usize).max(1);
         let lines_per_page = (content_height as f32 / line_height) as usize;
 
         let mut pages = Vec::new();
@@ -358,22 +361,8 @@ impl EpubRenderer {
                 continue;
             }
 
-            let text_lines: Vec<String> = if has_font {
-                self.font_cache
-                    .layout_text(trimmed, &self.current_font_name, content_width)
-                    .into_iter()
-                    .map(|text_line| {
-                        text_line
-                            .words
-                            .iter()
-                            .map(|w| w.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .collect()
-            } else {
-                Self::wrap_text(trimmed, max_chars)
-            };
+            // Simple word wrapping for built-in font
+            let text_lines = Self::wrap_text(trimmed, max_chars_per_line);
 
             for line_text in text_lines {
                 if line_count >= lines_per_page {
@@ -431,7 +420,6 @@ impl EpubRenderer {
     }
 
     /// Simple word wrapping
-    #[allow(dead_code)]
     fn wrap_text(text: &str, width: usize) -> Vec<String> {
         let mut result = Vec::new();
         let mut current_line = String::new();
@@ -561,7 +549,7 @@ impl EpubRenderer {
         }
     }
 
-    /// Render current page to display
+    /// Render current page to display using built-in fonts only
     pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
         &mut self,
         display: &mut D,
@@ -579,45 +567,32 @@ impl EpubRenderer {
                     .collect()
             })
             .unwrap_or_default();
-        let font_name = self.current_font_name.clone();
-        let has_font = self
-            .font_cache
-            .metrics(&self.current_font_name, 'M')
-            .is_some();
-        let fallback_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+        // Always use built-in MonoTextStyle - no external fonts
+        let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
-        // Draw header with title using FontCache
+        // Draw header with title
         let header_text = format!(
             "{} - Ch {}",
             Self::truncate(&self.title, 25),
             self.current_chapter + 1
         );
-        if has_font {
-            self.font_cache
-                .render_text(display, &header_text, &font_name, 10, 25)?;
-        } else {
-            Text::new(&header_text, Point::new(10, 25), fallback_style).draw(display)?;
-        }
+        Text::new(&header_text, Point::new(10, 25), text_style).draw(display)?;
 
         // Header line
         Rectangle::new(Point::new(0, 32), Size::new(width, 2))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
-        // Draw page content using FontCache
+        // Draw page content
         for (text, y) in page_lines {
             if text.is_empty() {
                 continue;
             }
-            if has_font {
-                self.font_cache
-                    .render_text(display, &text, &font_name, 10, y)?;
-            } else {
-                Text::new(&text, Point::new(10, y), fallback_style).draw(display)?;
-            }
+            Text::new(&text, Point::new(10, y), text_style).draw(display)?;
         }
 
         // Progress bar
@@ -633,7 +608,7 @@ impl EpubRenderer {
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
-        // Draw footer with page info using FontCache
+        // Draw footer with page info
         let footer_text = format!(
             "Pg {}/{} | Ch {}/{} | <=Prev | >=Next",
             self.current_page_number(),
@@ -641,22 +616,7 @@ impl EpubRenderer {
             self.current_chapter(),
             self.total_chapters
         );
-        if has_font {
-            self.font_cache.render_text(
-                display,
-                &footer_text,
-                &font_name,
-                10,
-                height as i32 - 10,
-            )?;
-        } else {
-            Text::new(
-                &footer_text,
-                Point::new(10, height as i32 - 10),
-                fallback_style,
-            )
-            .draw(display)?;
-        }
+        Text::new(&footer_text, Point::new(10, height as i32 - 10), text_style).draw(display)?;
 
         Ok(())
     }
@@ -670,6 +630,10 @@ impl EpubRenderer {
         }
     }
 }
+
+/// Display dimensions constant
+const DISPLAY_WIDTH: u32 = 480;
+const DISPLAY_HEIGHT: u32 = 800;
 
 impl Default for EpubRenderer {
     fn default() -> Self {

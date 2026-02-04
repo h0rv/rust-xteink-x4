@@ -117,6 +117,7 @@ pub fn extract_region(source: &[u8], width_bytes: usize, region: DiffRegion, out
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn diff_none_for_equal_buffers() {

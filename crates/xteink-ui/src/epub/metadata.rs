@@ -82,17 +82,24 @@ pub fn parse_container_xml(content: &[u8]) -> Result<String, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                let name = reader.decoder().decode(e.name().as_ref())
-                    .map_err(|e| format!("Decode error: {:?}", e))?.to_string();
-                
+                let name = reader
+                    .decoder()
+                    .decode(e.name().as_ref())
+                    .map_err(|e| format!("Decode error: {:?}", e))?
+                    .to_string();
+
                 if name == "rootfile" {
                     // Extract full-path attribute
                     for attr in e.attributes() {
                         let attr = attr.map_err(|e| format!("Attr error: {:?}", e))?;
-                        let key = reader.decoder().decode(attr.key.as_ref())
+                        let key = reader
+                            .decoder()
+                            .decode(attr.key.as_ref())
                             .map_err(|e| format!("Decode error: {:?}", e))?;
                         if key == "full-path" {
-                            let value = reader.decoder().decode(&attr.value)
+                            let value = reader
+                                .decoder()
+                                .decode(&attr.value)
                                 .map_err(|e| format!("Decode error: {:?}", e))?
                                 .to_string();
                             opf_path = Some(value);
@@ -120,7 +127,7 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
 
     let mut buf = Vec::new();
     let mut metadata = EpubMetadata::new();
-    
+
     // State tracking
     let mut current_element: Option<String> = None;
     let mut in_metadata = false;
@@ -131,9 +138,12 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name = reader.decoder().decode(e.name().as_ref())
-                    .map_err(|e| format!("Decode error: {:?}", e))?.to_string();
-                
+                let name = reader
+                    .decoder()
+                    .decode(e.name().as_ref())
+                    .map_err(|e| format!("Decode error: {:?}", e))?
+                    .to_string();
+
                 // Track which section we're in
                 match name.as_str() {
                     "metadata" => in_metadata = true,
@@ -146,7 +156,11 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
                 if in_manifest && name == "item" && metadata.manifest.len() < MAX_MANIFEST_ITEMS {
                     if let Some(item) = parse_manifest_item(&e, &reader)? {
                         // Check if this is a cover image (EPUB3)
-                        if item.properties.as_ref().map_or(false, |p| p.contains("cover-image")) {
+                        if item
+                            .properties
+                            .as_ref()
+                            .map_or(false, |p| p.contains("cover-image"))
+                        {
                             metadata.cover_id = Some(item.id.clone());
                         }
                         metadata.manifest.push(item);
@@ -156,19 +170,23 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
                 // Track metadata elements
                 if in_metadata {
                     current_element = Some(name.clone());
-                    
+
                     // Check for EPUB2 cover meta tag
                     if name == "meta" {
                         let mut name_attr = None;
                         let mut content_attr = None;
-                        
+
                         for attr in e.attributes() {
                             let attr = attr.map_err(|e| format!("Attr error: {:?}", e))?;
-                            let key = reader.decoder().decode(attr.key.as_ref())
+                            let key = reader
+                                .decoder()
+                                .decode(attr.key.as_ref())
                                 .map_err(|e| format!("Decode error: {:?}", e))?;
-                            let value = reader.decoder().decode(&attr.value)
+                            let value = reader
+                                .decoder()
+                                .decode(&attr.value)
                                 .map_err(|e| format!("Decode error: {:?}", e))?;
-                            
+
                             if key == "name" && value == "cover" {
                                 name_attr = Some(value.to_string());
                             }
@@ -176,7 +194,7 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
                                 content_attr = Some(value.to_string());
                             }
                         }
-                        
+
                         if name_attr.is_some() && content_attr.is_some() {
                             metadata.cover_id = content_attr;
                         }
@@ -191,10 +209,12 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
             }
             Ok(Event::Text(e)) => {
                 if let Some(ref elem) = current_element {
-                    let text = reader.decoder().decode(&e)
+                    let text = reader
+                        .decoder()
+                        .decode(&e)
                         .map_err(|e| format!("Decode error: {:?}", e))?
                         .to_string();
-                    
+
                     // Extract metadata fields
                     match elem.as_str() {
                         // Handle dc: prefixed elements
@@ -212,26 +232,36 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
                 }
             }
             Ok(Event::End(e)) => {
-                let name = reader.decoder().decode(e.name().as_ref())
-                    .map_err(|e| format!("Decode error: {:?}", e))?.to_string();
-                
+                let name = reader
+                    .decoder()
+                    .decode(e.name().as_ref())
+                    .map_err(|e| format!("Decode error: {:?}", e))?
+                    .to_string();
+
                 match name.as_str() {
                     "metadata" => in_metadata = false,
                     "manifest" => in_manifest = false,
                     "spine" => in_spine = false,
                     _ => {}
                 }
-                
+
                 current_element = None;
             }
             Ok(Event::Empty(e)) => {
-                let name = reader.decoder().decode(e.name().as_ref())
-                    .map_err(|e| format!("Decode error: {:?}", e))?.to_string();
-                
+                let name = reader
+                    .decoder()
+                    .decode(e.name().as_ref())
+                    .map_err(|e| format!("Decode error: {:?}", e))?
+                    .to_string();
+
                 // Handle empty manifest items
                 if in_manifest && name == "item" && metadata.manifest.len() < MAX_MANIFEST_ITEMS {
                     if let Some(item) = parse_manifest_item(&e, &reader)? {
-                        if item.properties.as_ref().map_or(false, |p| p.contains("cover-image")) {
+                        if item
+                            .properties
+                            .as_ref()
+                            .map_or(false, |p| p.contains("cover-image"))
+                        {
                             metadata.cover_id = Some(item.id.clone());
                         }
                         metadata.manifest.push(item);
@@ -260,13 +290,17 @@ fn parse_manifest_item<'a>(
 
     for attr in e.attributes() {
         let attr = attr.map_err(|e| format!("Attr error: {:?}", e))?;
-        let key = reader.decoder().decode(attr.key.as_ref())
+        let key = reader
+            .decoder()
+            .decode(attr.key.as_ref())
             .map_err(|e| format!("Decode error: {:?}", e))?;
-        let value = reader.decoder().decode(&attr.value)
+        let value = reader
+            .decoder()
+            .decode(&attr.value)
             .map_err(|e| format!("Decode error: {:?}", e))?
             .to_string();
 
-        match key {
+        match key.as_ref() {
             "id" => id = Some(value),
             "href" => href = Some(value),
             "media-type" => media_type = Some(value),
@@ -291,13 +325,10 @@ fn parse_manifest_item<'a>(
 ///
 /// This is a convenience function that takes both file contents and returns
 /// the complete metadata structure.
-pub fn extract_metadata(
-    container_xml: &[u8],
-    opf_content: &[u8],
-) -> Result<EpubMetadata, String> {
+pub fn extract_metadata(container_xml: &[u8], opf_content: &[u8]) -> Result<EpubMetadata, String> {
     // Verify the OPF path matches (optional validation)
     let _opf_path = parse_container_xml(container_xml)?;
-    
+
     // Parse the OPF content
     parse_opf(opf_content)
 }
@@ -314,7 +345,7 @@ mod tests {
       <rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/>
    </rootfiles>
 </container>"#;
-        
+
         let result = parse_container_xml(container).unwrap();
         assert_eq!(result, "EPUB/package.opf");
     }
@@ -333,7 +364,7 @@ mod tests {
     <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
   </manifest>
 </package>"#;
-        
+
         let metadata = parse_opf(opf).unwrap();
         assert_eq!(metadata.title, "Test Book");
         assert_eq!(metadata.author, "Test Author");
@@ -355,7 +386,7 @@ mod tests {
     <item id="cover-image" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
   </manifest>
 </package>"#;
-        
+
         let metadata = parse_opf(opf).unwrap();
         assert_eq!(metadata.title, "Book with Cover");
         assert_eq!(metadata.cover_id, Some("cover-image".to_string()));
@@ -374,7 +405,7 @@ mod tests {
         let item = metadata.get_item("item1");
         assert!(item.is_some());
         assert_eq!(item.unwrap().href, "chapter1.xhtml");
-        
+
         assert!(metadata.get_item("nonexistent").is_none());
     }
 }

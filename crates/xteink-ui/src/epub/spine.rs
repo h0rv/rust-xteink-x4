@@ -23,7 +23,7 @@ pub struct SpineItem {
 }
 
 /// Spine represents the reading order of an EPUB
-/// 
+///
 /// Tracks the ordered list of chapter IDs and provides navigation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spine {
@@ -57,7 +57,7 @@ impl Spine {
                 properties: None,
             })
             .collect();
-        
+
         Self { items, current: 0 }
     }
 
@@ -184,16 +184,21 @@ pub fn parse_spine(content: &[u8]) -> Result<Spine, String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                let name = reader.decoder().decode(e.name().as_ref())
-                    .map_err(|e| format!("Decode error: {:?}", e))?.to_string();
-                
+                let name = reader
+                    .decoder()
+                    .decode(e.name().as_ref())
+                    .map_err(|e| format!("Decode error: {:?}", e))?
+                    .to_string();
+
                 if name == "spine" {
                     in_spine = true;
-                    
+
                     // Check for toc attribute (EPUB2 NCX reference)
                     for attr in e.attributes() {
                         let attr = attr.map_err(|e| format!("Attr error: {:?}", e))?;
-                        let key = reader.decoder().decode(attr.key.as_ref())
+                        let key = reader
+                            .decoder()
+                            .decode(attr.key.as_ref())
                             .map_err(|e| format!("Decode error: {:?}", e))?;
                         // toc attribute is useful but we don't store it currently
                         let _ = key;
@@ -207,9 +212,12 @@ pub fn parse_spine(content: &[u8]) -> Result<Spine, String> {
                 }
             }
             Ok(Event::End(e)) => {
-                let name = reader.decoder().decode(e.name().as_ref())
-                    .map_err(|e| format!("Decode error: {:?}", e))?.to_string();
-                
+                let name = reader
+                    .decoder()
+                    .decode(e.name().as_ref())
+                    .map_err(|e| format!("Decode error: {:?}", e))?
+                    .to_string();
+
                 if name == "spine" {
                     in_spine = false;
                 }
@@ -236,13 +244,17 @@ fn parse_spine_item<'a>(
 
     for attr in e.attributes() {
         let attr = attr.map_err(|e| format!("Attr error: {:?}", e))?;
-        let key = reader.decoder().decode(attr.key.as_ref())
+        let key = reader
+            .decoder()
+            .decode(attr.key.as_ref())
             .map_err(|e| format!("Decode error: {:?}", e))?;
-        let value = reader.decoder().decode(&attr.value)
+        let value = reader
+            .decoder()
+            .decode(&attr.value)
             .map_err(|e| format!("Decode error: {:?}", e))?
             .to_string();
 
-        match key {
+        match key.as_ref() {
             "idref" => idref = Some(value),
             "id" => id = Some(value),
             "linear" => linear = value != "no",
@@ -251,14 +263,16 @@ fn parse_spine_item<'a>(
         }
     }
 
-    idref.map(|idref| {
-        Ok(SpineItem {
-            idref,
-            id,
-            linear,
-            properties,
+    idref
+        .map(|idref| {
+            Ok(SpineItem {
+                idref,
+                id,
+                linear,
+                properties,
+            })
         })
-    }).transpose()
+        .transpose()
 }
 
 /// Parse both metadata and spine from OPF content
@@ -280,7 +294,7 @@ pub fn create_spine(chapter_ids: &[&str]) -> Spine {
             properties: None,
         })
         .collect();
-    
+
     Spine { items, current: 0 }
 }
 
@@ -299,7 +313,7 @@ mod tests {
     <itemref idref="chapter3"/>
   </spine>
 </package>"#;
-        
+
         let spine = parse_spine(opf).unwrap();
         assert_eq!(spine.len(), 4);
         assert_eq!(spine.get_id(0), Some("cover"));
@@ -311,33 +325,33 @@ mod tests {
     #[test]
     fn test_spine_navigation() {
         let mut spine = create_spine(&["a", "b", "c", "d"]);
-        
+
         assert_eq!(spine.position(), 0);
         assert_eq!(spine.current_id(), Some("a"));
         assert!(spine.is_first());
         assert!(!spine.is_last());
-        
+
         assert!(spine.next());
         assert_eq!(spine.position(), 1);
         assert_eq!(spine.current_id(), Some("b"));
-        
+
         assert!(spine.next());
         assert!(spine.next());
         assert_eq!(spine.position(), 3);
         assert!(spine.is_last());
-        
+
         // Can't go past end
         assert!(!spine.next());
         assert_eq!(spine.position(), 3);
-        
+
         // Go back
         assert!(spine.prev());
         assert_eq!(spine.position(), 2);
-        
+
         // Jump to position
         assert!(spine.go_to(0));
         assert_eq!(spine.position(), 0);
-        
+
         // Invalid jump
         assert!(!spine.go_to(100));
         assert_eq!(spine.position(), 0);
@@ -346,10 +360,10 @@ mod tests {
     #[test]
     fn test_go_to_id() {
         let mut spine = create_spine(&["cover", "ch1", "ch2"]);
-        
+
         assert!(spine.go_to_id("ch1"));
         assert_eq!(spine.position(), 1);
-        
+
         assert!(!spine.go_to_id("nonexistent"));
         assert_eq!(spine.position(), 1); // Unchanged
     }
@@ -357,14 +371,14 @@ mod tests {
     #[test]
     fn test_progress() {
         let mut spine = create_spine(&["a", "b", "c", "d"]);
-        
+
         assert_eq!(spine.progress(), (0, 4));
         assert_eq!(spine.progress_percent(), 0);
-        
+
         spine.go_to(2);
         assert_eq!(spine.progress(), (2, 4));
         assert_eq!(spine.progress_percent(), 50);
-        
+
         spine.go_to(3);
         assert_eq!(spine.progress_percent(), 75);
     }
@@ -379,15 +393,15 @@ mod tests {
     <itemref idref="chapter1"/>
   </spine>
 </package>"#;
-        
+
         let spine = parse_spine(opf).unwrap();
         assert_eq!(spine.len(), 3);
-        
+
         let item0 = spine.get_item(0).unwrap();
         assert_eq!(item0.idref, "cover");
         assert_eq!(item0.id, Some("item-1".to_string()));
         assert!(item0.linear);
-        
+
         let item1 = spine.get_item(1).unwrap();
         assert_eq!(item1.idref, "nav");
         assert_eq!(item1.id, Some("item-2".to_string()));

@@ -2,7 +2,7 @@
 //! Supports SD card on embedded devices and mock filesystem for simulators.
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// A file entry in the filesystem

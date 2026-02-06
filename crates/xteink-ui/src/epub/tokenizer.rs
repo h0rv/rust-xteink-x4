@@ -6,7 +6,8 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
@@ -80,7 +81,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name = decode_name(&e.name(), &reader)?;
+                let name = decode_name(e.name().as_ref(), &reader)?;
 
                 // Check if we should skip this element and its children
                 if should_skip_element(&name) {
@@ -158,7 +159,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
                 }
             }
             Ok(Event::End(e)) => {
-                let name = decode_name(&e.name(), &reader)?;
+                let name = decode_name(e.name().as_ref(), &reader)?;
 
                 // Check if we're ending a skip element
                 if should_skip_element(&name) {
@@ -198,7 +199,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
                 }
             }
             Ok(Event::Empty(e)) => {
-                let name = decode_name(&e.name(), &reader)?;
+                let name = decode_name(e.name().as_ref(), &reader)?;
 
                 // Skip empty elements inside script/style blocks
                 if skip_depth > 0 {
@@ -365,6 +366,7 @@ fn decode_name(name: &[u8], reader: &Reader<&[u8]>) -> Result<String, TokenizeEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_tokenize_simple_paragraph() {
@@ -373,7 +375,10 @@ mod tests {
 
         assert_eq!(
             tokens,
-            vec![Token::Text("Hello world".to_string()), Token::ParagraphBreak]
+            vec![
+                Token::Text("Hello world".to_string()),
+                Token::ParagraphBreak
+            ]
         );
     }
 
@@ -499,10 +504,7 @@ mod tests {
 
         assert_eq!(
             tokens,
-            vec![
-                Token::Text("Content".to_string()),
-                Token::ParagraphBreak,
-            ]
+            vec![Token::Text("Content".to_string()), Token::ParagraphBreak,]
         );
     }
 

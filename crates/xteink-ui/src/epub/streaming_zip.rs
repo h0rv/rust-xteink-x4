@@ -7,9 +7,10 @@
 extern crate alloc;
 
 use alloc::string::{String, ToString};
-use core::io::{Read, Seek, SeekFrom};
 use heapless::Vec as HeaplessVec;
-use miniz_oxide::inflate::decompress_to_slice_with_output;
+use log;
+use miniz_oxide::inflate::decompress_slice_iter_to_slice;
+use std::io::{Read, Seek, SeekFrom};
 
 /// Maximum number of central directory entries to cache
 const MAX_CD_ENTRIES: usize = 256;
@@ -115,6 +116,28 @@ impl<F: Read + Seek> StreamingZip<F> {
             }
         }
 
+        log::info!(
+            "[ZIP] Central directory at offset {}, expecting {} entries",
+            cd_offset,
+            num_entries
+        );
+        log::info!(
+            "[ZIP] Successfully parsed {} entries into cache",
+            entries.len()
+        );
+
+        // Debug: list all entries
+        for (i, entry) in entries.iter().enumerate() {
+            log::info!(
+                "[ZIP] Entry[{}]: '{}' (offset={}, compressed={}, uncompressed={})",
+                i,
+                entry.filename,
+                entry.local_header_offset,
+                entry.compressed_size,
+                entry.uncompressed_size
+            );
+        }
+
         Ok(Self {
             file,
             entries,
@@ -138,7 +161,9 @@ impl<F: Read + Seek> StreamingZip<F> {
 
         file.seek(SeekFrom::Start(file_size - scan_range as u64))
             .map_err(|_| ZipError::IoError)?;
-        let bytes_read = file.read(&mut buffer[..scan_range]).map_err(|_| ZipError::IoError)?;
+        let bytes_read = file
+            .read(&mut buffer[..scan_range])
+            .map_err(|_| ZipError::IoError)?;
 
         // Scan backwards for EOCD signature
         for i in (0..=bytes_read.saturating_sub(22)).rev() {
@@ -172,26 +197,30 @@ impl<F: Read + Seek> StreamingZip<F> {
         let mut entry = CdEntry::new();
 
         // Parse central directory entry fields
-        entry.method = u16::from_le_bytes([buf[6], buf[7]]);
-        // CRC32 at offset 16 (relative to start of CD entry after sig)
-        entry.crc32 = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-        // Compressed size at offset 20
-        entry.compressed_size = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
-        // Uncompressed size at offset 24
-        entry.uncompressed_size = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
-        // Filename length at offset 28
-        let name_len = u16::from_le_bytes([buf[24], buf[25]]) as usize;
-        // Extra field length at offset 30
-        let extra_len = u16::from_le_bytes([buf[26], buf[27]]) as usize;
-        // Comment length at offset 32
-        let comment_len = u16::from_le_bytes([buf[28], buf[29]]) as usize;
-        // Local header offset at offset 42
-        entry.local_header_offset = u32::from_le_bytes([buf[36], buf[37], buf[38], buf[39]]);
+        // buf contains bytes 4-49 of the CD entry (after the 4-byte signature)
+        // CD offset X maps to buf[X - 4]
+        // [10:12] -> method (u16)
+        entry.method = u16::from_le_bytes([buf[10], buf[11]]);
+        // [16:20] -> CRC32 (u32)
+        entry.crc32 = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
+        // [20:24] -> compressed size (u32)
+        entry.compressed_size = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
+        // [24:28] -> uncompressed size (u32)
+        entry.uncompressed_size = u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]);
+        // [28:30] -> name length (u16)
+        let name_len = u16::from_le_bytes([buf[28], buf[29]]) as usize;
+        // [30:32] -> extra length (u16)
+        let extra_len = u16::from_le_bytes([buf[30], buf[31]]) as usize;
+        // [32:34] -> comment length (u16)
+        let comment_len = u16::from_le_bytes([buf[32], buf[33]]) as usize;
+        // [42:46] -> local header offset (u32)
+        entry.local_header_offset = u32::from_le_bytes([buf[42], buf[43], buf[44], buf[45]]);
 
         // Read filename
         if name_len > 0 && name_len < MAX_FILENAME_LEN {
             let mut name_buf = alloc::vec![0u8; name_len];
-            file.read_exact(&mut name_buf).map_err(|_| ZipError::IoError)?;
+            file.read_exact(&mut name_buf)
+                .map_err(|_| ZipError::IoError)?;
             entry.filename = String::from_utf8_lossy(&name_buf).to_string();
         }
 
@@ -205,9 +234,30 @@ impl<F: Read + Seek> StreamingZip<F> {
         Ok(Some(entry))
     }
 
-    /// Get entry by filename
+    /// Get entry by filename (case-insensitive)
     pub fn get_entry(&self, name: &str) -> Option<&CdEntry> {
-        self.entries.iter().find(|e| e.filename == name)
+        let name_lower = name.to_lowercase();
+        self.entries
+            .iter()
+            .find(|e| e.filename.to_lowercase() == name_lower)
+    }
+
+    /// Debug: Log all entries in the ZIP (for troubleshooting)
+    pub fn debug_list_entries(&self) {
+        log::info!(
+            "[ZIP] Central directory contains {} entries:",
+            self.entries.len()
+        );
+        for (i, entry) in self.entries.iter().enumerate() {
+            log::info!(
+                "[ZIP]  [{}] '{}' (method={}, compressed={}, uncompressed={})",
+                i,
+                entry.filename,
+                entry.method,
+                entry.compressed_size,
+                entry.uncompressed_size
+            );
+        }
     }
 
     /// Read and decompress a file into the provided buffer
@@ -246,27 +296,57 @@ impl<F: Read + Seek> StreamingZip<F> {
                     .map_err(|_| ZipError::IoError)?;
 
                 // Decompress using miniz_oxide
-                let result = decompress_to_slice_with_output(
-                    &compressed_buf,
+                let result = decompress_slice_iter_to_slice(
                     buf,
-                    false, // has_more_input
-                )
-                .map_err(|_| ZipError::DecompressError)?;
+                    core::iter::once(compressed_buf.as_slice()),
+                    false, // zlib_header: ZIP uses raw deflate, not zlib
+                    true,  // ignore_adler32
+                );
 
-                let decompressed_len = result.output.len();
-
-                // Verify CRC32 if available
-                if entry.crc32 != 0 {
-                    let calc_crc = crc32fast::hash(result.output);
-                    if calc_crc != entry.crc32 {
-                        return Err(ZipError::CrcMismatch);
+                match result {
+                    Ok(decompressed_len) => {
+                        // Verify CRC32 if available
+                        if entry.crc32 != 0 {
+                            let calc_crc = crc32fast::hash(&buf[..decompressed_len]);
+                            if calc_crc != entry.crc32 {
+                                return Err(ZipError::CrcMismatch);
+                            }
+                        }
+                        Ok(decompressed_len)
                     }
+                    Err(_) => Err(ZipError::DecompressError),
                 }
-
-                Ok(decompressed_len)
             }
             _ => Err(ZipError::UnsupportedCompression),
         }
+    }
+
+    /// Read a file by its local header offset and size (avoids borrow issues)
+    /// This is useful when you need to read a file after getting its metadata
+    pub fn read_file_at_offset(
+        &mut self,
+        local_header_offset: u32,
+        _uncompressed_size: usize,
+        buf: &mut [u8],
+    ) -> Result<usize, ZipError> {
+        // Find entry by offset
+        let entry = self
+            .entries
+            .iter()
+            .find(|e| e.local_header_offset == local_header_offset)
+            .ok_or(ZipError::FileNotFound)?;
+
+        // Create a temporary entry clone to avoid borrow issues
+        let entry_clone = CdEntry {
+            method: entry.method,
+            compressed_size: entry.compressed_size,
+            uncompressed_size: entry.uncompressed_size,
+            local_header_offset: entry.local_header_offset,
+            crc32: entry.crc32,
+            filename: entry.filename.clone(),
+        };
+
+        self.read_file(&entry_clone, buf)
     }
 
     /// Calculate the offset to the actual file data (past local header)
@@ -305,7 +385,12 @@ impl<F: Read + Seek> StreamingZip<F> {
 
     /// Read u32 from buffer at offset (little-endian)
     fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
-        u32::from_le_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+        u32::from_le_bytes([
+            buf[offset],
+            buf[offset + 1],
+            buf[offset + 2],
+            buf[offset + 3],
+        ])
     }
 
     /// Get number of entries in central directory
@@ -332,7 +417,6 @@ pub fn open_epub<F: Read + Seek>(file: F) -> Result<StreamingZip<F>, ZipError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     // Simple test to verify the module compiles
     #[test]

@@ -122,9 +122,13 @@ fn format_size(size: u64) -> String {
 fn log_heap(label: &str) {
     let free_heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
     let min_free = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
-    log::info!("[HEAP] {}: free={} bytes min_free={} bytes", label, free_heap, min_free);
+    log::info!(
+        "[HEAP] {}: free={} bytes min_free={} bytes",
+        label,
+        free_heap,
+        min_free
+    );
 }
-
 
 fn cli_redraw<I, D>(
     app: &mut App,

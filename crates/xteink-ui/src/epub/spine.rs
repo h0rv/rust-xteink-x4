@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn test_empty_spine() {
-        let spine = Spine::new();
+        let mut spine = Spine::new();
         assert!(spine.is_empty());
         assert_eq!(spine.progress_percent(), 0);
         assert!(!spine.next());

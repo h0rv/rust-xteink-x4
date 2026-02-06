@@ -14,7 +14,8 @@ pub mod filesystem;
 pub mod font_render;
 pub mod input;
 
-#[cfg(feature = "std")]
+// EPUB module is available when either std or quick-xml is enabled
+#[cfg(any(feature = "std", feature = "quick-xml"))]
 pub mod epub;
 
 #[cfg(feature = "std")]
@@ -37,9 +38,13 @@ pub use input::{Button, InputEvent};
 
 #[cfg(feature = "std")]
 pub use epub::{
-    EpubMetadata, ManifestItem, Spine, SpineItem,
-    parse_container_xml, parse_opf, parse_spine, extract_metadata, create_spine,
+    create_spine, extract_metadata, parse_container_xml, parse_opf, parse_spine, EpubMetadata,
+    ManifestItem, Spine, SpineItem,
 };
+
+// Tokenizer is available with just quick-xml
+#[cfg(feature = "quick-xml")]
+pub use epub::{tokenize_html, Token, TokenizeError};
 
 #[cfg(feature = "std")]
 pub use epub_render::EpubRenderer;

@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["fontdue"]
-std = ["epub", "html2text", "quick-xml"]
+std = ["html2text", "quick-xml"]
 
 [dependencies]
 embedded-graphics = "0.8"
@@ -14,8 +14,8 @@ embedded-text = "0.7.3"
 # Logging (no_std compatible)
 log = "0.4"
 
-# EPUB support (desktop/simulators only due to std requirement)
-epub = { version = "2.1.5", optional = true }
+# EPUB support now built-in via streaming ZIP + quick-xml
+# Old epub crate removed - using custom implementation
 
 # TTF font rendering with no_std support - always enabled
 fontdue = { version = "0.9.3", optional = true }
@@ -37,3 +37,6 @@ ssd1677 = { path = "/home/h0rv/projects/ssd1677" }
 
 [dev-dependencies]
 # For tests
+
+# Tests use miniz_oxide for decompression, not flate2
+# flate2 disabled due to std compatibility issues

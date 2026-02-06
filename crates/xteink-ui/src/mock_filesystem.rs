@@ -13,7 +13,7 @@ use crate::filesystem::{FileInfo, FileSystem, FileSystemError};
 /// In-memory file entry
 #[derive(Clone)]
 enum MockEntry {
-    File { content: String, size: u64 },
+    File { content: Vec<u8>, size: u64 },
     Directory { children: Vec<String> },
 }
 
@@ -54,18 +54,19 @@ impl MockFileSystem {
         // Add sample files for testing
         fs.add_file(
             "/books/sample.txt",
-            include_str!("../../../sample_books/sample.txt"),
+            include_str!("../../../sample_books/sample.txt").as_bytes(),
         );
-        fs.add_file("/books/readme.txt", "Welcome to Xteink X4 e-reader!\n\nThis is a sample text file.\n\nUse the buttons to navigate:\n- Left/Right: Change page\n- Confirm: Select\n- Back: Go back\n\nEnjoy reading!");
+        fs.add_file("/books/readme.txt", "Welcome to Xteink X4 e-reader!\n\nThis is a sample text file.\n\nUse the buttons to navigate:\n- Left/Right: Change page\n- Confirm: Select\n- Back: Go back\n\nEnjoy reading!".as_bytes());
         fs.add_file(
             "/books/war_and_peace_ch1.txt",
-            include_str!("../../../sample_books/war_and_peace_ch1.txt"),
+            include_str!("../../../sample_books/war_and_peace_ch1.txt").as_bytes(),
         );
+        // Add the actual accessibility test EPUB file (binary)
         fs.add_file(
-            "/books/sample.epub",
-            "(EPUB placeholder)\nAdd a real .epub file to /books on your SD card to test EPUB rendering.",
+            "/books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub",
+            include_bytes!("../../../sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub"),
         );
-        fs.add_file("/documents/notes.txt", "My reading notes:\n\n- War and Peace: 1225 pages\n- Sample book: 1 page\n\nTotal: 1226 pages read");
+        fs.add_file("/documents/notes.txt", "My reading notes:\n\n- War and Peace: 1225 pages\n- Sample book: 1 page\n\nTotal: 1226 pages read".as_bytes());
 
         fs
     }
@@ -79,12 +80,12 @@ impl MockFileSystem {
     }
 
     /// Add a file to the mock filesystem
-    pub fn add_file(&mut self, path: &str, content: &str) {
+    pub fn add_file(&mut self, path: &str, content: &[u8]) {
         let size = content.len() as u64;
         self.files.insert(
             path.to_string(),
             MockEntry::File {
-                content: content.to_string(),
+                content: content.to_vec(),
                 size,
             },
         );
@@ -163,7 +164,11 @@ impl FileSystem for MockFileSystem {
         let path = self.normalize_path(path);
 
         match self.files.get(&path) {
-            Some(MockEntry::File { content, .. }) => Ok(content.clone()),
+            Some(MockEntry::File { content, .. }) => {
+                // Try to convert bytes to UTF-8 string
+                String::from_utf8(content.clone())
+                    .map_err(|_| FileSystemError::IoError("Invalid UTF-8".to_string()))
+            }
             Some(MockEntry::Directory { .. }) => {
                 Err(FileSystemError::IoError("Is a directory".to_string()))
             }
@@ -191,6 +196,21 @@ impl FileSystem for MockFileSystem {
                 size: 0,
                 is_directory: true,
             }),
+            None => Err(FileSystemError::NotFound),
+        }
+    }
+}
+
+impl MockFileSystem {
+    /// Read file as raw bytes (for binary files like EPUB)
+    pub fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError> {
+        let path = self.normalize_path(path);
+
+        match self.files.get(&path) {
+            Some(MockEntry::File { content, .. }) => Ok(content.clone()),
+            Some(MockEntry::Directory { .. }) => {
+                Err(FileSystemError::IoError("Is a directory".to_string()))
+            }
             None => Err(FileSystemError::NotFound),
         }
     }

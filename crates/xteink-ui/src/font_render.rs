@@ -25,6 +25,28 @@ use std::time::Instant;
 #[cfg(all(feature = "fontdue", feature = "std"))]
 const GLYPH_CACHE_MAX_SIZE: usize = 256;
 
+/// Cache key using u32 for f32 to support Hash and Eq
+#[cfg(all(feature = "fontdue", feature = "std"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphCacheKey {
+    character: char,
+    size_bits: u32, // f32.to_bits() for hashable representation
+}
+
+#[cfg(all(feature = "fontdue", feature = "std"))]
+impl GlyphCacheKey {
+    fn new(character: char, size: f32) -> Self {
+        Self {
+            character,
+            size_bits: size.to_bits(),
+        }
+    }
+
+    fn size(&self) -> f32 {
+        f32::from_bits(self.size_bits)
+    }
+}
+
 /// A cached glyph with rasterized bitmap and metadata
 #[cfg(all(feature = "fontdue", feature = "std"))]
 #[derive(Debug, Clone)]
@@ -38,15 +60,12 @@ pub struct CachedGlyph {
 }
 
 /// LRU cache for rendered glyphs
-///
-/// Key: (character, font_size) tuple
-/// Value: Cached glyph data with bitmap and metrics
 #[cfg(all(feature = "fontdue", feature = "std"))]
 pub struct GlyphCache {
     /// Main cache storage: (char, size) -> cached glyph
-    cache: HashMap<(char, f32), CachedGlyph>,
+    cache: HashMap<GlyphCacheKey, CachedGlyph>,
     /// LRU order tracking: most recently used at the back
-    lru_order: VecDeque<(char, f32)>,
+    lru_order: VecDeque<GlyphCacheKey>,
     /// Maximum cache size
     max_size: usize,
 }
@@ -68,13 +87,14 @@ impl GlyphCache {
     }
 
     /// Check if a glyph is in the cache without updating LRU
-    pub fn contains(&self, key: (char, f32)) -> bool {
-        self.cache.contains_key(&key)
+    pub fn contains(&self, ch: char, size: f32) -> bool {
+        self.cache.contains_key(&GlyphCacheKey::new(ch, size))
     }
 
     /// Get a cached glyph, updating LRU order
     /// Returns a cloned glyph (not a reference) to avoid borrow issues
-    pub fn get(&mut self, key: (char, f32)) -> Option<CachedGlyph> {
+    pub fn get(&mut self, ch: char, size: f32) -> Option<CachedGlyph> {
+        let key = GlyphCacheKey::new(ch, size);
         if let Some(glyph) = self.cache.get(&key) {
             let glyph_clone = glyph.clone();
             // Update LRU order: move to back (most recently used)
@@ -85,7 +105,9 @@ impl GlyphCache {
     }
 
     /// Insert a glyph into the cache, evicting LRU if necessary
-    pub fn insert(&mut self, key: (char, f32), metrics: Metrics, bitmap: Vec<u8>) {
+    pub fn insert(&mut self, ch: char, size: f32, metrics: Metrics, bitmap: Vec<u8>) {
+        let key = GlyphCacheKey::new(ch, size);
+
         // Evict if cache is full and this is a new entry
         if !self.cache.contains_key(&key) && self.cache.len() >= self.max_size {
             self.evict_lru();
@@ -124,7 +146,7 @@ impl GlyphCache {
     }
 
     /// Update LRU order for an access
-    fn update_lru(&mut self, key: (char, f32)) {
+    fn update_lru(&mut self, key: GlyphCacheKey) {
         // Remove from current position
         self.lru_order.retain(|&k| k != key);
         // Add to back (most recently used)
@@ -264,10 +286,8 @@ impl FontCache {
     /// of the same text, this provides significant speedup.
     #[cfg(feature = "std")]
     pub fn get_glyph(&mut self, ch: char) -> Option<CachedGlyph> {
-        let cache_key = (ch, self.font_size);
-
         // Try to get from cache first
-        if let Some(glyph) = self.lru_glyph_cache.get(cache_key) {
+        if let Some(glyph) = self.lru_glyph_cache.get(ch, self.font_size) {
             return Some(glyph);
         }
 
@@ -279,7 +299,8 @@ impl FontCache {
         let (metrics, bitmap) = font.rasterize(ch, self.font_size);
 
         // Insert into cache
-        self.lru_glyph_cache.insert(cache_key, metrics, bitmap.clone());
+        self.lru_glyph_cache
+            .insert(ch, self.font_size, metrics, bitmap.clone());
 
         // Return the rasterized glyph
         Some(CachedGlyph {
@@ -402,11 +423,9 @@ impl FontCache {
         let baseline_y = y as f32;
 
         for ch in text.chars() {
-            let cache_key = (ch, self.font_size);
-
             // Get glyph from cache or rasterize
-            let glyph = if self.lru_glyph_cache.contains(cache_key) {
-                self.lru_glyph_cache.get(cache_key).unwrap()
+            let glyph = if self.lru_glyph_cache.contains(ch, self.font_size) {
+                self.lru_glyph_cache.get(ch, self.font_size).unwrap()
             } else {
                 // Cache miss - get font and rasterize
                 let font = match self.fonts.get(font_name) {
@@ -414,13 +433,15 @@ impl FontCache {
                     None => continue,
                 };
                 let (metrics, bitmap) = font.rasterize(ch, self.font_size);
-                self.lru_glyph_cache.insert(cache_key, metrics, bitmap);
-                self.lru_glyph_cache.get(cache_key).unwrap()
+                self.lru_glyph_cache
+                    .insert(ch, self.font_size, metrics, bitmap);
+                self.lru_glyph_cache.get(ch, self.font_size).unwrap()
             };
 
             // Draw glyph bitmap
             let glyph_x = (cursor_x + glyph.metrics.xmin as f32) as i32;
-            let glyph_y = (baseline_y - glyph.metrics.ymin as f32 - glyph.metrics.height as f32) as i32;
+            let glyph_y =
+                (baseline_y - glyph.metrics.ymin as f32 - glyph.metrics.height as f32) as i32;
 
             self.draw_glyph(
                 display,
@@ -583,13 +604,28 @@ mod tests {
 
     #[cfg(all(feature = "fontdue", feature = "std"))]
     #[test]
+    fn test_glyph_cache_key() {
+        let key1 = GlyphCacheKey::new('A', 16.0);
+        let key2 = GlyphCacheKey::new('A', 16.0);
+        let key3 = GlyphCacheKey::new('B', 16.0);
+        let key4 = GlyphCacheKey::new('A', 12.0);
+
+        assert_eq!(key1, key2); // Same char and size
+        assert_ne!(key1, key3); // Different char
+        assert_ne!(key1, key4); // Different size
+        assert_eq!(key1.size(), 16.0);
+        assert_eq!(key4.size(), 12.0);
+    }
+
+    #[cfg(all(feature = "fontdue", feature = "std"))]
+    #[test]
     fn test_glyph_cache_basic() {
         let mut cache = GlyphCache::new();
-        
+
         // Test empty cache
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
-        
+
         // Insert a glyph
         let metrics = Metrics {
             width: 10,
@@ -604,29 +640,29 @@ mod tests {
             },
         };
         let bitmap = vec![128u8; 120]; // 10x12 grayscale
-        
-        cache.insert(('A', 16.0), metrics, bitmap.clone());
-        
+
+        cache.insert('A', 16.0, metrics, bitmap.clone());
+
         // Verify insertion
         assert_eq!(cache.len(), 1);
         assert!(!cache.is_empty());
-        
+
         // Verify retrieval
-        let cached = cache.get(('A', 16.0));
+        let cached = cache.get('A', 16.0);
         assert!(cached.is_some());
         let glyph = cached.unwrap();
         assert_eq!(glyph.metrics.width, 10);
         assert_eq!(glyph.bitmap.len(), 120);
-        
+
         // Verify miss
-        assert!(cache.get(('B', 16.0)).is_none());
+        assert!(cache.get('B', 16.0).is_none());
     }
 
     #[cfg(all(feature = "fontdue", feature = "std"))]
     #[test]
     fn test_glyph_cache_lru_eviction() {
         let mut cache = GlyphCache::with_capacity(3);
-        
+
         // Insert 3 glyphs
         for i in 0..3 {
             let metrics = Metrics {
@@ -641,14 +677,19 @@ mod tests {
                     height: 10.0,
                 },
             };
-            cache.insert((('A' as u8 + i as u8) as char, 16.0), metrics, vec![255u8; 80]);
+            cache.insert(
+                (('A' as u8 + i as u8) as char),
+                16.0,
+                metrics,
+                vec![255u8; 80],
+            );
         }
-        
+
         assert_eq!(cache.len(), 3);
-        
+
         // Access 'A' to make it recently used
-        cache.get(('A', 16.0));
-        
+        cache.get('A', 16.0);
+
         // Insert 4th glyph, should evict 'B' (the LRU)
         let metrics = Metrics {
             width: 8,
@@ -662,20 +703,20 @@ mod tests {
                 height: 10.0,
             },
         };
-        cache.insert(('D', 16.0), metrics, vec![255u8; 80]);
-        
+        cache.insert('D', 16.0, metrics, vec![255u8; 80]);
+
         assert_eq!(cache.len(), 3);
-        assert!(cache.contains(('A', 16.0))); // Still there
-        assert!(!cache.contains(('B', 16.0))); // Evicted
-        assert!(cache.contains(('C', 16.0))); // Still there
-        assert!(cache.contains(('D', 16.0))); // New
+        assert!(cache.contains('A', 16.0)); // Still there
+        assert!(!cache.contains('B', 16.0)); // Evicted
+        assert!(cache.contains('C', 16.0)); // Still there
+        assert!(cache.contains('D', 16.0)); // New
     }
 
     #[cfg(all(feature = "fontdue", feature = "std"))]
     #[test]
     fn test_glyph_cache_clear() {
         let mut cache = GlyphCache::new();
-        
+
         let metrics = Metrics {
             width: 8,
             height: 10,
@@ -688,22 +729,22 @@ mod tests {
                 height: 10.0,
             },
         };
-        cache.insert(('A', 16.0), metrics, vec![255u8; 80]);
-        
+        cache.insert('A', 16.0, metrics, vec![255u8; 80]);
+
         assert_eq!(cache.len(), 1);
-        
+
         cache.clear();
-        
+
         assert!(cache.is_empty());
         assert_eq!(cache.len(), 0);
-        assert!(!cache.contains(('A', 16.0)));
+        assert!(!cache.contains('A', 16.0));
     }
 
     #[cfg(all(feature = "fontdue", feature = "std"))]
     #[test]
     fn test_glyph_cache_update_existing() {
         let mut cache = GlyphCache::new();
-        
+
         let metrics1 = Metrics {
             width: 8,
             height: 10,
@@ -716,8 +757,8 @@ mod tests {
                 height: 10.0,
             },
         };
-        cache.insert(('A', 16.0), metrics1, vec![100u8; 80]);
-        
+        cache.insert('A', 16.0, metrics1, vec![100u8; 80]);
+
         // Update with new data
         let metrics2 = Metrics {
             width: 10,
@@ -731,12 +772,12 @@ mod tests {
                 height: 12.0,
             },
         };
-        cache.insert(('A', 16.0), metrics2, vec![200u8; 120]);
-        
+        cache.insert('A', 16.0, metrics2, vec![200u8; 120]);
+
         // Should still be only 1 entry
         assert_eq!(cache.len(), 1);
-        
-        let cached = cache.get(('A', 16.0)).unwrap();
+
+        let cached = cache.get('A', 16.0).unwrap();
         assert_eq!(cached.metrics.width, 10);
         assert_eq!(cached.bitmap.len(), 120);
     }

@@ -190,31 +190,24 @@ impl<F: Read + Seek> StreamingZip<F> {
             return Ok(None); // End of central directory
         }
 
-        // Skip: version made by (2), version needed (2), flags (2), method (2) - we'll read method
-        let mut buf = [0u8; 46];
+        // Read fixed portion of central directory entry (42 bytes = offsets 4-45)
+        // This includes everything up to and including the local header offset
+        let mut buf = [0u8; 42];
         file.read_exact(&mut buf).map_err(|_| ZipError::IoError)?;
 
         let mut entry = CdEntry::new();
 
         // Parse central directory entry fields
         // buf contains bytes 4-49 of the CD entry (after the 4-byte signature)
-        // CD offset X maps to buf[X - 4]
-        // [10:12] -> method (u16)
-        entry.method = u16::from_le_bytes([buf[10], buf[11]]);
-        // [16:20] -> CRC32 (u32)
-        entry.crc32 = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
-        // [20:24] -> compressed size (u32)
-        entry.compressed_size = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
-        // [24:28] -> uncompressed size (u32)
-        entry.uncompressed_size = u32::from_le_bytes([buf[24], buf[25], buf[26], buf[27]]);
-        // [28:30] -> name length (u16)
-        let name_len = u16::from_le_bytes([buf[28], buf[29]]) as usize;
-        // [30:32] -> extra length (u16)
-        let extra_len = u16::from_le_bytes([buf[30], buf[31]]) as usize;
-        // [32:34] -> comment length (u16)
-        let comment_len = u16::from_le_bytes([buf[32], buf[33]]) as usize;
-        // [42:46] -> local header offset (u32)
-        entry.local_header_offset = u32::from_le_bytes([buf[42], buf[43], buf[44], buf[45]]);
+        // buf[N] corresponds to CD entry offset (N + 4)
+        entry.method = u16::from_le_bytes([buf[6], buf[7]]); // CD offset 10
+        entry.crc32 = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]); // CD offset 16
+        entry.compressed_size = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]); // CD offset 20
+        entry.uncompressed_size = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]); // CD offset 24
+        let name_len = u16::from_le_bytes([buf[24], buf[25]]) as usize; // CD offset 28
+        let extra_len = u16::from_le_bytes([buf[26], buf[27]]) as usize; // CD offset 30
+        let comment_len = u16::from_le_bytes([buf[28], buf[29]]) as usize; // CD offset 32
+        entry.local_header_offset = u32::from_le_bytes([buf[38], buf[39], buf[40], buf[41]]); // CD offset 42
 
         // Read filename
         if name_len > 0 && name_len < MAX_FILENAME_LEN {

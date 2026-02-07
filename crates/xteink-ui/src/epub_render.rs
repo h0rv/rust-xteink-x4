@@ -11,7 +11,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, ascii::FONT_10X20, MonoTextStyle},
+    mono_font::{ascii::FONT_10X20, ascii::FONT_6X10, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::Rectangle,
@@ -111,31 +111,32 @@ impl StreamingEpubRenderer {
     /// Display constants for Xteink X4
     const DISPLAY_WIDTH: f32 = 480.0;
     const DISPLAY_HEIGHT: f32 = 800.0;
-    const TOP_MARGIN: f32 = 50.0;
-    const BOTTOM_MARGIN: f32 = 100.0;
-    const LEFT_MARGIN: f32 = 10.0;
-    const RIGHT_MARGIN: f32 = 10.0;
-    const HEADER_HEIGHT: f32 = 50.0;
-    const FOOTER_HEIGHT: f32 = 40.0;
+    /// Side margins for comfortable reading (32px each side = 416px content width)
+    const SIDE_MARGIN: f32 = 32.0;
+    /// Top margin - compact header area
+    const TOP_MARGIN: f32 = 25.0;
+    /// Bottom margin - space for footer
+    const BOTTOM_MARGIN: f32 = 30.0;
+    /// Header height - minimal (just title)
+    const HEADER_HEIGHT: f32 = 0.0;
+    /// Footer height - space for progress bar and page numbers
+    const FOOTER_HEIGHT: f32 = 30.0;
 
-    /// Create empty renderer
+    /// Create empty renderer with improved layout
     pub fn new() -> Self {
         log_heap_watermark("epub_new_start");
 
-        // Calculate content area
-        let content_width = Self::DISPLAY_WIDTH - Self::LEFT_MARGIN - Self::RIGHT_MARGIN;
-        let content_height = Self::DISPLAY_HEIGHT
-            - Self::HEADER_HEIGHT
-            - Self::FOOTER_HEIGHT
-            - Self::TOP_MARGIN
-            - Self::BOTTOM_MARGIN;
-        let line_height = 20.0; // For 10x20 font
+        // Calculate content area: 416px wide (480 - 32*2), ~745px tall
+        let content_width = Self::DISPLAY_WIDTH - (Self::SIDE_MARGIN * 2.0);
+        let content_height = Self::DISPLAY_HEIGHT - Self::TOP_MARGIN - Self::BOTTOM_MARGIN;
+        // Line height: 24px for 10x20 font (1.2x for readability)
+        let line_height = 24.0;
 
         let renderer = Self {
             metadata: EpubMetadata::default(),
             spine: Spine::new(),
             layout_engine: LayoutEngine::new(content_width, content_height, line_height)
-                .with_margins(Self::LEFT_MARGIN, Self::TOP_MARGIN),
+                .with_margins(Self::SIDE_MARGIN, Self::TOP_MARGIN),
             current_chapter: Vec::new(),
             current_page_idx: 0,
             current_chapter_idx: 0,
@@ -169,9 +170,8 @@ impl StreamingEpubRenderer {
         };
 
         // 1. Open ZIP file
-        let file = File::open(&resolved_path).map_err(|e| {
-            EpubRenderError::IoError(format!("Failed to open file: {}", e))
-        })?;
+        let file = File::open(&resolved_path)
+            .map_err(|e| EpubRenderError::IoError(format!("Failed to open file: {}", e)))?;
         let mut zip = StreamingZip::new(file)?;
 
         log_heap_watermark("epub_zip_opened");
@@ -180,14 +180,12 @@ impl StreamingEpubRenderer {
         let container_entry = zip
             .get_entry("META-INF/container.xml")
             .or_else(|| zip.get_entry("meta-inf/container.xml"))
-            .ok_or_else(|| {
-                EpubRenderError::MetadataError("container.xml not found".to_string())
-            })?;
+            .ok_or_else(|| EpubRenderError::MetadataError("container.xml not found".to_string()))?;
 
         let container_size = container_entry.uncompressed_size as usize;
         let container_offset = container_entry.local_header_offset;
         let mut container_buf = alloc::vec![0u8; container_size];
-        
+
         // Clone entry data to avoid borrow issues
         let _ = container_entry;
         zip.read_file_at_offset(container_offset, container_size, &mut container_buf)?;
@@ -205,19 +203,19 @@ impl StreamingEpubRenderer {
         let opf_size = opf_entry.uncompressed_size as usize;
         let opf_offset = opf_entry.local_header_offset;
         let mut opf_buf = alloc::vec![0u8; opf_size];
-        
-        // Clone entry data to avoid borrow issues  
+
+        // Clone entry data to avoid borrow issues
         let _ = opf_entry;
         zip.read_file_at_offset(opf_offset, opf_size, &mut opf_buf)?;
 
-        self.metadata = crate::epub::metadata::parse_opf(&opf_buf)
-            .map_err(EpubRenderError::MetadataError)?;
+        self.metadata =
+            crate::epub::metadata::parse_opf(&opf_buf).map_err(EpubRenderError::MetadataError)?;
 
         log_heap_watermark("epub_metadata_parsed");
 
         // 4. Parse spine from OPF
-        self.spine = crate::epub::spine::parse_spine(&opf_buf)
-            .map_err(EpubRenderError::SpineError)?;
+        self.spine =
+            crate::epub::spine::parse_spine(&opf_buf).map_err(EpubRenderError::SpineError)?;
 
         log_heap_watermark("epub_spine_parsed");
 
@@ -247,15 +245,15 @@ impl StreamingEpubRenderer {
         log_heap_watermark(&format!("epub_chapter_{}_start", chapter_idx));
 
         // Get file path
-        let path = self.file_path.as_ref().ok_or_else(|| {
-            EpubRenderError::IoError("No EPUB file loaded".to_string())
-        })?;
+        let path = self
+            .file_path
+            .as_ref()
+            .ok_or_else(|| EpubRenderError::IoError("No EPUB file loaded".to_string()))?;
 
         // Open ZIP file
         use std::fs::File;
-        let file = File::open(path).map_err(|e| {
-            EpubRenderError::IoError(format!("Failed to open file: {}", e))
-        })?;
+        let file = File::open(path)
+            .map_err(|e| EpubRenderError::IoError(format!("Failed to open file: {}", e)))?;
         let mut zip = StreamingZip::new(file)?;
 
         // 1. Get chapter ID from spine
@@ -276,7 +274,8 @@ impl StreamingEpubRenderer {
         log_heap_watermark("epub_html_loaded");
 
         // 4. Tokenize HTML
-        let tokens = tokenize_html(&html).map_err(|e| EpubRenderError::TokenizeError(e.to_string()))?;
+        let tokens =
+            tokenize_html(&html).map_err(|e| EpubRenderError::TokenizeError(e.to_string()))?;
 
         log_heap_watermark("epub_html_tokenized");
 
@@ -306,9 +305,8 @@ impl StreamingEpubRenderer {
             let offset = entry.local_header_offset;
             let mut buf = alloc::vec![0u8; size];
             zip.read_file_at_offset(offset, size, &mut buf)?;
-            return String::from_utf8(buf).map_err(|e| {
-                EpubRenderError::IoError(format!("Invalid UTF-8 in chapter: {}", e))
-            });
+            return String::from_utf8(buf)
+                .map_err(|e| EpubRenderError::IoError(format!("Invalid UTF-8 in chapter: {}", e)));
         }
 
         // Try with common prefixes (some EPUBs have OEBPS/ or OPS/ prefixes)
@@ -428,6 +426,7 @@ impl StreamingEpubRenderer {
     }
 
     /// Render current page to display using built-in fonts only
+    /// Uses consistent 10x20 font for better readability
     pub fn render<D>(&self, display: &mut D) -> Result<(), D::Error>
     where
         D: DrawTarget<Color = BinaryColor> + OriginDimensions,
@@ -438,57 +437,63 @@ impl StreamingEpubRenderer {
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
-        // Draw header with title
-        let header_text = format!(
-            "{} - Ch {}/{}",
-            Self::truncate(self.title(), 20),
-            self.current_chapter(),
-            self.total_chapters()
-        );
-        let header_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-        Text::new(&header_text, Point::new(10, 25), header_style).draw(display)?;
+        // Margins - must match LayoutEngine::DEFAULT_MARGIN (32px)
+        const MARGIN: i32 = 32;
+        const HEADER_HEIGHT: i32 = 45; // Space for title + padding
+        const FOOTER_HEIGHT: i32 = 40; // Space for progress bar + page numbers
 
-        // Header line
-        Rectangle::new(Point::new(0, 32), Size::new(width, 2))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
+        // Header with book title
+        let header_text = format!("{}", Self::truncate(self.title(), 40));
+        let header_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        Text::new(&header_text, Point::new(MARGIN, 25), header_style).draw(display)?;
 
         // Get current page and render lines
         if let Some(page) = self.current_page() {
             for line in &page.lines {
+                // Use consistent 10x20 font for all text (readable on e-ink)
                 let style = match line.style {
-                    TextStyle::Normal => MonoTextStyle::new(&FONT_6X10, BinaryColor::On),
-                    TextStyle::Bold => MonoTextStyle::new(&FONT_10X20, BinaryColor::On),
-                    TextStyle::Italic => MonoTextStyle::new(&FONT_6X10, BinaryColor::On),
-                    TextStyle::BoldItalic => MonoTextStyle::new(&FONT_10X20, BinaryColor::On),
+                    TextStyle::Normal | TextStyle::Italic => {
+                        MonoTextStyle::new(&FONT_10X20, BinaryColor::On)
+                    }
+                    TextStyle::Bold | TextStyle::BoldItalic => {
+                        MonoTextStyle::new(&FONT_10X20, BinaryColor::On)
+                    }
                 };
 
-                // Add header offset to y position
-                let y = line.y + Self::HEADER_HEIGHT as i32;
-                Text::new(&line.text, Point::new(10, y), style).draw(display)?;
+                // Offset line y-position by header height so text doesn't overlap title
+                let y = line.y + HEADER_HEIGHT;
+                Text::new(&line.text, Point::new(MARGIN, y), style).draw(display)?;
             }
         }
 
-        // Progress bar
-        let bar_width = width.saturating_sub(20);
-        let bar_x = 10;
-        let bar_y = height as i32 - 28;
+        // Progress bar at bottom
+        let bar_width = width.saturating_sub(64) as i32; // MARGIN * 2
+        let bar_x = MARGIN;
+        let bar_y = height as i32 - FOOTER_HEIGHT + 5;
         let total_pages = self.total_pages().max(1);
         let filled = ((bar_width as usize * self.current_page_number()) / total_pages) as u32;
-        Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_width, 6))
+        Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_width as u32, 4))
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
-        Rectangle::new(Point::new(bar_x, bar_y), Size::new(filled, 6))
+        Rectangle::new(Point::new(bar_x, bar_y), Size::new(filled, 4))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
-        // Draw footer with page info
+        // Compact footer with just page numbers
         let footer_text = format!(
-            "Pg {}/{} | <=Prev | >=Next",
+            "Ch {}/{} | Pg {}/{}",
+            self.current_chapter(),
+            self.total_chapters(),
             self.current_page_number(),
             self.total_pages()
         );
-        Text::new(&footer_text, Point::new(10, height as i32 - 10), header_style).draw(display)?;
+        let footer_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        Text::new(
+            &footer_text,
+            Point::new(MARGIN, height as i32 - 8),
+            footer_style,
+        )
+        .draw(display)?;
 
         Ok(())
     }

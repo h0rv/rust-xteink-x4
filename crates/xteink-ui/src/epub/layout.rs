@@ -133,13 +133,8 @@ pub struct FontMetrics {
 
 impl Default for FontMetrics {
     fn default() -> Self {
-        // Default to FONT_6X10 metrics
-        Self {
-            char_width: 6.0,
-            char_height: 10.0,
-            bold_char_width: 6.0,
-            italic_char_width: 6.0,
-        }
+        // Use larger FONT_10X20 metrics for better readability on e-ink
+        Self::font_10x20()
     }
 }
 
@@ -206,9 +201,14 @@ impl LayoutEngine {
     /// Display constants for Xteink X4
     pub const DISPLAY_WIDTH: f32 = 480.0;
     pub const DISPLAY_HEIGHT: f32 = 800.0;
-    pub const DEFAULT_MARGIN: f32 = 10.0;
-    pub const DEFAULT_HEADER_HEIGHT: f32 = 50.0;
-    pub const DEFAULT_FOOTER_HEIGHT: f32 = 100.0;
+    /// Side margins for comfortable reading (larger on e-ink)
+    pub const DEFAULT_MARGIN: f32 = 32.0;
+    /// Top margin - minimal
+    pub const DEFAULT_TOP_MARGIN: f32 = 0.0;
+    /// Header area for title (must match renderer HEADER_HEIGHT)
+    pub const DEFAULT_HEADER_HEIGHT: f32 = 45.0;
+    /// Footer area for progress (must match renderer FOOTER_HEIGHT)
+    pub const DEFAULT_FOOTER_HEIGHT: f32 = 40.0;
 
     /// Create a new layout engine
     ///
@@ -218,7 +218,10 @@ impl LayoutEngine {
     /// * `line_height` - Height of each line in pixels
     pub fn new(page_width: f32, page_height: f32, line_height: f32) -> Self {
         let font_metrics = FontMetrics::default();
-        let max_lines = (page_height / line_height).floor() as usize;
+        // Reserve 2 extra line heights: 1 for font descent, 1 for safety margin
+        let max_lines = ((page_height - line_height * 2.0) / line_height)
+            .floor()
+            .max(1.0) as usize;
 
         Self {
             page_width,
@@ -241,16 +244,20 @@ impl LayoutEngine {
 
     /// Create layout engine with default display dimensions
     ///
-    /// Content area: 480x650 (accounting for margins, header, footer)
+    /// Content area: 416x715 (accounting for margins, header, footer)
+    /// Uses 10x20 font with 26px line height for comfortable reading
     pub fn with_defaults() -> Self {
         let content_width = Self::DISPLAY_WIDTH - (Self::DEFAULT_MARGIN * 2.0);
-        let content_height = Self::DISPLAY_HEIGHT
-            - Self::DEFAULT_HEADER_HEIGHT
-            - Self::DEFAULT_FOOTER_HEIGHT
-            - (Self::DEFAULT_MARGIN * 2.0);
-        let line_height = 20.0; // For 10x20 font
+        let content_height =
+            Self::DISPLAY_HEIGHT - Self::DEFAULT_HEADER_HEIGHT - Self::DEFAULT_FOOTER_HEIGHT;
+        // Line height should be ~1.3x font height for readability on e-ink
+        let line_height = 26.0; // For 10x20 font (20 * 1.3)
 
-        Self::new(content_width, content_height, line_height)
+        let mut engine = Self::new(content_width, content_height, line_height);
+        // Start at top of content area (header is rendered separately)
+        engine.top_margin = 0.0;
+        engine.current_y = 0.0;
+        engine
     }
 
     /// Set font metrics
@@ -286,13 +293,18 @@ impl LayoutEngine {
                 }
                 Token::Heading(level) => {
                     self.flush_line();
-                    // Headings get extra space before
+                    // Headings get extra space before (more space for higher level headings)
                     if self.current_line_count > 0 {
-                        self.add_paragraph_space();
+                        // Add 1-2 lines of space before heading based on level
+                        let space_lines = if level <= 2 { 2 } else { 1 };
+                        for _ in 0..space_lines {
+                            self.add_paragraph_space();
+                        }
                     }
-                    // Store heading level for potential larger font
-                    // For now, treat as bold
+                    // Headings are always bold
                     bold_active = true;
+                    // Note: Currently we use same font size for all headings
+                    // Future: could use larger fonts for h1-h2
                 }
                 Token::Emphasis(start) => {
                     self.flush_partial_word();
@@ -413,7 +425,7 @@ impl LayoutEngine {
         self.current_line_width = 0.0;
     }
 
-    /// Add paragraph spacing (empty line)
+    /// Add paragraph spacing (half line for compact e-ink layout)
     fn add_paragraph_space(&mut self) {
         // Check if we need a new page for the space
         if self.current_line_count >= self.max_lines_per_page {
@@ -422,10 +434,10 @@ impl LayoutEngine {
             self.current_line_count = 0;
         }
 
-        // Add empty line if not at start of page
+        // Add half line space between paragraphs (12px for 24px line height)
+        // This saves space while maintaining visual separation
         if self.current_line_count > 0 {
-            self.current_y += self.line_height;
-            self.current_line_count += 1;
+            self.current_y += self.line_height * 0.5;
         }
     }
 

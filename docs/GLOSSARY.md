@@ -1,5 +1,7 @@
 # Glossary of Acronyms & Terms
 
+Reference guide for **ox4** firmware development.
+
 ## Hardware & Platforms
 
 | Term | Full Name | Description |

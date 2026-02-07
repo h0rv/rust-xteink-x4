@@ -1,8 +1,8 @@
-# Xteink X4 Firmware Plan
+# ox4 Firmware Plan
 
 ## The Goal
 
-Build an e-reader firmware in Rust. Learn embedded development. Contribute a reusable display driver to the ecosystem.
+Build an e-reader firmware in Rust for the Xteink X4. Learn embedded development. Contribute a reusable display driver to the ecosystem.
 
 ## Hardware Specs
 

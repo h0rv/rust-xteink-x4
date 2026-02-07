@@ -194,9 +194,10 @@ just flash
 
 ## Documentation References
 
-- Implementation Plan: `docs/epub-plan-revised-2026-02-03.md`
-- Library Research: `docs/epub-library-scan-2026-02-03.md`
-- Hardware Specs: `docs/PLAN.md`
+- Implementation Plan: [architecture-plan.md](./architecture-plan.md)
+- Library Research: [library-research.md](./library-research.md)
+- Hardware Specs: [../PLAN.md](../PLAN.md)
+- Glossary: [../GLOSSARY.md](../GLOSSARY.md)
 
 ---
 

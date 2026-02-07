@@ -1,29 +1,33 @@
-# Xteink X4 Documentation
+# ox4 Documentation
 
-Documentation for the Xteink X4 e-ink reader firmware - an ESP32-C3 based e-reader written in Rust.
+Documentation for **ox4** - Rust-powered e-reader firmware for the Xteink X4 (ESP32-C3 based e-ink reader).
 
 ---
 
 ## Quick Links
 
-### For Developers
+### Core Documentation
 - **[PLAN.md](./PLAN.md)** - Master project plan with hardware specs and critical path
-- **[GLOSSARY.md](./GLOSSARY.md)** - Terms and definitions
-- **[FUTURE_FEATURES.md](./FUTURE_FEATURES.md)** - Ideas for future development
+- **[GLOSSARY.md](./GLOSSARY.md)** - Terms and definitions for embedded development
 
-### EPUB Implementation
-- **[EPUB_ARCHITECTURE_COMPARISON.md](./EPUB_ARCHITECTURE_COMPARISON.md)** - Compare all 6 possible approaches with tradeoffs
-- **[epub-plan-revised-2026-02-03.md](./epub-plan-revised-2026-02-03.md)** - Detailed streaming EPUB implementation plan
-- **[epub-library-scan-2026-02-03.md](./epub-library-scan-2026-02-03.md)** - Rust library research for EPUB/typography
+### By Category
 
-### UI/UX Design
-- **[ui-paradigms.md](./ui-paradigms.md)** - UI interaction patterns
-- **[ui-mockups-complete.md](./ui-mockups-complete.md)** - Complete UI mockups
-- **[ui-creative-complete.md](./ui-creative-complete.md)** - Creative UI concepts
+#### 📖 EPUB Implementation
+- **[implementation-status.md](./epub/implementation-status.md)** - Current status and testing guide
+- **[architecture-plan.md](./epub/architecture-plan.md)** - Streaming EPUB implementation plan
+- **[library-research.md](./epub/library-research.md)** - Rust library research for EPUB/typography
 
-### Hardware
-- **[ssd1677-code-review.md](./ssd1677-code-review.md)** - Display driver review
-- **[ebook-libraries-2026.md](./ebook-libraries-2026.md)** - E-ink library ecosystem review
+#### 🎨 UI/UX Design
+- **[paradigms.md](./ui/paradigms.md)** - UI interaction patterns for e-ink + 6 buttons
+- **[mockups.md](./ui/mockups.md)** - Complete UI mockups (5 paradigms)
+- **[creative-concepts.md](./ui/creative-concepts.md)** - Creative UI concepts
+
+#### 🔧 Hardware
+- **[ssd1677-code-review.md](./hardware/ssd1677-code-review.md)** - Display driver code review
+
+#### ✨ Features
+- **[wasm-simulator.md](./features/wasm-simulator.md)** - Browser-based UI simulator
+- **[future-ideas.md](./features/future-ideas.md)** - Future feature ideas
 
 ---
 
@@ -31,12 +35,18 @@ Documentation for the Xteink X4 e-ink reader firmware - an ESP32-C3 based e-read
 
 ### New to the project?
 1. Start with **[PLAN.md](./PLAN.md)** for hardware specs and project phases
-2. Read **[EPUB_ARCHITECTURE_COMPARISON.md](./EPUB_ARCHITECTURE_COMPARISON.md)** to understand EPUB implementation options
+2. Read **[epub/architecture-plan.md](./epub/architecture-plan.md)** to understand EPUB implementation approach
 3. Check **[GLOSSARY.md](./GLOSSARY.md)** for unfamiliar terms
 
 ### Working on EPUB support?
-2. **[epub-plan-revised-2026-02-03.md](./epub-plan-revised-2026-02-03.md)** - Implementation details
-3. **[epub-library-scan-2026-02-03.md](./epub-library-scan-2026-02-03.md)** - Library choices
+1. **[epub/implementation-status.md](./epub/implementation-status.md)** - Current status and testing
+2. **[epub/architecture-plan.md](./epub/architecture-plan.md)** - Implementation details
+3. **[epub/library-research.md](./epub/library-research.md)** - Library choices
+
+### Designing UI features?
+1. **[ui/paradigms.md](./ui/paradigms.md)** - Understand the 5 UI paradigms
+2. **[ui/mockups.md](./ui/mockups.md)** - See complete screen flows
+3. **[features/wasm-simulator.md](./features/wasm-simulator.md)** - Test in browser
 
 ---
 
@@ -44,9 +54,9 @@ Documentation for the Xteink X4 e-ink reader firmware - an ESP32-C3 based e-read
 
 | Decision | Document | Status |
 |----------|----------|--------|
-| EPUB Architecture | [EPUB_ARCHITECTURE_COMPARISON.md](./EPUB_ARCHITECTURE_COMPARISON.md) | ✅ **Approach 2: Streaming Reflow** recommended |
-| Library Stack | [epub-library-scan-2026-02-03.md](./epub-library-scan-2026-02-03.md) | ✅ `quick-xml` + `zip` + `fontdue` |
-| Implementation Phases | [epub-plan-revised-2026-02-03.md](./epub-plan-revised-2026-02-03.md) | ✅ 6 phases defined |
+| EPUB Architecture | [epub/architecture-plan.md](./epub/architecture-plan.md) | ✅ **Streaming Reflow** implemented |
+| Library Stack | [epub/library-research.md](./epub/library-research.md) | ✅ `quick-xml` + `rc-zip` + `fontdue` |
+| Implementation Status | [epub/implementation-status.md](./epub/implementation-status.md) | ✅ Complete, ready for testing |
 | Hardware Specs | [PLAN.md](./PLAN.md) | ✅ ESP32-C3, 480x800, SSD1677 |
 
 ---
@@ -64,7 +74,7 @@ ESP32-C3 Available Resources:
 Target: Peak usage <100KB for EPUB operations
 ```
 
-**Key Constraint:** Current implementation crashes at ~165KB (OOM). New architecture must stay under 100KB.
+**Key Constraint:** Streaming architecture keeps memory usage under 100KB (achieved: ~60KB).
 
 ---
 
@@ -73,8 +83,36 @@ Target: Peak usage <100KB for EPUB operations
 **Phase 1: Display Driver** - ✅ Complete (SSD1677 working)  
 **Phase 2: Button Input** - ✅ Complete  
 **Phase 3: SD Card** - ✅ Complete (FATFS + CLI)  
-**Phase 4: EPUB Reader** - 🔄 In Progress (Architecture selected, implementation starting)
+**Phase 4: EPUB Reader** - ✅ Complete (Ready for device testing)
 
 ---
 
-*Last Updated: 2026-02-03*
+## Directory Structure
+
+```
+docs/
+├── README.md              # This file
+├── PLAN.md                # Master project plan
+├── GLOSSARY.md            # Terms and definitions
+│
+├── epub/                  # EPUB implementation docs
+│   ├── implementation-status.md
+│   ├── architecture-plan.md
+│   └── library-research.md
+│
+├── ui/                    # UI/UX design docs
+│   ├── paradigms.md
+│   ├── mockups.md
+│   └── creative-concepts.md
+│
+├── hardware/              # Hardware-specific docs
+│   └── ssd1677-code-review.md
+│
+└── features/              # Feature documentation
+    ├── wasm-simulator.md
+    └── future-ideas.md
+```
+
+---
+
+*Last Updated: 2026-02-07*

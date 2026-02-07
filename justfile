@@ -9,6 +9,49 @@ mod cli "cli/justfile"
 
 export ESP_IDF_SDKCONFIG_DEFAULTS := "crates/xteink-firmware/sdkconfig.defaults"
 
+# Bootstrap development environment
+setup:
+    @echo "🔧 Setting up ox4 development environment..."
+    @echo ""
+    @echo "📦 Installing Rust tools..."
+    cargo install espflash espup trunk
+    @echo ""
+    @echo "🔨 Installing ESP-IDF toolchain..."
+    espup install
+    @echo ""
+    @echo "🎨 Setting up Git hooks (optional)..."
+    @if [ -d .git ]; then \
+        echo "#!/bin/sh" > .git/hooks/pre-commit; \
+        echo "just fmt" >> .git/hooks/pre-commit; \
+        chmod +x .git/hooks/pre-commit; \
+        echo "✅ Pre-commit hook installed (runs 'just fmt')"; \
+    else \
+        echo "⚠️  Not a git repository, skipping hooks"; \
+    fi
+    @echo ""
+    @echo "🧪 Running initial checks..."
+    just check
+    @echo ""
+    @echo "✅ Setup complete!"
+    @echo ""
+    @echo "Next steps:"
+    @echo "  - Run 'just sim-desktop' to test the desktop simulator"
+    @echo "  - Run 'just sim-web' to test the web simulator"
+    @echo "  - Run 'just flash' to build and flash firmware to device"
+    @echo ""
+    @echo "💡 Run 'just --list' to see all available commands"
+
+# Check system dependencies
+check-deps:
+    @echo "Checking system dependencies..."
+    @command -v rustc >/dev/null 2>&1 || (echo "❌ Rust not found. Install from https://rustup.rs" && exit 1)
+    @command -v cargo >/dev/null 2>&1 || (echo "❌ Cargo not found" && exit 1)
+    @command -v espflash >/dev/null 2>&1 || echo "⚠️  espflash not found (run: cargo install espflash)"
+    @command -v espup >/dev/null 2>&1 || echo "⚠️  espup not found (run: cargo install espup)"
+    @command -v trunk >/dev/null 2>&1 || echo "⚠️  trunk not found (run: cargo install trunk)"
+    @echo "✅ System dependencies check complete"
+
+
 # Run all quality checks: format, lint, check
 all:
     @echo "Running all quality checks..."

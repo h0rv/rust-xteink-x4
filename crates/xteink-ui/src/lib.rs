@@ -13,6 +13,8 @@ pub mod file_browser;
 pub mod filesystem;
 pub mod font_render;
 pub mod input;
+pub mod settings_activity;
+pub mod ui;
 
 // EPUB module is available when either std or quick-xml is enabled
 #[cfg(any(feature = "std", feature = "quick-xml"))]
@@ -35,6 +37,10 @@ pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;
 pub use input::{Button, InputEvent};
+pub use settings_activity::{
+    FontFamily, FontFamilySelector, FontSize, FontSizeSelector, Settings, SettingsActivity,
+    SettingsGroup,
+};
 
 #[cfg(feature = "std")]
 pub use epub::{

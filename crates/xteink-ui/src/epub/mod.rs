@@ -36,4 +36,4 @@ pub use tokenizer::{tokenize_html, Token, TokenizeError};
 pub use layout::{FontMetrics, LayoutConfig, LayoutEngine, Line, Page, TextStyle};
 
 #[cfg(feature = "std")]
-pub use streaming_zip::{open_epub, StreamingZip, ZipError, CdEntry};
+pub use streaming_zip::{open_epub, CdEntry, StreamingZip, ZipError};

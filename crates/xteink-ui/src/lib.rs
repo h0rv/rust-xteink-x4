@@ -13,7 +13,10 @@ pub mod file_browser;
 pub mod filesystem;
 pub mod font_render;
 pub mod input;
+pub mod library_activity;
+pub mod reader_settings_activity;
 pub mod settings_activity;
+pub mod system_menu_activity;
 pub mod ui;
 
 // EPUB module is available when either std or quick-xml is enabled
@@ -37,10 +40,16 @@ pub use file_browser::{FileBrowser, TextViewer};
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;
 pub use input::{Button, InputEvent};
+pub use library_activity::{create_mock_books, BookAction, BookInfo, LibraryActivity, SortOrder};
+pub use reader_settings_activity::{
+    LineSpacing, MarginSize, ReaderSettings, ReaderSettingsActivity, RefreshFrequency, SettingItem,
+    TapZoneConfig, TextAlignment, VolumeButtonAction,
+};
 pub use settings_activity::{
     FontFamily, FontFamilySelector, FontSize, FontSizeSelector, Settings, SettingsActivity,
     SettingsGroup,
 };
+pub use system_menu_activity::{DeviceStatus, MenuItem, NavigationCallbacks, SystemMenuActivity};
 
 #[cfg(feature = "std")]
 pub use epub::{

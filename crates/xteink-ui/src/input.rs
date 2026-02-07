@@ -6,6 +6,8 @@ pub enum Button {
     // GPIO1 ADC (resistor ladder)
     Left,
     Right,
+    Up,
+    Down,
     Confirm,
     Back,
     // GPIO2 ADC (resistor ladder)

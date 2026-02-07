@@ -1,0 +1,1430 @@
+//! Reader Settings Activity for EPUB reading preferences.
+//!
+//! Provides comprehensive reading configuration including font settings,
+//! margins, layout options, display preferences, and navigation controls.
+//! Optimized for e-ink displays with minimal, high-contrast UI.
+
+extern crate alloc;
+
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use embedded_graphics::{
+    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
+    text::Text,
+};
+
+use crate::input::{Button, InputEvent};
+use crate::settings_activity::{FontFamily, FontSize};
+use crate::ui::{Activity, ActivityResult, Modal, Theme, Toast};
+
+/// Line spacing options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineSpacing {
+    Compact,
+    #[default]
+    Normal,
+    Relaxed,
+}
+
+impl LineSpacing {
+    /// All line spacing variants
+    pub const ALL: [Self; 3] = [Self::Compact, Self::Normal, Self::Relaxed];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Compact => "Compact",
+            Self::Normal => "Normal",
+            Self::Relaxed => "Relaxed",
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Compact => 0,
+            Self::Normal => 1,
+            Self::Relaxed => 2,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Compact),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Relaxed),
+            _ => None,
+        }
+    }
+
+    /// Get line height multiplier (in tenths)
+    pub const fn multiplier(self) -> u8 {
+        match self {
+            Self::Compact => 12, // 1.2x
+            Self::Normal => 15,  // 1.5x
+            Self::Relaxed => 20, // 2.0x
+        }
+    }
+}
+
+/// Margin size options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarginSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl MarginSize {
+    /// All margin size variants
+    pub const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Medium => "Medium",
+            Self::Large => "Large",
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Small => 0,
+            Self::Medium => 1,
+            Self::Large => 2,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Small),
+            1 => Some(Self::Medium),
+            2 => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    /// Get margin size in pixels
+    pub const fn pixels(self) -> u32 {
+        match self {
+            Self::Small => 20,
+            Self::Medium => 40,
+            Self::Large => 60,
+        }
+    }
+}
+
+/// Text alignment options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextAlignment {
+    Left,
+    #[default]
+    Justified,
+}
+
+impl TextAlignment {
+    /// All alignment variants
+    pub const ALL: [Self; 2] = [Self::Left, Self::Justified];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Left => "Left",
+            Self::Justified => "Justified",
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Justified => 1,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Left),
+            1 => Some(Self::Justified),
+            _ => None,
+        }
+    }
+}
+
+/// Full refresh frequency options (in pages)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RefreshFrequency {
+    Every1,
+    #[default]
+    Every3,
+    Every5,
+    Every10,
+}
+
+impl RefreshFrequency {
+    /// All refresh frequency variants
+    pub const ALL: [Self; 4] = [Self::Every1, Self::Every3, Self::Every5, Self::Every10];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Every1 => "Every 1 page",
+            Self::Every3 => "Every 3 pages",
+            Self::Every5 => "Every 5 pages",
+            Self::Every10 => "Every 10 pages",
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Every1 => 0,
+            Self::Every3 => 1,
+            Self::Every5 => 2,
+            Self::Every10 => 3,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Every1),
+            1 => Some(Self::Every3),
+            2 => Some(Self::Every5),
+            3 => Some(Self::Every10),
+            _ => None,
+        }
+    }
+
+    /// Get number of pages between full refreshes
+    pub const fn pages(self) -> u8 {
+        match self {
+            Self::Every1 => 1,
+            Self::Every3 => 3,
+            Self::Every5 => 5,
+            Self::Every10 => 10,
+        }
+    }
+}
+
+/// Tap zone configuration for page turning
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TapZoneConfig {
+    #[default]
+    LeftNext, // Tap left side for next page (default)
+    RightNext, // Tap right side for next page
+}
+
+impl TapZoneConfig {
+    /// All tap zone configurations
+    pub const ALL: [Self; 2] = [Self::LeftNext, Self::RightNext];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LeftNext => "Left = Next",
+            Self::RightNext => "Right = Next",
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::LeftNext => 0,
+            Self::RightNext => 1,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::LeftNext),
+            1 => Some(Self::RightNext),
+            _ => None,
+        }
+    }
+}
+
+/// Volume button actions
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VolumeButtonAction {
+    PageTurn,
+    #[default]
+    Scroll,
+}
+
+impl VolumeButtonAction {
+    /// All volume button actions
+    pub const ALL: [Self; 2] = [Self::PageTurn, Self::Scroll];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::PageTurn => "Page Turn",
+            Self::Scroll => "Scroll",
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::PageTurn => 0,
+            Self::Scroll => 1,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::PageTurn),
+            1 => Some(Self::Scroll),
+            _ => None,
+        }
+    }
+}
+
+/// Reader settings data container
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderSettings {
+    // Font Settings
+    pub font_size: FontSize,
+    pub font_family: FontFamily,
+    pub line_spacing: LineSpacing,
+    // Margins & Layout
+    pub margin_size: MarginSize,
+    pub text_alignment: TextAlignment,
+    pub show_page_numbers: bool,
+    // Display
+    pub refresh_frequency: RefreshFrequency,
+    pub invert_colors: bool,
+    // Navigation
+    pub tap_zone_config: TapZoneConfig,
+    pub volume_button_action: VolumeButtonAction,
+}
+
+impl Default for ReaderSettings {
+    fn default() -> Self {
+        Self {
+            font_size: FontSize::default(),
+            font_family: FontFamily::default(),
+            line_spacing: LineSpacing::default(),
+            margin_size: MarginSize::default(),
+            text_alignment: TextAlignment::default(),
+            show_page_numbers: true,
+            refresh_frequency: RefreshFrequency::default(),
+            invert_colors: false,
+            tap_zone_config: TapZoneConfig::default(),
+            volume_button_action: VolumeButtonAction::default(),
+        }
+    }
+}
+
+impl ReaderSettings {
+    /// Reset to factory defaults
+    pub fn reset_to_defaults(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Setting item types for the settings list
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingItem {
+    FontSize,
+    FontFamily,
+    LineSpacing,
+    MarginSize,
+    TextAlignment,
+    ShowPageNumbers,
+    RefreshFrequency,
+    InvertColors,
+    TapZoneConfig,
+    VolumeButtonAction,
+    SaveButton,
+}
+
+impl SettingItem {
+    /// All setting items in display order
+    pub const ALL: [Self; 11] = [
+        Self::FontSize,
+        Self::FontFamily,
+        Self::LineSpacing,
+        Self::MarginSize,
+        Self::TextAlignment,
+        Self::ShowPageNumbers,
+        Self::RefreshFrequency,
+        Self::InvertColors,
+        Self::TapZoneConfig,
+        Self::VolumeButtonAction,
+        Self::SaveButton,
+    ];
+
+    /// Get the section this item belongs to
+    pub const fn section(self) -> &'static str {
+        match self {
+            Self::FontSize | Self::FontFamily | Self::LineSpacing => "Font",
+            Self::MarginSize | Self::TextAlignment | Self::ShowPageNumbers => "Margins & Layout",
+            Self::RefreshFrequency | Self::InvertColors => "Display",
+            Self::TapZoneConfig | Self::VolumeButtonAction => "Navigation",
+            Self::SaveButton => "",
+        }
+    }
+
+    /// Get the label for this setting
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FontSize => "Size",
+            Self::FontFamily => "Family",
+            Self::LineSpacing => "Spacing",
+            Self::MarginSize => "Margins",
+            Self::TextAlignment => "Alignment",
+            Self::ShowPageNumbers => "Page Numbers",
+            Self::RefreshFrequency => "Refresh",
+            Self::InvertColors => "Invert",
+            Self::TapZoneConfig => "Tap Zone",
+            Self::VolumeButtonAction => "Volume Keys",
+            Self::SaveButton => "Save Changes",
+        }
+    }
+
+    /// Check if this is a toggle setting (checkbox)
+    pub const fn is_toggle(self) -> bool {
+        matches!(self, Self::ShowPageNumbers | Self::InvertColors)
+    }
+
+    /// Check if this is the save button
+    pub const fn is_save(self) -> bool {
+        matches!(self, Self::SaveButton)
+    }
+}
+
+/// Reader Settings Activity implementing the Activity trait
+#[derive(Debug, Clone)]
+pub struct ReaderSettingsActivity {
+    settings: ReaderSettings,
+    original_settings: ReaderSettings,
+    selected_index: usize,
+    show_toast: bool,
+    toast_message: String,
+    toast_frames_remaining: u32,
+    show_cancel_modal: bool,
+    theme: Theme,
+}
+
+impl ReaderSettingsActivity {
+    /// Toast display duration in frames
+    const TOAST_DURATION: u32 = 120; // ~2 seconds at 60fps
+
+    /// Create a new reader settings activity with defaults
+    pub fn new() -> Self {
+        let settings = ReaderSettings::default();
+        Self {
+            settings,
+            original_settings: settings,
+            selected_index: 0,
+            show_toast: false,
+            toast_message: String::new(),
+            toast_frames_remaining: 0,
+            show_cancel_modal: false,
+            theme: Theme::default(),
+        }
+    }
+
+    /// Create with specific initial settings
+    pub fn with_settings(settings: ReaderSettings) -> Self {
+        Self {
+            settings,
+            original_settings: settings,
+            selected_index: 0,
+            show_toast: false,
+            toast_message: String::new(),
+            toast_frames_remaining: 0,
+            show_cancel_modal: false,
+            theme: Theme::default(),
+        }
+    }
+
+    /// Get current settings
+    pub fn settings(&self) -> &ReaderSettings {
+        &self.settings
+    }
+
+    /// Get original settings (before any modifications)
+    pub fn original_settings(&self) -> &ReaderSettings {
+        &self.original_settings
+    }
+
+    /// Check if settings were modified
+    pub fn is_modified(&self) -> bool {
+        self.settings != self.original_settings
+    }
+
+    /// Save settings and return to reader
+    fn save_settings(&mut self) {
+        self.show_toast("Settings saved");
+    }
+
+    /// Cancel changes and return to reader
+    fn cancel_changes(&mut self) {
+        if self.is_modified() {
+            self.show_cancel_modal = true;
+        }
+    }
+
+    /// Confirm cancel - discard changes
+    fn confirm_cancel(&mut self) {
+        self.settings = self.original_settings;
+        self.show_cancel_modal = false;
+    }
+
+    /// Dismiss cancel modal
+    fn dismiss_cancel(&mut self) {
+        self.show_cancel_modal = false;
+    }
+
+    /// Show a toast notification
+    fn show_toast(&mut self, message: impl Into<String>) {
+        self.toast_message = message.into();
+        self.show_toast = true;
+        self.toast_frames_remaining = Self::TOAST_DURATION;
+    }
+
+    /// Update toast state (call once per frame)
+    pub fn update(&mut self) {
+        if self.show_toast && self.toast_frames_remaining > 0 {
+            self.toast_frames_remaining -= 1;
+            if self.toast_frames_remaining == 0 {
+                self.show_toast = false;
+            }
+        }
+    }
+
+    /// Get currently selected item
+    fn current_item(&self) -> SettingItem {
+        SettingItem::ALL[self.selected_index]
+    }
+
+    /// Move selection to next item
+    fn select_next(&mut self) {
+        self.selected_index = (self.selected_index + 1) % SettingItem::ALL.len();
+    }
+
+    /// Move selection to previous item
+    fn select_prev(&mut self) {
+        if self.selected_index == 0 {
+            self.selected_index = SettingItem::ALL.len() - 1;
+        } else {
+            self.selected_index -= 1;
+        }
+    }
+
+    /// Handle confirm press on current item
+    fn handle_confirm(&mut self) -> ActivityResult {
+        match self.current_item() {
+            SettingItem::FontSize => {
+                if let Some(next) = self.settings.font_size.next() {
+                    self.settings.font_size = next;
+                    self.show_toast(format!("Font size: {}", next.label()));
+                }
+            }
+            SettingItem::FontFamily => {
+                let next_index = (self.settings.font_family.index() + 1) % FontFamily::ALL.len();
+                self.settings.font_family = FontFamily::from_index(next_index).unwrap();
+                self.show_toast(format!("Font: {}", self.settings.font_family.label()));
+            }
+            SettingItem::LineSpacing => {
+                let next_index = (self.settings.line_spacing.index() + 1) % LineSpacing::ALL.len();
+                self.settings.line_spacing = LineSpacing::from_index(next_index).unwrap();
+                self.show_toast(format!("Spacing: {}", self.settings.line_spacing.label()));
+            }
+            SettingItem::MarginSize => {
+                let next_index = (self.settings.margin_size.index() + 1) % MarginSize::ALL.len();
+                self.settings.margin_size = MarginSize::from_index(next_index).unwrap();
+                self.show_toast(format!("Margins: {}", self.settings.margin_size.label()));
+            }
+            SettingItem::TextAlignment => {
+                let next_index =
+                    (self.settings.text_alignment.index() + 1) % TextAlignment::ALL.len();
+                self.settings.text_alignment = TextAlignment::from_index(next_index).unwrap();
+                self.show_toast(format!(
+                    "Alignment: {}",
+                    self.settings.text_alignment.label()
+                ));
+            }
+            SettingItem::ShowPageNumbers => {
+                self.settings.show_page_numbers = !self.settings.show_page_numbers;
+                let status = if self.settings.show_page_numbers {
+                    "On"
+                } else {
+                    "Off"
+                };
+                self.show_toast(format!("Page numbers: {}", status));
+            }
+            SettingItem::RefreshFrequency => {
+                let next_index =
+                    (self.settings.refresh_frequency.index() + 1) % RefreshFrequency::ALL.len();
+                self.settings.refresh_frequency = RefreshFrequency::from_index(next_index).unwrap();
+                self.show_toast(format!(
+                    "Refresh: {}",
+                    self.settings.refresh_frequency.label()
+                ));
+            }
+            SettingItem::InvertColors => {
+                self.settings.invert_colors = !self.settings.invert_colors;
+                let status = if self.settings.invert_colors {
+                    "On"
+                } else {
+                    "Off"
+                };
+                self.show_toast(format!("Invert: {}", status));
+            }
+            SettingItem::TapZoneConfig => {
+                let next_index =
+                    (self.settings.tap_zone_config.index() + 1) % TapZoneConfig::ALL.len();
+                self.settings.tap_zone_config = TapZoneConfig::from_index(next_index).unwrap();
+                self.show_toast(format!("Tap: {}", self.settings.tap_zone_config.label()));
+            }
+            SettingItem::VolumeButtonAction => {
+                let next_index = (self.settings.volume_button_action.index() + 1)
+                    % VolumeButtonAction::ALL.len();
+                self.settings.volume_button_action =
+                    VolumeButtonAction::from_index(next_index).unwrap();
+                self.show_toast(format!(
+                    "Volume: {}",
+                    self.settings.volume_button_action.label()
+                ));
+            }
+            SettingItem::SaveButton => {
+                self.save_settings();
+                return ActivityResult::NavigateBack;
+            }
+        }
+        ActivityResult::Consumed
+    }
+
+    /// Get current value label for a setting item
+    fn get_value_label(&self, item: SettingItem) -> String {
+        match item {
+            SettingItem::FontSize => self.settings.font_size.label().into(),
+            SettingItem::FontFamily => self.settings.font_family.label().into(),
+            SettingItem::LineSpacing => self.settings.line_spacing.label().into(),
+            SettingItem::MarginSize => self.settings.margin_size.label().into(),
+            SettingItem::TextAlignment => self.settings.text_alignment.label().into(),
+            SettingItem::ShowPageNumbers => {
+                if self.settings.show_page_numbers {
+                    "[✓]".into()
+                } else {
+                    "[ ]".into()
+                }
+            }
+            SettingItem::RefreshFrequency => self.settings.refresh_frequency.label().into(),
+            SettingItem::InvertColors => {
+                if self.settings.invert_colors {
+                    "[✓]".into()
+                } else {
+                    "[ ]".into()
+                }
+            }
+            SettingItem::TapZoneConfig => self.settings.tap_zone_config.label().into(),
+            SettingItem::VolumeButtonAction => self.settings.volume_button_action.label().into(),
+            SettingItem::SaveButton => String::new(),
+        }
+    }
+
+    /// Render header bar
+    fn render_header<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        theme: &Theme,
+    ) -> Result<(), D::Error> {
+        let display_width = display.bounding_box().size.width;
+        let header_height = theme.metrics.header_height;
+
+        // Header background
+        Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+
+        // Title
+        let title_style = MonoTextStyleBuilder::new()
+            .font(&ascii::FONT_7X13_BOLD)
+            .text_color(BinaryColor::Off)
+            .build();
+        Text::new(
+            "Reader Settings",
+            Point::new(theme.metrics.side_padding as i32, 32),
+            title_style,
+        )
+        .draw(display)?;
+
+        // Save button indicator
+        let save_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
+        let save_text = "[Save]";
+        let save_width = save_text.len() as i32 * 7;
+        Text::new(
+            save_text,
+            Point::new(
+                display_width as i32 - save_width - theme.metrics.side_padding as i32,
+                32,
+            ),
+            save_style,
+        )
+        .draw(display)?;
+
+        Ok(())
+    }
+
+    /// Render settings list
+    fn render_settings_list<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        theme: &Theme,
+    ) -> Result<(), D::Error> {
+        let display_width = display.bounding_box().size.width;
+        let content_width = theme.metrics.content_width(display_width);
+        let x = theme.metrics.side_padding as i32;
+        let mut y = theme.metrics.header_height as i32 + theme.metrics.spacing_double() as i32;
+
+        let mut last_section = "";
+
+        for (i, item) in SettingItem::ALL.iter().enumerate() {
+            let item = *item;
+
+            // Render section header if new section
+            let section = item.section();
+            if !section.is_empty() && section != last_section {
+                if !last_section.is_empty() {
+                    y += theme.metrics.spacing as i32; // Extra spacing between sections
+                }
+                self.render_section_header(display, theme, x, y, section)?;
+                y += 25i32; // Section header height
+                last_section = section;
+            }
+
+            let is_selected = i == self.selected_index;
+            let item_height = if item.is_save() {
+                theme.metrics.button_height
+            } else {
+                theme.metrics.list_item_height
+            };
+
+            // Background
+            let bg_color = if is_selected {
+                BinaryColor::On
+            } else {
+                BinaryColor::Off
+            };
+            Rectangle::new(Point::new(x, y), Size::new(content_width, item_height))
+                .into_styled(PrimitiveStyle::with_fill(bg_color))
+                .draw(display)?;
+
+            // Border for save button
+            if item.is_save() {
+                Rectangle::new(Point::new(x, y), Size::new(content_width, item_height))
+                    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                    .draw(display)?;
+            }
+
+            // Text color
+            let text_color = if is_selected {
+                BinaryColor::Off
+            } else {
+                BinaryColor::On
+            };
+
+            if item.is_save() {
+                // Center the save button text
+                let label = item.label();
+                let text_width = label.len() as i32 * 7;
+                let text_x = x + (content_width as i32 - text_width) / 2;
+                Text::new(
+                    label,
+                    Point::new(text_x, y + (item_height as i32) / 2 + 5),
+                    MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color),
+                )
+                .draw(display)?;
+            } else {
+                // Label on left
+                Text::new(
+                    item.label(),
+                    Point::new(x + 10, y + 28),
+                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                )
+                .draw(display)?;
+
+                // Value on right with [>] indicator
+                let value_label = self.get_value_label(item);
+                let value_width = (value_label.len() + 4) as i32 * 7; // +4 for " [>]"
+                let value_x = x + content_width as i32 - value_width - 10;
+
+                let value_text = if item.is_toggle() {
+                    value_label
+                } else {
+                    format!("{} [>]", value_label)
+                };
+
+                Text::new(
+                    &value_text,
+                    Point::new(value_x, y + 28),
+                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                )
+                .draw(display)?;
+            }
+
+            y += item_height as i32;
+        }
+
+        Ok(())
+    }
+
+    /// Render section header
+    fn render_section_header<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        _theme: &Theme,
+        x: i32,
+        y: i32,
+        title: &str,
+    ) -> Result<(), D::Error> {
+        let title_style = MonoTextStyleBuilder::new()
+            .font(&ascii::FONT_7X13_BOLD)
+            .text_color(BinaryColor::On)
+            .build();
+
+        Text::new(title, Point::new(x, y + 15), title_style).draw(display)?;
+
+        Ok(())
+    }
+}
+
+impl Activity for ReaderSettingsActivity {
+    fn on_enter(&mut self) {
+        self.original_settings = self.settings;
+        self.selected_index = 0;
+        self.show_toast = false;
+        self.show_cancel_modal = false;
+    }
+
+    fn on_exit(&mut self) {
+        // Settings are persisted in memory
+    }
+
+    fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
+        if self.show_cancel_modal {
+            return self.handle_modal_input(event);
+        }
+
+        match event {
+            InputEvent::Press(Button::Back) => {
+                if self.is_modified() {
+                    self.cancel_changes();
+                    ActivityResult::Consumed
+                } else {
+                    ActivityResult::NavigateBack
+                }
+            }
+            InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                self.select_prev();
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                self.select_next();
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Confirm) | InputEvent::Press(Button::Right) => {
+                self.handle_confirm()
+            }
+            InputEvent::Press(Button::Left) => {
+                // Cycle backwards on some settings
+                self.handle_left_press()
+            }
+            _ => ActivityResult::Ignored,
+        }
+    }
+
+    fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
+        // Clear background
+        Rectangle::new(
+            Point::new(0, 0),
+            Size::new(
+                display.bounding_box().size.width,
+                display.bounding_box().size.height,
+            ),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+        .draw(display)?;
+
+        // Header
+        self.render_header(display, &self.theme)?;
+
+        // Settings list
+        self.render_settings_list(display, &self.theme)?;
+
+        // Toast notification
+        if self.show_toast {
+            let display_width = display.bounding_box().size.width;
+            let display_height = display.bounding_box().size.height;
+            let toast = Toast::bottom_center(&self.toast_message, display_width, display_height);
+            toast.render(display)?;
+        }
+
+        // Cancel modal dialog
+        if self.show_cancel_modal {
+            let modal = Modal::new("Discard Changes?", "You have unsaved changes.")
+                .with_button("Keep")
+                .with_button("Discard");
+            modal.render(display, &self.theme)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl ReaderSettingsActivity {
+    /// Handle input when modal is shown
+    fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
+        match event {
+            InputEvent::Press(Button::Confirm) | InputEvent::Press(Button::Right) => {
+                self.confirm_cancel();
+                ActivityResult::NavigateBack
+            }
+            InputEvent::Press(Button::Back) | InputEvent::Press(Button::Left) => {
+                self.dismiss_cancel();
+                ActivityResult::Consumed
+            }
+            _ => ActivityResult::Ignored,
+        }
+    }
+
+    /// Handle left button press (cycle backwards)
+    fn handle_left_press(&mut self) -> ActivityResult {
+        match self.current_item() {
+            SettingItem::FontSize => {
+                if let Some(prev) = self.settings.font_size.prev() {
+                    self.settings.font_size = prev;
+                    self.show_toast(format!("Font size: {}", prev.label()));
+                }
+            }
+            SettingItem::FontFamily => {
+                let prev_index = if self.settings.font_family.index() == 0 {
+                    FontFamily::ALL.len() - 1
+                } else {
+                    self.settings.font_family.index() - 1
+                };
+                self.settings.font_family = FontFamily::from_index(prev_index).unwrap();
+                self.show_toast(format!("Font: {}", self.settings.font_family.label()));
+            }
+            SettingItem::LineSpacing => {
+                let prev_index = if self.settings.line_spacing.index() == 0 {
+                    LineSpacing::ALL.len() - 1
+                } else {
+                    self.settings.line_spacing.index() - 1
+                };
+                self.settings.line_spacing = LineSpacing::from_index(prev_index).unwrap();
+                self.show_toast(format!("Spacing: {}", self.settings.line_spacing.label()));
+            }
+            SettingItem::MarginSize => {
+                let prev_index = if self.settings.margin_size.index() == 0 {
+                    MarginSize::ALL.len() - 1
+                } else {
+                    self.settings.margin_size.index() - 1
+                };
+                self.settings.margin_size = MarginSize::from_index(prev_index).unwrap();
+                self.show_toast(format!("Margins: {}", self.settings.margin_size.label()));
+            }
+            SettingItem::TextAlignment => {
+                let prev_index = if self.settings.text_alignment.index() == 0 {
+                    TextAlignment::ALL.len() - 1
+                } else {
+                    self.settings.text_alignment.index() - 1
+                };
+                self.settings.text_alignment = TextAlignment::from_index(prev_index).unwrap();
+                self.show_toast(format!(
+                    "Alignment: {}",
+                    self.settings.text_alignment.label()
+                ));
+            }
+            SettingItem::RefreshFrequency => {
+                let prev_index = if self.settings.refresh_frequency.index() == 0 {
+                    RefreshFrequency::ALL.len() - 1
+                } else {
+                    self.settings.refresh_frequency.index() - 1
+                };
+                self.settings.refresh_frequency = RefreshFrequency::from_index(prev_index).unwrap();
+                self.show_toast(format!(
+                    "Refresh: {}",
+                    self.settings.refresh_frequency.label()
+                ));
+            }
+            SettingItem::TapZoneConfig => {
+                let prev_index = if self.settings.tap_zone_config.index() == 0 {
+                    TapZoneConfig::ALL.len() - 1
+                } else {
+                    self.settings.tap_zone_config.index() - 1
+                };
+                self.settings.tap_zone_config = TapZoneConfig::from_index(prev_index).unwrap();
+                self.show_toast(format!("Tap: {}", self.settings.tap_zone_config.label()));
+            }
+            SettingItem::VolumeButtonAction => {
+                let prev_index = if self.settings.volume_button_action.index() == 0 {
+                    VolumeButtonAction::ALL.len() - 1
+                } else {
+                    self.settings.volume_button_action.index() - 1
+                };
+                self.settings.volume_button_action =
+                    VolumeButtonAction::from_index(prev_index).unwrap();
+                self.show_toast(format!(
+                    "Volume: {}",
+                    self.settings.volume_button_action.label()
+                ));
+            }
+            _ => return ActivityResult::Ignored,
+        }
+        ActivityResult::Consumed
+    }
+}
+
+impl Default for ReaderSettingsActivity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use embedded_graphics::mock_display::MockDisplay;
+
+    #[test]
+    fn font_size_cycling() {
+        assert_eq!(FontSize::Small.next(), Some(FontSize::Medium));
+        assert_eq!(FontSize::Medium.next(), Some(FontSize::Large));
+        assert_eq!(FontSize::Large.next(), Some(FontSize::ExtraLarge));
+        assert_eq!(FontSize::ExtraLarge.next(), None);
+
+        assert_eq!(FontSize::Medium.prev(), Some(FontSize::Small));
+        assert_eq!(FontSize::Small.prev(), None);
+    }
+
+    #[test]
+    fn font_size_labels() {
+        assert_eq!(FontSize::Small.label(), "Small");
+        assert_eq!(FontSize::Medium.label(), "Medium");
+        assert_eq!(FontSize::Large.label(), "Large");
+        assert_eq!(FontSize::ExtraLarge.label(), "Extra Large");
+    }
+
+    #[test]
+    fn font_family_labels() {
+        assert_eq!(FontFamily::Serif.label(), "Serif");
+        assert_eq!(FontFamily::SansSerif.label(), "Sans-serif");
+        assert_eq!(FontFamily::Monospace.label(), "Monospace");
+    }
+
+    #[test]
+    fn line_spacing_labels_and_multiplier() {
+        assert_eq!(LineSpacing::Compact.label(), "Compact");
+        assert_eq!(LineSpacing::Normal.label(), "Normal");
+        assert_eq!(LineSpacing::Relaxed.label(), "Relaxed");
+
+        assert_eq!(LineSpacing::Compact.multiplier(), 12);
+        assert_eq!(LineSpacing::Normal.multiplier(), 15);
+        assert_eq!(LineSpacing::Relaxed.multiplier(), 20);
+    }
+
+    #[test]
+    fn margin_size_pixels() {
+        assert_eq!(MarginSize::Small.pixels(), 20);
+        assert_eq!(MarginSize::Medium.pixels(), 40);
+        assert_eq!(MarginSize::Large.pixels(), 60);
+    }
+
+    #[test]
+    fn text_alignment_labels() {
+        assert_eq!(TextAlignment::Left.label(), "Left");
+        assert_eq!(TextAlignment::Justified.label(), "Justified");
+    }
+
+    #[test]
+    fn refresh_frequency_pages() {
+        assert_eq!(RefreshFrequency::Every1.pages(), 1);
+        assert_eq!(RefreshFrequency::Every3.pages(), 3);
+        assert_eq!(RefreshFrequency::Every5.pages(), 5);
+        assert_eq!(RefreshFrequency::Every10.pages(), 10);
+    }
+
+    #[test]
+    fn tap_zone_config_labels() {
+        assert_eq!(TapZoneConfig::LeftNext.label(), "Left = Next");
+        assert_eq!(TapZoneConfig::RightNext.label(), "Right = Next");
+    }
+
+    #[test]
+    fn volume_button_action_labels() {
+        assert_eq!(VolumeButtonAction::PageTurn.label(), "Page Turn");
+        assert_eq!(VolumeButtonAction::Scroll.label(), "Scroll");
+    }
+
+    #[test]
+    fn reader_settings_defaults() {
+        let settings = ReaderSettings::default();
+        assert_eq!(settings.font_size, FontSize::Medium);
+        assert_eq!(settings.font_family, FontFamily::Serif);
+        assert_eq!(settings.line_spacing, LineSpacing::Normal);
+        assert_eq!(settings.margin_size, MarginSize::Medium);
+        assert_eq!(settings.text_alignment, TextAlignment::Justified);
+        assert!(settings.show_page_numbers);
+        assert_eq!(settings.refresh_frequency, RefreshFrequency::Every3);
+        assert!(!settings.invert_colors);
+        assert_eq!(settings.tap_zone_config, TapZoneConfig::LeftNext);
+        assert_eq!(settings.volume_button_action, VolumeButtonAction::Scroll);
+    }
+
+    #[test]
+    fn reader_settings_reset() {
+        let mut settings = ReaderSettings {
+            font_size: FontSize::ExtraLarge,
+            font_family: FontFamily::Monospace,
+            line_spacing: LineSpacing::Relaxed,
+            margin_size: MarginSize::Large,
+            text_alignment: TextAlignment::Left,
+            show_page_numbers: false,
+            refresh_frequency: RefreshFrequency::Every10,
+            invert_colors: true,
+            tap_zone_config: TapZoneConfig::RightNext,
+            volume_button_action: VolumeButtonAction::PageTurn,
+        };
+
+        settings.reset_to_defaults();
+
+        assert_eq!(settings.font_size, FontSize::Medium);
+        assert_eq!(settings.font_family, FontFamily::Serif);
+        assert!(settings.show_page_numbers);
+        assert!(!settings.invert_colors);
+    }
+
+    #[test]
+    fn setting_item_sections() {
+        assert_eq!(SettingItem::FontSize.section(), "Font");
+        assert_eq!(SettingItem::FontFamily.section(), "Font");
+        assert_eq!(SettingItem::MarginSize.section(), "Margins & Layout");
+        assert_eq!(SettingItem::RefreshFrequency.section(), "Display");
+        assert_eq!(SettingItem::TapZoneConfig.section(), "Navigation");
+    }
+
+    #[test]
+    fn setting_item_is_toggle() {
+        assert!(SettingItem::ShowPageNumbers.is_toggle());
+        assert!(SettingItem::InvertColors.is_toggle());
+        assert!(!SettingItem::FontSize.is_toggle());
+        assert!(!SettingItem::SaveButton.is_toggle());
+    }
+
+    #[test]
+    fn reader_settings_activity_lifecycle() {
+        let mut activity = ReaderSettingsActivity::new();
+
+        activity.on_enter();
+        assert_eq!(activity.selected_index, 0);
+        assert!(!activity.show_cancel_modal);
+
+        activity.on_exit();
+        // Settings should still be accessible
+        assert_eq!(activity.settings().font_size, FontSize::Medium);
+    }
+
+    #[test]
+    fn reader_settings_activity_with_custom_settings() {
+        let custom = ReaderSettings {
+            font_size: FontSize::Large,
+            font_family: FontFamily::Monospace,
+            ..ReaderSettings::default()
+        };
+
+        let activity = ReaderSettingsActivity::with_settings(custom);
+
+        assert_eq!(activity.settings().font_size, FontSize::Large);
+        assert_eq!(activity.settings().font_family, FontFamily::Monospace);
+    }
+
+    #[test]
+    fn reader_settings_activity_navigation() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Initial selection
+        assert_eq!(activity.selected_index, 0);
+        assert_eq!(activity.current_item(), SettingItem::FontSize);
+
+        // Navigate down
+        activity.select_next();
+        assert_eq!(activity.selected_index, 1);
+        assert_eq!(activity.current_item(), SettingItem::FontFamily);
+
+        // Navigate up
+        activity.select_prev();
+        assert_eq!(activity.selected_index, 0);
+        assert_eq!(activity.current_item(), SettingItem::FontSize);
+
+        // Wrap around forward
+        for _ in 0..SettingItem::ALL.len() - 1 {
+            activity.select_next();
+        }
+        assert_eq!(activity.selected_index, SettingItem::ALL.len() - 1);
+
+        // Wrap around backward
+        activity.select_next();
+        assert_eq!(activity.selected_index, 0);
+    }
+
+    #[test]
+    fn reader_settings_activity_font_size_change() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Initial state
+        assert_eq!(activity.settings().font_size, FontSize::Medium);
+
+        // Increase font size
+        activity.handle_confirm();
+        assert_eq!(activity.settings().font_size, FontSize::Large);
+        assert!(activity.show_toast);
+        assert_eq!(activity.toast_message, "Font size: Large");
+
+        // Increase again
+        activity.handle_confirm();
+        assert_eq!(activity.settings().font_size, FontSize::ExtraLarge);
+
+        // At max - should not change
+        activity.handle_confirm();
+        assert_eq!(activity.settings().font_size, FontSize::ExtraLarge);
+    }
+
+    #[test]
+    fn reader_settings_activity_font_size_decrease() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Decrease font size using left button
+        activity.handle_left_press();
+        assert_eq!(activity.settings().font_size, FontSize::Small);
+
+        // At min - should not change
+        activity.handle_left_press();
+        assert_eq!(activity.settings().font_size, FontSize::Small);
+    }
+
+    #[test]
+    fn reader_settings_activity_toggle_settings() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to page numbers setting
+        for _ in 0..5 {
+            activity.select_next();
+        }
+        assert_eq!(activity.current_item(), SettingItem::ShowPageNumbers);
+
+        assert!(activity.settings().show_page_numbers);
+
+        // Toggle off
+        activity.handle_confirm();
+        assert!(!activity.settings().show_page_numbers);
+        assert_eq!(activity.toast_message, "Page numbers: Off");
+
+        // Toggle on
+        activity.handle_confirm();
+        assert!(activity.settings().show_page_numbers);
+        assert_eq!(activity.toast_message, "Page numbers: On");
+    }
+
+    #[test]
+    fn reader_settings_activity_modified_check() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        assert!(!activity.is_modified());
+
+        // Change a setting
+        activity.handle_confirm();
+
+        assert!(activity.is_modified());
+    }
+
+    #[test]
+    fn reader_settings_activity_save_navigates_back() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to save button
+        for _ in 0..10 {
+            activity.select_next();
+        }
+        assert_eq!(activity.current_item(), SettingItem::SaveButton);
+
+        // Pressing save should return NavigateBack
+        let result = activity.handle_confirm();
+        assert!(matches!(result, ActivityResult::NavigateBack));
+    }
+
+    #[test]
+    fn reader_settings_activity_cancel_modal() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Make a change
+        activity.handle_confirm();
+        assert!(activity.is_modified());
+
+        // Cancel should show modal
+        activity.cancel_changes();
+        assert!(activity.show_cancel_modal);
+
+        // Dismiss modal
+        activity.dismiss_cancel();
+        assert!(!activity.show_cancel_modal);
+
+        // Reopen and confirm cancel
+        activity.cancel_changes();
+        assert!(activity.show_cancel_modal);
+
+        activity.confirm_cancel();
+        assert!(!activity.show_cancel_modal);
+        assert!(!activity.is_modified()); // Changes discarded
+    }
+
+    #[test]
+    fn reader_settings_activity_input_handling() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Back button without changes
+        let result = activity.handle_input(InputEvent::Press(Button::Back));
+        assert!(matches!(result, ActivityResult::NavigateBack));
+
+        // Make a change
+        activity.handle_confirm();
+
+        // Back button with changes should show modal, not navigate
+        let result = activity.handle_input(InputEvent::Press(Button::Back));
+        assert!(matches!(result, ActivityResult::Consumed));
+        assert!(activity.show_cancel_modal);
+    }
+
+    #[test]
+    fn reader_settings_activity_render() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        let mut display = MockDisplay::new();
+        let result = activity.render(&mut display);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn toast_timing() {
+        let mut activity = ReaderSettingsActivity::new();
+
+        activity.show_toast("Test message");
+        assert!(activity.show_toast);
+        assert_eq!(
+            activity.toast_frames_remaining,
+            ReaderSettingsActivity::TOAST_DURATION
+        );
+
+        // Simulate frame updates
+        for _ in 0..ReaderSettingsActivity::TOAST_DURATION {
+            activity.update();
+        }
+
+        assert!(!activity.show_toast);
+    }
+
+    #[test]
+    fn volume_buttons_navigation() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Volume down to navigate next
+        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert!(matches!(result, ActivityResult::Consumed));
+        assert_eq!(activity.selected_index, 1);
+
+        // Volume up to navigate previous
+        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        assert!(matches!(result, ActivityResult::Consumed));
+        assert_eq!(activity.selected_index, 0);
+    }
+
+    #[test]
+    fn get_value_label_for_toggles() {
+        let activity = ReaderSettingsActivity::new();
+
+        let mut settings = *activity.settings();
+        settings.show_page_numbers = true;
+        settings.invert_colors = false;
+
+        let activity = ReaderSettingsActivity::with_settings(settings);
+
+        assert!(activity
+            .get_value_label(SettingItem::ShowPageNumbers)
+            .contains("✓"));
+        assert!(activity
+            .get_value_label(SettingItem::InvertColors)
+            .contains(" "));
+    }
+
+    #[test]
+    fn enum_index_roundtrips() {
+        // Test all enums roundtrip correctly through index/from_index
+        for i in 0..4 {
+            let size = FontSize::from_index(i).unwrap();
+            assert_eq!(size.index(), i);
+        }
+
+        for i in 0..3 {
+            let family = FontFamily::from_index(i).unwrap();
+            assert_eq!(family.index(), i);
+        }
+
+        for i in 0..3 {
+            let spacing = LineSpacing::from_index(i).unwrap();
+            assert_eq!(spacing.index(), i);
+        }
+
+        for i in 0..3 {
+            let margin = MarginSize::from_index(i).unwrap();
+            assert_eq!(margin.index(), i);
+        }
+
+        for i in 0..2 {
+            let align = TextAlignment::from_index(i).unwrap();
+            assert_eq!(align.index(), i);
+        }
+
+        for i in 0..4 {
+            let freq = RefreshFrequency::from_index(i).unwrap();
+            assert_eq!(freq.index(), i);
+        }
+
+        for i in 0..2 {
+            let tap = TapZoneConfig::from_index(i).unwrap();
+            assert_eq!(tap.index(), i);
+        }
+
+        for i in 0..2 {
+            let vol = VolumeButtonAction::from_index(i).unwrap();
+            assert_eq!(vol.index(), i);
+        }
+    }
+}

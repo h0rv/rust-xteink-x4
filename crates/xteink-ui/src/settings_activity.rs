@@ -9,7 +9,7 @@ use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -17,6 +17,7 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
+use crate::ui::theme::{ui_font, ui_font_bold};
 use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
 
 /// Font size options
@@ -157,11 +158,17 @@ pub enum SettingRow {
     FontSize,
     FontFamily,
     ResetButton,
+    SaveButton,
 }
 
 impl SettingRow {
     /// All setting rows in display order
-    pub const ALL: [Self; 3] = [Self::FontSize, Self::FontFamily, Self::ResetButton];
+    pub const ALL: [Self; 4] = [
+        Self::FontSize,
+        Self::FontFamily,
+        Self::ResetButton,
+        Self::SaveButton,
+    ];
 
     /// Get the label for this setting row
     pub const fn label(self) -> &'static str {
@@ -169,12 +176,13 @@ impl SettingRow {
             Self::FontSize => "Font Size",
             Self::FontFamily => "Font Family",
             Self::ResetButton => "Reset to Defaults",
+            Self::SaveButton => "Save Changes",
         }
     }
 
     /// Check if this is an action button (not a value row)
     pub const fn is_button(self) -> bool {
-        matches!(self, Self::ResetButton)
+        matches!(self, Self::ResetButton | Self::SaveButton)
     }
 }
 
@@ -188,6 +196,7 @@ pub struct SettingsActivity {
     toast_message: String,
     toast_frames_remaining: u32,
     show_reset_modal: bool,
+    apply_requested: bool,
     /// Tracks which button is selected in the reset modal (0=Cancel, 1=Reset)
     modal_button: usize,
     theme: Theme,
@@ -208,6 +217,7 @@ impl SettingsActivity {
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_reset_modal: false,
+            apply_requested: false,
             modal_button: 0,
             theme: Theme::default(),
         }
@@ -223,6 +233,7 @@ impl SettingsActivity {
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_reset_modal: false,
+            apply_requested: false,
             modal_button: 0,
             theme: Theme::default(),
         }
@@ -233,9 +244,28 @@ impl SettingsActivity {
         &self.settings
     }
 
+    /// Get currently applied (saved) settings.
+    pub fn applied_settings(&self) -> &Settings {
+        &self.original_settings
+    }
+
     /// Check if settings were modified
     pub fn is_modified(&self) -> bool {
         self.settings != self.original_settings
+    }
+
+    /// Consume pending apply request.
+    pub fn take_apply_request(&mut self) -> bool {
+        let requested = self.apply_requested;
+        self.apply_requested = false;
+        requested
+    }
+
+    /// Save draft settings and request apply.
+    fn save_settings(&mut self) {
+        self.original_settings = self.settings;
+        self.apply_requested = true;
+        self.show_toast("Settings saved");
     }
 
     /// Show a toast notification
@@ -294,6 +324,7 @@ impl SettingsActivity {
             SettingRow::FontSize => self.settings.font_size.label(),
             SettingRow::FontFamily => self.settings.font_family.label(),
             SettingRow::ResetButton => "",
+            SettingRow::SaveButton => "",
         }
     }
 
@@ -314,7 +345,7 @@ impl SettingsActivity {
 
         // Title
         let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::Off)
             .build();
         Text::new(
@@ -324,9 +355,9 @@ impl SettingsActivity {
         )
         .draw(display)?;
 
-        // Back button label
-        let back_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
-        let back_text = "[Back]";
+        // Save hint
+        let back_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
+        let back_text = "[Save]";
         let back_width = ThemeMetrics::text_width(back_text.len());
         Text::new(
             back_text,
@@ -390,7 +421,7 @@ impl SettingsActivity {
                 Text::new(
                     label,
                     Point::new(label_x, y + text_y),
-                    MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color),
+                    MonoTextStyle::new(ui_font_bold(), text_color),
                 )
                 .draw(display)?;
 
@@ -420,7 +451,7 @@ impl SettingsActivity {
                 Text::new(
                     row.label(),
                     Point::new(x + theme.metrics.side_padding as i32, y + text_y),
-                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                    MonoTextStyle::new(ui_font(), text_color),
                 )
                 .draw(display)?;
 
@@ -433,7 +464,7 @@ impl SettingsActivity {
                 Text::new(
                     &value_text,
                     Point::new(value_x, y + text_y),
-                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                    MonoTextStyle::new(ui_font(), text_color),
                 )
                 .draw(display)?;
 
@@ -454,15 +485,19 @@ impl SettingsActivity {
 
 impl Activity for SettingsActivity {
     fn on_enter(&mut self) {
-        self.original_settings = self.settings;
+        self.settings = self.original_settings;
         self.selected_index = 0;
         self.show_toast = false;
         self.show_reset_modal = false;
+        self.apply_requested = false;
         self.modal_button = 0;
     }
 
     fn on_exit(&mut self) {
-        // Settings are persisted in memory (self.settings)
+        // Keep only applied values when leaving without save.
+        self.settings = self.original_settings;
+        self.show_reset_modal = false;
+        self.modal_button = 0;
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
@@ -471,7 +506,10 @@ impl Activity for SettingsActivity {
         }
 
         match event {
-            InputEvent::Press(Button::Back) => ActivityResult::NavigateBack,
+            InputEvent::Press(Button::Back) => {
+                self.settings = self.original_settings;
+                ActivityResult::NavigateBack
+            }
             InputEvent::Press(Button::VolumeUp) | InputEvent::Press(Button::Up) => {
                 self.select_prev();
                 ActivityResult::Consumed
@@ -524,6 +562,12 @@ impl Activity for SettingsActivity {
         }
 
         Ok(())
+    }
+
+    fn refresh_mode(&self) -> crate::ui::ActivityRefreshMode {
+        // Settings redraws can touch large areas; avoid diff buffer allocations
+        // on constrained firmware builds.
+        crate::ui::ActivityRefreshMode::Partial
     }
 }
 
@@ -581,6 +625,10 @@ impl SettingsActivity {
                 self.modal_button = 0; // Start on Cancel (safe default)
                 ActivityResult::Consumed
             }
+            SettingRow::SaveButton => {
+                self.save_settings();
+                ActivityResult::NavigateBack
+            }
         }
     }
 
@@ -605,6 +653,7 @@ impl SettingsActivity {
                 ActivityResult::Consumed
             }
             SettingRow::ResetButton => ActivityResult::Ignored,
+            SettingRow::SaveButton => ActivityResult::Ignored,
         }
     }
 }
@@ -712,10 +761,12 @@ mod tests {
         assert_eq!(SettingRow::FontSize.label(), "Font Size");
         assert_eq!(SettingRow::FontFamily.label(), "Font Family");
         assert_eq!(SettingRow::ResetButton.label(), "Reset to Defaults");
+        assert_eq!(SettingRow::SaveButton.label(), "Save Changes");
 
         assert!(!SettingRow::FontSize.is_button());
         assert!(!SettingRow::FontFamily.is_button());
         assert!(SettingRow::ResetButton.is_button());
+        assert!(SettingRow::SaveButton.is_button());
     }
 
     #[test]
@@ -753,6 +804,12 @@ mod tests {
         assert_eq!(activity.selected_index, 2);
         assert_eq!(activity.current_row(), SettingRow::ResetButton);
 
+        // Navigate down to save button
+        let result = activity.handle_input(InputEvent::Press(Button::Down));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.selected_index, 3);
+        assert_eq!(activity.current_row(), SettingRow::SaveButton);
+
         // Wrap forward
         let result = activity.handle_input(InputEvent::Press(Button::Down));
         assert_eq!(result, ActivityResult::Consumed);
@@ -761,12 +818,12 @@ mod tests {
         // Navigate up (wraps backward)
         let result = activity.handle_input(InputEvent::Press(Button::Up));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.selected_index, 2);
+        assert_eq!(activity.selected_index, 3);
 
         // Navigate up
         let result = activity.handle_input(InputEvent::Press(Button::Up));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.selected_index, 1);
+        assert_eq!(activity.selected_index, 2);
 
         // Back navigates back
         let result = activity.handle_input(InputEvent::Press(Button::Back));
@@ -964,6 +1021,38 @@ mod tests {
         // Change font size via Right
         activity.handle_input(InputEvent::Press(Button::Right));
         assert!(activity.is_modified());
+    }
+
+    #[test]
+    fn settings_activity_save_button_applies_changes() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+        activity.handle_input(InputEvent::Press(Button::Right)); // Font size -> Large
+        assert!(activity.is_modified());
+
+        // Move to Save button and confirm
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Down));
+        assert_eq!(activity.current_row(), SettingRow::SaveButton);
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(result, ActivityResult::NavigateBack);
+        assert_eq!(activity.applied_settings().font_size, FontSize::Large);
+        assert!(activity.take_apply_request());
+        assert!(!activity.take_apply_request());
+    }
+
+    #[test]
+    fn settings_activity_back_discards_unsaved_changes() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+        activity.handle_input(InputEvent::Press(Button::Right)); // Font size -> Large
+        assert_eq!(activity.settings().font_size, FontSize::Large);
+
+        let result = activity.handle_input(InputEvent::Press(Button::Back));
+        assert_eq!(result, ActivityResult::NavigateBack);
+        assert_eq!(activity.settings().font_size, FontSize::Medium);
+        assert_eq!(activity.applied_settings().font_size, FontSize::Medium);
     }
 
     #[test]

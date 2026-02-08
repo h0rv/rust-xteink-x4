@@ -10,6 +10,7 @@ pub mod buffered_display;
 pub mod diff;
 pub mod eink;
 pub mod file_browser;
+pub mod file_browser_activity;
 pub mod filesystem;
 pub mod font_render;
 pub mod information_activity;
@@ -20,10 +21,6 @@ pub mod settings_activity;
 pub mod system_menu_activity;
 pub mod test_display;
 pub mod ui;
-
-// EPUB module is available when either std or quick-xml is enabled
-#[cfg(any(feature = "std", feature = "quick-xml"))]
-pub mod epub;
 
 #[cfg(feature = "std")]
 pub mod epub_render;
@@ -39,6 +36,7 @@ pub use eink::{
     RefreshMode, Region, Rotation, UpdateRegion,
 };
 pub use file_browser::{FileBrowser, TextViewer};
+pub use file_browser_activity::FileBrowserActivity;
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;
 pub use information_activity::{InfoField, InformationActivity};
@@ -52,14 +50,21 @@ pub use settings_activity::{FontFamily, FontSize, SettingRow, Settings, Settings
 pub use system_menu_activity::{DeviceStatus, MenuItem, NavigationCallbacks, SystemMenuActivity};
 
 #[cfg(feature = "std")]
-pub use epub::{
-    create_spine, extract_metadata, parse_container_xml, parse_opf, parse_spine, EpubMetadata,
-    ManifestItem, Spine, SpineItem,
+pub use epublet::layout::{Line as EpubLine, Page as EpubPage, TextStyle as EpubTextStyle};
+
+#[cfg(feature = "std")]
+pub use epublet::metadata::{
+    extract_metadata, parse_container_xml, parse_opf, EpubMetadata, ManifestItem,
 };
 
-// Tokenizer is available with just quick-xml
-#[cfg(feature = "quick-xml")]
-pub use epub::{tokenize_html, Token, TokenizeError};
+#[cfg(feature = "std")]
+pub use epublet::spine::{create_spine, parse_spine, Spine, SpineItem};
+
+#[cfg(feature = "std")]
+pub use epublet::tokenizer::{tokenize_html, Token, TokenizeError};
+
+#[cfg(feature = "std")]
+pub use epublet::zip::{CdEntry, StreamingZip, ZipError};
 
 #[cfg(feature = "std")]
 pub use epub_render::EpubRenderer;

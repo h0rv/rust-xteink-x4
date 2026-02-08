@@ -420,11 +420,20 @@ fn update_display_diff<I, D>(
 
     let total_bytes = current.len();
     let region_bytes = region.byte_count();
+    let free_heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() as usize };
 
-    if region_bytes > total_bytes / 2 {
+    // Diff updates need two scratch buffers (current + previous) and can fail
+    // under heap pressure due to large temporary allocations.
+    let estimated_scratch_need = region_bytes.saturating_mul(2);
+
+    if region_bytes > total_bytes / 3
+        || estimated_scratch_need > free_heap.saturating_sub(16 * 1024)
+    {
         log::info!(
-            "UI: large change ({} bytes). Using partial full-screen refresh",
-            region_bytes
+            "UI: using partial full-screen refresh (region={} free_heap={} need={})",
+            region_bytes,
+            free_heap,
+            estimated_scratch_need
         );
         if display
             .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
@@ -712,24 +721,49 @@ fn main() {
     let mut is_power_pressed: bool = false;
     let mut long_press_triggered: bool = false;
     const DEBUG_ADC: bool = false;
+    const DEBUG_INPUT: bool = true;
     const POWER_LONG_PRESS_ITERATIONS: u32 = POWER_LONG_PRESS_MS / 50;
-    let mut cli = SerialCli::new();
+    const ENABLE_CLI: bool = false;
+    let mut cli = if ENABLE_CLI {
+        Some(SerialCli::new())
+    } else {
+        None
+    };
+    let mut input_debug_ticks: u32 = 0;
 
     loop {
-        if let Some(line) = cli.poll_line() {
-            handle_cli_command(
-                &line,
-                &cli,
-                &mut fs,
-                &mut app,
-                &mut display,
-                &mut delay,
-                &mut buffered_display,
-                &mut last_buffer,
-            );
+        if let Some(cli) = cli.as_mut() {
+            if let Some(line) = cli.poll_line() {
+                handle_cli_command(
+                    &line,
+                    cli,
+                    &mut fs,
+                    &mut app,
+                    &mut display,
+                    &mut delay,
+                    &mut buffered_display,
+                    &mut last_buffer,
+                );
+            }
         }
 
         let (button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
+        if DEBUG_INPUT {
+            input_debug_ticks = input_debug_ticks.saturating_add(1);
+            if input_debug_ticks >= 10 {
+                input_debug_ticks = 0;
+                let adc1_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_1);
+                let adc2_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_2);
+                log::info!(
+                    "INPUT: power={} adc1={} adc2={} decoded={:?} last={:?}",
+                    power_pressed,
+                    adc1_value,
+                    adc2_value,
+                    button,
+                    last_button
+                );
+            }
+        }
 
         if power_pressed {
             if !is_power_pressed {
@@ -830,7 +864,7 @@ fn main() {
             last_button = None;
         }
 
-        if app.process_library_scan(&mut fs) {
+        if app.process_deferred_tasks(&mut fs) {
             buffered_display.clear();
             app.render(&mut buffered_display).ok();
             let refresh_mode = app.get_refresh_mode();

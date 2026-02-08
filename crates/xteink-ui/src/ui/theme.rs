@@ -1,11 +1,70 @@
 //! Theme system with metrics for consistent UI spacing and sizing.
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
+use embedded_graphics::mono_font::{ascii, MonoFont};
+
 /// FONT_7X13 character width in pixels.
 /// All text width calculations should use this instead of hardcoded `* 7`.
 pub const FONT_CHAR_WIDTH: i32 = 7;
 
 /// FONT_7X13 character height in pixels.
 pub const FONT_CHAR_HEIGHT: i32 = 13;
+
+// Global device-font profile selected from Device Settings.
+// 0=6x10, 1=7x13, 2=8x13, 3=9x15, 4=10x20.
+static DEVICE_FONT_PROFILE: AtomicU8 = AtomicU8::new(1);
+
+/// Set global UI font profile from settings indices.
+pub fn set_device_font_profile(font_size_index: usize, font_family_index: usize) {
+    let profile = match (font_family_index, font_size_index) {
+        // Monospace
+        (0, 0) => 0,
+        (0, 1) => 1,
+        (0, 2) => 2,
+        (0, _) => 3,
+        // Serif
+        (1, 0) => 1,
+        (1, 1) => 2,
+        (1, 2) => 3,
+        (1, _) => 4,
+        // Sans-serif (or unknown)
+        (_, 0) => 0,
+        (_, 1) => 2,
+        (_, 2) => 3,
+        (_, _) => 4,
+    };
+    DEVICE_FONT_PROFILE.store(profile, Ordering::Relaxed);
+}
+
+/// Current primary UI font selected by device settings.
+pub fn ui_font() -> &'static MonoFont<'static> {
+    match DEVICE_FONT_PROFILE.load(Ordering::Relaxed) {
+        0 => &ascii::FONT_6X10,
+        1 => &ascii::FONT_7X13,
+        2 => &ascii::FONT_8X13,
+        3 => &ascii::FONT_9X15,
+        4 => &ascii::FONT_10X20,
+        _ => &ascii::FONT_7X13,
+    }
+}
+
+/// Current bold UI font selected by device settings.
+pub fn ui_font_bold() -> &'static MonoFont<'static> {
+    match DEVICE_FONT_PROFILE.load(Ordering::Relaxed) {
+        0 => &ascii::FONT_6X13_BOLD,
+        1 => &ascii::FONT_7X13_BOLD,
+        2 => &ascii::FONT_8X13_BOLD,
+        3 => &ascii::FONT_9X15_BOLD,
+        4 => &ascii::FONT_9X18_BOLD,
+        _ => &ascii::FONT_7X13_BOLD,
+    }
+}
+
+/// Runtime character width for current UI font.
+pub fn ui_font_char_width() -> i32 {
+    ui_font().character_size.width as i32
+}
 
 /// UI spacing and sizing metrics (in pixels)
 ///
@@ -96,8 +155,8 @@ impl ThemeMetrics {
     }
 
     /// Calculate text width in pixels for FONT_7X13.
-    pub const fn text_width(char_count: usize) -> i32 {
-        char_count as i32 * FONT_CHAR_WIDTH
+    pub fn text_width(char_count: usize) -> i32 {
+        char_count as i32 * ui_font_char_width()
     }
 
     /// How many list items fit in the content area (below header).
@@ -195,7 +254,7 @@ mod tests {
 
     #[test]
     fn text_width_calculation() {
-        assert_eq!(ThemeMetrics::text_width(10), 70);
+        assert_eq!(ThemeMetrics::text_width(10), 10 * ui_font_char_width());
         assert_eq!(ThemeMetrics::text_width(0), 0);
     }
 

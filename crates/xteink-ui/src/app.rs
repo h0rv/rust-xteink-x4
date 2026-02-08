@@ -10,12 +10,14 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
+use crate::file_browser_activity::FileBrowserActivity;
 use crate::information_activity::InformationActivity;
 use crate::input::InputEvent;
 use crate::library_activity::LibraryActivity;
 use crate::reader_settings_activity::ReaderSettingsActivity;
 use crate::settings_activity::SettingsActivity;
 use crate::system_menu_activity::{DeviceStatus, SystemMenuActivity};
+use crate::ui::theme::set_device_font_profile;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::{BookInfo, FileSystem};
 
@@ -26,6 +28,8 @@ pub enum AppScreen {
     SystemMenu,
     /// Library / book browser
     Library,
+    /// Raw filesystem browser
+    FileBrowser,
     /// Device settings (font size, font family)
     Settings,
     /// Reader-specific settings (margins, layout, etc.)
@@ -46,6 +50,7 @@ pub struct App {
     // Activity instances (owned, always alive)
     system_menu: SystemMenuActivity,
     library: LibraryActivity,
+    file_browser: FileBrowserActivity,
     settings: SettingsActivity,
     reader_settings: ReaderSettingsActivity,
     information: InformationActivity,
@@ -64,20 +69,27 @@ pub struct App {
     library_scan_pending: bool,
     /// Set when cache should be ignored and rebuilt.
     library_cache_invalidated: bool,
+    /// Pending library file path to open without intermediate UI redraw.
+    pending_library_open_path: Option<String>,
 }
 
 impl App {
-    const SCREEN_COUNT: usize = 5;
+    const SCREEN_COUNT: usize = 6;
     /// Default number of pages between full refreshes
     const DEFAULT_REFRESH_FREQUENCY: u32 = 10;
 
     /// Create a new App with SystemMenu as the root screen.
     pub fn new() -> Self {
+        let settings = SettingsActivity::new();
+        let applied = *settings.applied_settings();
+        set_device_font_profile(applied.font_size.index(), applied.font_family.index());
+
         Self {
             nav_stack: alloc::vec![AppScreen::SystemMenu],
             system_menu: SystemMenuActivity::new(),
             library: LibraryActivity::new(),
-            settings: SettingsActivity::new(),
+            file_browser: FileBrowserActivity::new(),
+            settings,
             reader_settings: ReaderSettingsActivity::new(),
             information: InformationActivity::new(),
             refresh_counters: [0; Self::SCREEN_COUNT],
@@ -87,6 +99,7 @@ impl App {
             library_root: String::from(LibraryActivity::DEFAULT_BOOKS_ROOT),
             library_scan_pending: false,
             library_cache_invalidated: true,
+            pending_library_open_path: None,
         }
     }
 
@@ -94,9 +107,10 @@ impl App {
         match screen {
             AppScreen::SystemMenu => 0,
             AppScreen::Library => 1,
-            AppScreen::Settings => 2,
-            AppScreen::ReaderSettings => 3,
-            AppScreen::Information => 4,
+            AppScreen::FileBrowser => 2,
+            AppScreen::Settings => 3,
+            AppScreen::ReaderSettings => 4,
+            AppScreen::Information => 5,
         }
     }
 
@@ -142,6 +156,7 @@ impl App {
         let activity_mode = match screen {
             AppScreen::SystemMenu => self.system_menu.refresh_mode(),
             AppScreen::Library => self.library.refresh_mode(),
+            AppScreen::FileBrowser => self.file_browser.refresh_mode(),
             AppScreen::Settings => self.settings.refresh_mode(),
             AppScreen::ReaderSettings => self.reader_settings.refresh_mode(),
             AppScreen::Information => self.information.refresh_mode(),
@@ -224,18 +239,53 @@ impl App {
         true
     }
 
+    /// Run deferred file browser work.
+    ///
+    /// Returns `true` when UI changed and should be redrawn.
+    pub fn process_file_browser_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
+        if self.current_screen() != AppScreen::FileBrowser {
+            return false;
+        }
+
+        let mut updated = false;
+        // Drain chained tasks (OpenPath -> OpenFile) so Library-open lands
+        // directly in reader mode without flashing the browser list.
+        for _ in 0..4 {
+            if !self.file_browser.process_pending_task(fs) {
+                break;
+            }
+            updated = true;
+        }
+        updated
+    }
+
+    /// Run all deferred app tasks.
+    ///
+    /// Returns `true` when UI changed and should be redrawn.
+    pub fn process_deferred_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
+        let library_open_updated = self.process_library_open_request(fs);
+        let library_updated = self.process_library_scan(fs);
+        let file_browser_updated = self.process_file_browser_tasks(fs);
+        library_open_updated || library_updated || file_browser_updated
+    }
+
     /// Handle input event. Returns true if a redraw is needed.
     pub fn handle_input(&mut self, event: InputEvent) -> bool {
         let result = match self.current_screen() {
             AppScreen::SystemMenu => self.system_menu.handle_input(event),
             AppScreen::Library => self.library.handle_input(event),
+            AppScreen::FileBrowser => self.file_browser.handle_input(event),
             AppScreen::Settings => self.settings.handle_input(event),
             AppScreen::ReaderSettings => self.reader_settings.handle_input(event),
             AppScreen::Information => self.information.handle_input(event),
         };
 
-        let redraw = self.process_result(result);
+        let mut redraw = self.process_result(result);
         self.capture_library_refresh_request();
+        if self.capture_library_open_request() {
+            redraw = false;
+        }
+        self.capture_settings_apply_request();
         redraw
     }
 
@@ -247,6 +297,7 @@ impl App {
         match self.current_screen() {
             AppScreen::SystemMenu => self.system_menu.render(display),
             AppScreen::Library => self.library.render(display),
+            AppScreen::FileBrowser => self.file_browser.render(display),
             AppScreen::Settings => self.settings.render(display),
             AppScreen::ReaderSettings => self.reader_settings.render(display),
             AppScreen::Information => self.information.render(display),
@@ -268,6 +319,7 @@ impl App {
     fn navigate_to(&mut self, target: &str) -> bool {
         let screen = match target {
             "library" => AppScreen::Library,
+            "files" => AppScreen::FileBrowser,
             "device_settings" => AppScreen::Settings,
             "reader_settings" => AppScreen::ReaderSettings,
             "information" => AppScreen::Information,
@@ -321,6 +373,7 @@ impl App {
                     self.library_scan_pending = false;
                 }
             }
+            AppScreen::FileBrowser => self.file_browser.on_enter(),
             AppScreen::Settings => self.settings.on_enter(),
             AppScreen::ReaderSettings => self.reader_settings.on_enter(),
             AppScreen::Information => self.information.on_enter(),
@@ -332,6 +385,7 @@ impl App {
         match screen {
             AppScreen::SystemMenu => self.system_menu.on_exit(),
             AppScreen::Library => self.library.on_exit(),
+            AppScreen::FileBrowser => self.file_browser.on_exit(),
             AppScreen::Settings => self.settings.on_exit(),
             AppScreen::ReaderSettings => self.reader_settings.on_exit(),
             AppScreen::Information => self.information.on_exit(),
@@ -341,6 +395,40 @@ impl App {
     fn capture_library_refresh_request(&mut self) {
         if self.current_screen() == AppScreen::Library && self.library.take_refresh_request() {
             self.invalidate_library_cache();
+        }
+    }
+
+    fn capture_library_open_request(&mut self) -> bool {
+        if self.current_screen() != AppScreen::Library {
+            return false;
+        }
+
+        let Some(path) = self.library.take_open_request() else {
+            return false;
+        };
+
+        self.pending_library_open_path = Some(path);
+        true
+    }
+
+    fn process_library_open_request(&mut self, fs: &mut dyn FileSystem) -> bool {
+        let Some(path) = self.pending_library_open_path.take() else {
+            return false;
+        };
+
+        self.file_browser.request_open_path(path);
+        let navigated = self.navigate_to("files");
+        let task_updated = self.process_file_browser_tasks(fs);
+        // Redraw after navigation even if deferred open does not update immediately.
+        navigated || task_updated
+    }
+
+    fn capture_settings_apply_request(&mut self) {
+        if self.settings.take_apply_request() {
+            let applied = self.settings.applied_settings();
+            set_device_font_profile(applied.font_size.index(), applied.font_family.index());
+            // Force redraw baseline after applying settings.
+            self.needs_full_refresh_on_next_draw = true;
         }
     }
 }
@@ -380,7 +468,8 @@ mod tests {
     fn app_navigate_to_reader_settings() {
         let mut app = App::new();
 
-        // Move down to Reader Settings (index 1)
+        // Move down to Reader Settings (index 2)
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
         app.handle_input(InputEvent::Press(Button::VolumeDown));
         let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
         assert!(redraw);
@@ -391,7 +480,8 @@ mod tests {
     fn app_navigate_to_device_settings() {
         let mut app = App::new();
 
-        // Move down to Device Settings (index 2)
+        // Move down to Device Settings (index 3)
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
         app.handle_input(InputEvent::Press(Button::VolumeDown));
         app.handle_input(InputEvent::Press(Button::VolumeDown));
         let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
@@ -403,13 +493,24 @@ mod tests {
     fn app_navigate_to_information() {
         let mut app = App::new();
 
-        // Move down to Information (index 3)
-        for _ in 0..3 {
+        // Move down to Information (index 4)
+        for _ in 0..4 {
             app.handle_input(InputEvent::Press(Button::VolumeDown));
         }
         let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
         assert!(redraw);
         assert_eq!(app.current_screen(), AppScreen::Information);
+    }
+
+    #[test]
+    fn app_navigate_to_files() {
+        let mut app = App::new();
+
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
+        let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(redraw);
+        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
+        assert_eq!(app.nav_depth(), 2);
     }
 
     #[test]
@@ -480,6 +581,19 @@ mod tests {
     }
 
     #[test]
+    fn app_back_from_file_browser_root_returns_to_system_menu() {
+        let mut app = App::new();
+
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
+        app.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
+
+        app.handle_input(InputEvent::Press(Button::Back));
+        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
+        assert_eq!(app.nav_depth(), 1);
+    }
+
+    #[test]
     fn app_default_trait() {
         let app: App = Default::default();
         assert_eq!(app.current_screen(), AppScreen::SystemMenu);
@@ -540,5 +654,31 @@ mod tests {
 
         app.invalidate_library_cache();
         assert!(app.process_library_scan(&mut fs));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn file_browser_tasks_open_text_viewer() {
+        let mut app = App::new();
+        let mut fs = MockFileSystem::new();
+
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
+        app.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
+        assert!(app.process_file_browser_tasks(&mut fs));
+
+        // Enter /documents.
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
+        app.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(app.process_file_browser_tasks(&mut fs));
+
+        // Open /documents/notes.txt (skip parent directory entry).
+        app.handle_input(InputEvent::Press(Button::VolumeDown));
+        app.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(app.process_file_browser_tasks(&mut fs));
+
+        // Back from text viewer returns to browser.
+        app.handle_input(InputEvent::Press(Button::Back));
+        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
     }
 }

@@ -22,7 +22,6 @@ use embedded_text::{alignment::HorizontalAlignment, style::TextBoxStyleBuilder, 
 
 use crate::filesystem::{FileInfo, FileSystem};
 use crate::input::{Button, InputEvent};
-use crate::portrait_dimensions;
 
 /// File browser state
 pub struct FileBrowser {
@@ -80,7 +79,7 @@ impl FileBrowser {
     }
 
     /// Load files from filesystem
-    pub fn load<FS: FileSystem>(
+    pub fn load<FS: FileSystem + ?Sized>(
         &mut self,
         fs: &mut FS,
     ) -> Result<(), crate::filesystem::FileSystemError> {
@@ -258,11 +257,13 @@ impl FileBrowser {
     }
 
     /// Render file browser
-    pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
+    pub fn render<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        let (width, height) = portrait_dimensions(display);
+        let size = display.bounding_box().size;
+        let width = size.width.min(size.height);
+        let height = size.width.max(size.height);
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
@@ -458,12 +459,14 @@ impl TextViewer {
     }
 
     /// Render text viewer using embedded-text for proper word wrapping
-    pub fn render<D: DrawTarget<Color = BinaryColor> + OriginDimensions>(
+    pub fn render<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
         title: &str,
     ) -> Result<(), D::Error> {
-        let (width, height) = portrait_dimensions(display);
+        let size = display.bounding_box().size;
+        let width = size.width.min(size.height);
+        let height = size.width.max(size.height);
         let content_height = height as i32 - Self::CONTENT_TOP_MARGIN - Self::CONTENT_BOTTOM_MARGIN;
 
         // Clear screen

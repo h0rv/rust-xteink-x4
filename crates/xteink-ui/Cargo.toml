@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["fontdue"]
-std = ["html2text", "quick-xml"]
+std = ["html2text", "epublet/std", "epublet/layout"]
 
 [dependencies]
 embedded-graphics = "0.8"
@@ -14,8 +14,7 @@ embedded-text = "0.7.3"
 # Logging (no_std compatible)
 log = "0.4"
 
-# EPUB support now built-in via streaming ZIP + quick-xml
-# Old epub crate removed - using custom implementation
+# EPUB support now provided by external epublet crate
 
 # TTF font rendering with no_std support - always enabled
 fontdue = { version = "0.9.3", optional = true }
@@ -23,13 +22,8 @@ fontdue = { version = "0.9.3", optional = true }
 # HTML parsing for EPUB content  
 html2text = { version = "0.16.7", optional = true }
 
-# XML parsing for EPUB metadata (SAX-style)
-quick-xml = { version = "0.37", optional = true }
-
-# ZIP streaming support for EPUB files (no_std compatible)
-miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
-crc32fast = { version = "1.4", default-features = false }
-heapless = { version = "0.8", default-features = false }
+# External EPUB parser crate
+epublet = { workspace = true }
 
 # E-ink display driver (re-exported for firmware use)
 # Using local path during development - change to crates.io version when published

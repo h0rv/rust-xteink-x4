@@ -9,7 +9,7 @@ extern crate alloc;
 use alloc::format;
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -17,13 +17,16 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, FONT_CHAR_WIDTH};
+use crate::ui::theme::{ui_font, ui_font_bold};
+use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics};
 
 /// Menu item types for the system menu
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuItem {
     /// Navigate to library/book browser
     Library,
+    /// Navigate to raw filesystem browser
+    Files,
     /// Reader settings (font, layout, etc.)
     ReaderSettings,
     /// Device settings (WiFi, storage, etc.)
@@ -38,8 +41,9 @@ pub enum MenuItem {
 
 impl MenuItem {
     /// All menu items in order
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Library,
+        Self::Files,
         Self::ReaderSettings,
         Self::DeviceSettings,
         Self::Information,
@@ -51,6 +55,7 @@ impl MenuItem {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Library => "Library",
+            Self::Files => "Files",
             Self::ReaderSettings => "Reader Settings",
             Self::DeviceSettings => "Device Settings",
             Self::Information => "Information",
@@ -63,6 +68,7 @@ impl MenuItem {
     pub const fn icon(self) -> &'static str {
         match self {
             Self::Library => "[===]",
+            Self::Files => "[DIR]",
             Self::ReaderSettings => "{Aa}",
             Self::DeviceSettings => "[*]",
             Self::Information => "(i)",
@@ -75,11 +81,12 @@ impl MenuItem {
     pub const fn index(self) -> usize {
         match self {
             Self::Library => 0,
-            Self::ReaderSettings => 1,
-            Self::DeviceSettings => 2,
-            Self::Information => 3,
-            Self::Sleep => 4,
-            Self::PowerOff => 5,
+            Self::Files => 1,
+            Self::ReaderSettings => 2,
+            Self::DeviceSettings => 3,
+            Self::Information => 4,
+            Self::Sleep => 5,
+            Self::PowerOff => 6,
         }
     }
 
@@ -87,11 +94,12 @@ impl MenuItem {
     pub const fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(Self::Library),
-            1 => Some(Self::ReaderSettings),
-            2 => Some(Self::DeviceSettings),
-            3 => Some(Self::Information),
-            4 => Some(Self::Sleep),
-            5 => Some(Self::PowerOff),
+            1 => Some(Self::Files),
+            2 => Some(Self::ReaderSettings),
+            3 => Some(Self::DeviceSettings),
+            4 => Some(Self::Information),
+            5 => Some(Self::Sleep),
+            6 => Some(Self::PowerOff),
             _ => None,
         }
     }
@@ -142,6 +150,8 @@ pub struct NavigationCallbacks {
     pub on_library: fn(),
     /// Called when user selects Reader Settings
     pub on_reader_settings: fn(),
+    /// Called when user selects Files
+    pub on_files: fn(),
     /// Called when user selects Device Settings
     pub on_device_settings: fn(),
     /// Called when user selects Information
@@ -156,6 +166,7 @@ impl Default for NavigationCallbacks {
     fn default() -> Self {
         Self {
             on_library: || {},
+            on_files: || {},
             on_reader_settings: || {},
             on_device_settings: || {},
             on_information: || {},
@@ -281,6 +292,10 @@ impl SystemMenuActivity {
                 (self.callbacks.on_library)();
                 ActivityResult::NavigateTo("library")
             }
+            MenuItem::Files => {
+                (self.callbacks.on_files)();
+                ActivityResult::NavigateTo("files")
+            }
             MenuItem::ReaderSettings => {
                 (self.callbacks.on_reader_settings)();
                 ActivityResult::NavigateTo("reader_settings")
@@ -365,7 +380,7 @@ impl SystemMenuActivity {
 
         // Title
         let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::Off)
             .build();
         Text::new(
@@ -395,8 +410,8 @@ impl SystemMenuActivity {
             format!("[B] {}%", self.device_status.battery_percent)
         };
 
-        let battery_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
-        let text_width = battery_text.len() as i32 * FONT_CHAR_WIDTH;
+        let battery_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
+        let text_width = ThemeMetrics::text_width(battery_text.len());
 
         Text::new(
             &battery_text,
@@ -480,7 +495,7 @@ impl SystemMenuActivity {
         };
 
         // Icon (left side)
-        let icon_style = MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color);
+        let icon_style = MonoTextStyle::new(ui_font_bold(), text_color);
         Text::new(
             item.icon(),
             Point::new(x + theme.metrics.side_padding as i32, text_y),
@@ -489,7 +504,7 @@ impl SystemMenuActivity {
         .draw(display)?;
 
         // Label
-        let label_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+        let label_style = MonoTextStyle::new(ui_font(), text_color);
         let label_x = x + 70; // Space after icon
         Text::new(item.label(), Point::new(label_x, text_y), label_style).draw(display)?;
 
@@ -596,6 +611,7 @@ mod tests {
     #[test]
     fn menu_item_labels() {
         assert_eq!(MenuItem::Library.label(), "Library");
+        assert_eq!(MenuItem::Files.label(), "Files");
         assert_eq!(MenuItem::ReaderSettings.label(), "Reader Settings");
         assert_eq!(MenuItem::DeviceSettings.label(), "Device Settings");
         assert_eq!(MenuItem::Information.label(), "Information");
@@ -606,6 +622,7 @@ mod tests {
     #[test]
     fn menu_item_icons() {
         assert_eq!(MenuItem::Library.icon(), "[===]");
+        assert_eq!(MenuItem::Files.icon(), "[DIR]");
         assert_eq!(MenuItem::ReaderSettings.icon(), "{Aa}");
         assert_eq!(MenuItem::DeviceSettings.icon(), "[*]");
         assert_eq!(MenuItem::Information.icon(), "(i)");
@@ -615,21 +632,22 @@ mod tests {
 
     #[test]
     fn menu_item_index_roundtrip() {
-        for i in 0..6 {
+        for i in 0..7 {
             let item = MenuItem::from_index(i).unwrap();
             assert_eq!(item.index(), i);
         }
-        assert!(MenuItem::from_index(6).is_none());
+        assert!(MenuItem::from_index(7).is_none());
     }
 
     #[test]
     fn menu_item_all_count() {
-        assert_eq!(MenuItem::ALL.len(), 6);
+        assert_eq!(MenuItem::ALL.len(), 7);
     }
 
     #[test]
     fn menu_item_requires_confirmation() {
         assert!(!MenuItem::Library.requires_confirmation());
+        assert!(!MenuItem::Files.requires_confirmation());
         assert!(!MenuItem::ReaderSettings.requires_confirmation());
         assert!(!MenuItem::DeviceSettings.requires_confirmation());
         assert!(!MenuItem::Information.requires_confirmation());
@@ -648,6 +666,7 @@ mod tests {
             "Shut down device?"
         );
         assert_eq!(MenuItem::Library.confirmation_message(), "");
+        assert_eq!(MenuItem::Files.confirmation_message(), "");
     }
 
     #[test]
@@ -664,6 +683,7 @@ mod tests {
         let callbacks = NavigationCallbacks::default();
         // Should not panic when called
         (callbacks.on_library)();
+        (callbacks.on_files)();
         (callbacks.on_reader_settings)();
         (callbacks.on_device_settings)();
         (callbacks.on_information)();
@@ -698,6 +718,7 @@ mod tests {
     fn system_menu_activity_with_callbacks() {
         let callbacks = NavigationCallbacks {
             on_library: || {},
+            on_files: || {},
             on_reader_settings: || {},
             on_device_settings: || {},
             on_information: || {},
@@ -722,24 +743,24 @@ mod tests {
 
         // Select next
         activity.select_next();
-        assert_eq!(activity.selected_item(), Some(MenuItem::ReaderSettings));
+        assert_eq!(activity.selected_item(), Some(MenuItem::Files));
         assert_eq!(activity.selected_index, 1);
 
         // Select next again
         activity.select_next();
-        assert_eq!(activity.selected_item(), Some(MenuItem::DeviceSettings));
+        assert_eq!(activity.selected_item(), Some(MenuItem::ReaderSettings));
         assert_eq!(activity.selected_index, 2);
 
         // Select previous
         activity.select_prev();
-        assert_eq!(activity.selected_item(), Some(MenuItem::ReaderSettings));
+        assert_eq!(activity.selected_item(), Some(MenuItem::Files));
         assert_eq!(activity.selected_index, 1);
 
         // Wrap around backward
         activity.select_prev();
         activity.select_prev();
         assert_eq!(activity.selected_item(), Some(MenuItem::PowerOff));
-        assert_eq!(activity.selected_index, 5);
+        assert_eq!(activity.selected_index, 6);
 
         // Wrap around forward
         activity.select_next();
@@ -808,6 +829,11 @@ mod tests {
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
         assert_eq!(result, ActivityResult::NavigateTo("library"));
 
+        // Move to files
+        activity.select_next();
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(result, ActivityResult::NavigateTo("files"));
+
         // Move to reader settings
         activity.select_next();
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
@@ -820,7 +846,7 @@ mod tests {
         activity.on_enter();
 
         // Move to sleep option
-        for _ in 0..4 {
+        for _ in 0..5 {
             activity.select_next();
         }
         assert_eq!(activity.selected_item(), Some(MenuItem::Sleep));
@@ -855,7 +881,7 @@ mod tests {
         activity.on_enter();
 
         // Open sleep modal
-        for _ in 0..4 {
+        for _ in 0..5 {
             activity.select_next();
         }
         activity.handle_input(InputEvent::Press(Button::Confirm));
@@ -895,7 +921,7 @@ mod tests {
         activity.on_enter();
 
         // Move to power off option
-        for _ in 0..5 {
+        for _ in 0..6 {
             activity.select_next();
         }
         assert_eq!(activity.selected_item(), Some(MenuItem::PowerOff));

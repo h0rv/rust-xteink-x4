@@ -40,7 +40,7 @@ impl State {
         if self.app.handle_input(input) {
             self.render();
 
-            if self.app.process_library_scan(&mut self.fs) {
+            if self.app.process_deferred_tasks(&mut self.fs) {
                 self.render();
             }
         }

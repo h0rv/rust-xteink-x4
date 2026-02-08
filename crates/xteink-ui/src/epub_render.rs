@@ -18,18 +18,18 @@ use embedded_graphics::{
     text::Text,
 };
 
-use crate::epub::{
+use epublet::{
     layout::{LayoutEngine, Page, TextStyle},
-    metadata::{EpubMetadata, ManifestItem},
-    spine::Spine,
-    streaming_zip::{StreamingZip, ZipError},
-    tokenize_html,
+    metadata::{parse_container_xml, parse_opf, EpubMetadata, ManifestItem},
+    spine::{parse_spine, Spine},
+    tokenizer::tokenize_html,
+    zip::{StreamingZip, ZipError},
 };
 
 use crate::portrait_dimensions;
 
 /// Re-export Page and Line for backwards compatibility
-pub use crate::epub::layout::{Line as EpubLine, Page as EpubPage, TextStyle as EpubTextStyle};
+pub use epublet::layout::{Line as EpubLine, Page as EpubPage, TextStyle as EpubTextStyle};
 
 /// EPUB rendering errors
 #[derive(Debug, Clone)]
@@ -190,10 +190,10 @@ impl StreamingEpubRenderer {
 
         // Clone entry data to avoid borrow issues
         let _ = container_entry;
-        zip.read_file_at_offset(container_offset, container_size, &mut container_buf)?;
+        zip.read_file_at_offset(container_offset, &mut container_buf)?;
 
-        let opf_path = crate::epub::metadata::parse_container_xml(&container_buf)
-            .map_err(EpubRenderError::MetadataError)?;
+        let opf_path = parse_container_xml(&container_buf)
+            .map_err(|e| EpubRenderError::MetadataError(e.to_string()))?;
 
         log_heap_watermark("epub_container_parsed");
 
@@ -208,16 +208,16 @@ impl StreamingEpubRenderer {
 
         // Clone entry data to avoid borrow issues
         let _ = opf_entry;
-        zip.read_file_at_offset(opf_offset, opf_size, &mut opf_buf)?;
+        zip.read_file_at_offset(opf_offset, &mut opf_buf)?;
 
         self.metadata =
-            crate::epub::metadata::parse_opf(&opf_buf).map_err(EpubRenderError::MetadataError)?;
+            parse_opf(&opf_buf).map_err(|e| EpubRenderError::MetadataError(e.to_string()))?;
 
         log_heap_watermark("epub_metadata_parsed");
 
         // 4. Parse spine from OPF
         self.spine =
-            crate::epub::spine::parse_spine(&opf_buf).map_err(EpubRenderError::SpineError)?;
+            parse_spine(&opf_buf).map_err(|e| EpubRenderError::SpineError(e.to_string()))?;
 
         log_heap_watermark("epub_spine_parsed");
 
@@ -282,7 +282,7 @@ impl StreamingEpubRenderer {
         log_heap_watermark("epub_html_tokenized");
 
         // 5. Layout into pages
-        self.current_chapter = self.layout_engine.layout_tokens(tokens);
+        self.current_chapter = self.layout_engine.layout_tokens(&tokens);
         self.current_page_idx = 0;
         self.current_chapter_idx = chapter_idx;
 
@@ -306,7 +306,7 @@ impl StreamingEpubRenderer {
             let size = entry.uncompressed_size as usize;
             let offset = entry.local_header_offset;
             let mut buf = alloc::vec![0u8; size];
-            zip.read_file_at_offset(offset, size, &mut buf)?;
+            zip.read_file_at_offset(offset, &mut buf)?;
             return String::from_utf8(buf)
                 .map_err(|e| EpubRenderError::IoError(format!("Invalid UTF-8 in chapter: {}", e)));
         }
@@ -318,7 +318,7 @@ impl StreamingEpubRenderer {
                 let size = entry.uncompressed_size as usize;
                 let offset = entry.local_header_offset;
                 let mut buf = alloc::vec![0u8; size];
-                zip.read_file_at_offset(offset, size, &mut buf)?;
+                zip.read_file_at_offset(offset, &mut buf)?;
                 return String::from_utf8(buf).map_err(|e| {
                     EpubRenderError::IoError(format!("Invalid UTF-8 in chapter: {}", e))
                 });
@@ -452,19 +452,22 @@ impl StreamingEpubRenderer {
         // Get current page and render lines
         if let Some(page) = self.current_page() {
             for line in &page.lines {
+                let line_style = line.style();
+                let line_text = line.text();
                 // Use consistent 10x20 font for all text (readable on e-ink)
-                let style = match line.style {
+                let style = match line_style {
                     TextStyle::Normal | TextStyle::Italic => {
                         MonoTextStyle::new(&FONT_10X20, BinaryColor::On)
                     }
                     TextStyle::Bold | TextStyle::BoldItalic => {
                         MonoTextStyle::new(&FONT_10X20, BinaryColor::On)
                     }
+                    _ => MonoTextStyle::new(&FONT_10X20, BinaryColor::On),
                 };
 
                 // Offset line y-position by header height so text doesn't overlap title
                 let y = line.y + HEADER_HEIGHT;
-                Text::new(&line.text, Point::new(MARGIN, y), style).draw(display)?;
+                Text::new(&line_text, Point::new(MARGIN, y), style).draw(display)?;
             }
         }
 
@@ -529,7 +532,7 @@ impl Default for StreamingEpubRenderer {
 pub type EpubRenderer = StreamingEpubRenderer;
 
 // Re-export old types for compatibility
-pub use crate::epub::layout::TextStyle as FontStyle;
+pub use epublet::layout::TextStyle as FontStyle;
 
 /// Layout metrics (legacy, for compatibility)
 pub struct LayoutMetrics {

@@ -24,9 +24,9 @@ impl SerialCli {
 
     pub fn poll_line(&mut self) -> Option<String> {
         let mut temp = [0u8; 64];
-        let read = unsafe {
-            sys::usb_serial_jtag_read_bytes(temp.as_mut_ptr().cast(), temp.len() as u32, 0)
-        };
+        // Use a short timed read instead of 0-timeout polling to avoid
+        // potential busy/lockup behavior in the USB-Serial/JTAG driver.
+        let read = self.read_bytes(&mut temp, 1);
         if read <= 0 {
             return None;
         }

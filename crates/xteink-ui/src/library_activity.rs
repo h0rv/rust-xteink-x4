@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -18,11 +18,10 @@ use embedded_graphics::{
     text::Text,
 };
 
-use crate::filesystem::{basename, FileSystem};
+use crate::filesystem::{basename, dirname, join_path, FileSystem};
 use crate::input::{Button, InputEvent};
-use crate::ui::{
-    Activity, ActivityRefreshMode, ActivityResult, Modal, Theme, ThemeMetrics, FONT_CHAR_WIDTH,
-};
+use crate::ui::theme::{ui_font, ui_font_bold, ui_font_char_width};
+use crate::ui::{Activity, ActivityRefreshMode, ActivityResult, Modal, Theme, ThemeMetrics};
 use crate::DISPLAY_HEIGHT;
 
 /// Book information structure
@@ -33,6 +32,7 @@ pub struct BookInfo {
     pub path: String,
     pub progress_percent: u8,
     pub last_read: Option<u64>, // timestamp
+    cover_thumbnail: Option<CoverThumbnail>,
 }
 
 impl BookInfo {
@@ -50,6 +50,7 @@ impl BookInfo {
             path: path.into(),
             progress_percent: progress_percent.min(100),
             last_read,
+            cover_thumbnail: None,
         }
     }
 
@@ -61,6 +62,53 @@ impl BookInfo {
             &self.title[..max_chars]
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CoverThumbnail {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>, // bit-packed, 1 = black pixel
+}
+
+impl CoverThumbnail {
+    fn new(width: u32, height: u32) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let len = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_add(7)?
+            / 8;
+        Some(Self {
+            width,
+            height,
+            pixels: vec![0u8; len],
+        })
+    }
+
+    fn set_pixel(&mut self, x: u32, y: u32, is_black: bool) {
+        if x >= self.width || y >= self.height || !is_black {
+            return;
+        }
+        let idx = (y * self.width + x) as usize;
+        self.pixels[idx / 8] |= 1 << (7 - (idx % 8));
+    }
+
+    fn is_black(&self, x: u32, y: u32) -> bool {
+        if x >= self.width || y >= self.height {
+            return false;
+        }
+        let idx = (y * self.width + x) as usize;
+        (self.pixels[idx / 8] & (1 << (7 - (idx % 8)))) != 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LumaImage {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
 }
 
 /// Sort order for the library
@@ -123,6 +171,7 @@ pub struct LibraryActivity {
     needs_full_refresh: bool,
     is_loading: bool,
     refresh_requested: bool,
+    pending_open_path: Option<String>,
 }
 
 impl LibraryActivity {
@@ -134,6 +183,9 @@ impl LibraryActivity {
 
     /// Cover placeholder width
     const COVER_WIDTH: u32 = 50;
+    const COVER_MAX_HEIGHT: u32 = 44;
+    const MAX_BMP_PIXELS: u32 = 1_500_000;
+    const MAX_BMP_BYTES: usize = 2_000_000;
 
     /// Create a new library activity with empty book list
     pub fn new() -> Self {
@@ -156,6 +208,7 @@ impl LibraryActivity {
             needs_full_refresh: true,
             is_loading: false,
             refresh_requested: false,
+            pending_open_path: None,
         }
     }
 
@@ -207,20 +260,31 @@ impl LibraryActivity {
             .unwrap_or_default();
 
         if extension.eq_ignore_ascii_case("epub") {
-            if let Some((title, author)) = Self::extract_epub_metadata(fs, path) {
-                return BookInfo::new(title, author, path, 0, None);
+            if let Some((title, author, cover_thumbnail)) = Self::extract_epub_book_info(fs, path) {
+                let mut book = BookInfo::new(title, author, path, 0, None);
+                book.cover_thumbnail = cover_thumbnail;
+                return book;
             }
         }
 
-        BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None)
+        let mut book = BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None);
+        if !extension.eq_ignore_ascii_case("epub") {
+            book.cover_thumbnail = Self::load_sidecar_cover_thumbnail(fs, path);
+        }
+        book
     }
 
     #[cfg(feature = "std")]
-    fn extract_epub_metadata(fs: &mut dyn FileSystem, path: &str) -> Option<(String, String)> {
+    fn extract_epub_book_info(
+        fs: &mut dyn FileSystem,
+        path: &str,
+    ) -> Option<(String, String, Option<CoverThumbnail>)> {
+        use epublet::metadata::{parse_container_xml, parse_opf};
+        use epublet::zip::StreamingZip;
         use std::io::Cursor;
 
         let data = fs.read_file_bytes(path).ok()?;
-        let mut zip = crate::epub::streaming_zip::StreamingZip::new(Cursor::new(data)).ok()?;
+        let mut zip = StreamingZip::new(Cursor::new(data)).ok()?;
 
         let container_entry = zip
             .get_entry("META-INF/container.xml")
@@ -230,31 +294,51 @@ impl LibraryActivity {
         let mut container_buf = vec![0u8; container_size];
         let container_read = zip.read_file(&container_entry, &mut container_buf).ok()?;
 
-        let opf_path =
-            crate::epub::metadata::parse_container_xml(&container_buf[..container_read]).ok()?;
+        let opf_path = parse_container_xml(&container_buf[..container_read]).ok()?;
 
         let opf_entry = zip.get_entry(&opf_path)?.clone();
         let opf_size = opf_entry.uncompressed_size as usize;
         let mut opf_buf = vec![0u8; opf_size];
         let opf_read = zip.read_file(&opf_entry, &mut opf_buf).ok()?;
 
-        let metadata = crate::epub::metadata::parse_opf(&opf_buf[..opf_read]).ok()?;
+        let metadata = parse_opf(&opf_buf[..opf_read]).ok()?;
         let title = if metadata.title.trim().is_empty() {
             Self::filename_to_title(basename(path))
         } else {
-            metadata.title
+            metadata.title.clone()
         };
         let author = if metadata.author.trim().is_empty() {
             "Unknown".to_string()
         } else {
-            metadata.author
+            metadata.author.clone()
         };
-        Some((title, author))
+        let cover_thumbnail = Self::extract_epub_cover_thumbnail(&mut zip, &opf_path, &metadata);
+        Some((title, author, cover_thumbnail))
     }
 
     #[cfg(not(feature = "std"))]
-    fn extract_epub_metadata(_fs: &mut dyn FileSystem, _path: &str) -> Option<(String, String)> {
+    fn extract_epub_book_info(
+        _fs: &mut dyn FileSystem,
+        _path: &str,
+    ) -> Option<(String, String, Option<CoverThumbnail>)> {
         None
+    }
+
+    fn load_sidecar_cover_thumbnail(
+        fs: &mut dyn FileSystem,
+        book_path: &str,
+    ) -> Option<CoverThumbnail> {
+        let sidecar_path = Self::sidecar_bmp_path(book_path);
+        let data = fs.read_file_bytes(&sidecar_path).ok()?;
+        Self::decode_bmp_thumbnail(&data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT)
+    }
+
+    fn sidecar_bmp_path(book_path: &str) -> String {
+        let stem = book_path
+            .rsplit_once('.')
+            .map(|(name, _)| name)
+            .unwrap_or(book_path);
+        format!("{stem}.bmp")
     }
 
     /// Convert filename to title (remove extension, replace underscores/hyphens with spaces)
@@ -281,6 +365,267 @@ impl LibraryActivity {
             })
             .collect::<Vec<_>>()
             .join(" ")
+    }
+
+    #[cfg(feature = "std")]
+    fn extract_epub_cover_thumbnail<F: std::io::Read + std::io::Seek>(
+        zip: &mut epublet::zip::StreamingZip<F>,
+        opf_path: &str,
+        metadata: &epublet::metadata::EpubMetadata,
+    ) -> Option<CoverThumbnail> {
+        let cover_item = metadata.get_cover_item()?;
+        let is_bmp_media = cover_item
+            .media_type
+            .to_ascii_lowercase()
+            .contains("image/bmp");
+        let is_bmp_href = cover_item.href.to_ascii_lowercase().ends_with(".bmp");
+        if !is_bmp_media && !is_bmp_href {
+            return None;
+        }
+
+        let cover_path = Self::resolve_epub_relative_path(opf_path, &cover_item.href);
+        let cover_entry = zip
+            .get_entry(&cover_path)
+            .or_else(|| zip.get_entry(&cover_item.href))
+            .or_else(|| zip.get_entry(cover_path.trim_start_matches('/')))?
+            .clone();
+
+        if u64::from(cover_entry.uncompressed_size) > Self::MAX_BMP_BYTES as u64 {
+            return None;
+        }
+
+        let mut cover_buf = vec![0u8; cover_entry.uncompressed_size as usize];
+        let cover_read = zip.read_file(&cover_entry, &mut cover_buf).ok()?;
+        Self::decode_bmp_thumbnail(
+            &cover_buf[..cover_read],
+            Self::COVER_WIDTH,
+            Self::COVER_MAX_HEIGHT,
+        )
+    }
+
+    fn resolve_epub_relative_path(base_file_path: &str, relative: &str) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+
+        let combined = if relative.starts_with('/') {
+            relative.trim_start_matches('/').to_string()
+        } else {
+            let base_dir = dirname(base_file_path);
+            if base_dir == "." {
+                relative.to_string()
+            } else {
+                join_path(base_dir, relative)
+            }
+        };
+
+        for segment in combined.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                _ => parts.push(segment),
+            }
+        }
+
+        parts.join("/")
+    }
+
+    fn decode_bmp_thumbnail(
+        data: &[u8],
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<CoverThumbnail> {
+        let decoded = Self::decode_bmp_to_luma(data)?;
+        Self::scale_luma_to_binary_thumbnail(
+            &decoded, max_width, max_height,
+            128, // pragmatic fixed threshold for e-ink list thumbnails
+        )
+    }
+
+    fn decode_bmp_to_luma(data: &[u8]) -> Option<LumaImage> {
+        if data.len() < 54 || !data.starts_with(b"BM") {
+            return None;
+        }
+
+        let data_offset = Self::read_u32_le(data, 10)? as usize;
+        let dib_header_size = Self::read_u32_le(data, 14)? as usize;
+        if dib_header_size < 40 || data.len() < 14 + dib_header_size {
+            return None;
+        }
+
+        let width_i32 = Self::read_i32_le(data, 18)?;
+        let height_i32 = Self::read_i32_le(data, 22)?;
+        if width_i32 <= 0 || height_i32 == 0 {
+            return None;
+        }
+
+        let width = width_i32 as u32;
+        let height = height_i32.unsigned_abs();
+        if width == 0 || height == 0 || width.saturating_mul(height) > Self::MAX_BMP_PIXELS {
+            return None;
+        }
+
+        let planes = Self::read_u16_le(data, 26)?;
+        let bpp = Self::read_u16_le(data, 28)?;
+        let compression = Self::read_u32_le(data, 30)?;
+        if planes != 1 || compression != 0 {
+            return None;
+        }
+        if !matches!(bpp, 1 | 8 | 24 | 32) {
+            return None;
+        }
+
+        let row_stride = (((width as usize).checked_mul(bpp as usize)?).checked_add(31)? / 32) * 4;
+        let image_bytes = row_stride.checked_mul(height as usize)?;
+        if data_offset.checked_add(image_bytes)? > data.len() || data_offset > data.len() {
+            return None;
+        }
+
+        let mut palette: Vec<[u8; 4]> = Vec::new();
+        if bpp <= 8 {
+            let palette_offset = 14 + dib_header_size;
+            let colors_used = Self::read_u32_le(data, 46).unwrap_or(0);
+            let palette_entries = if colors_used > 0 {
+                colors_used as usize
+            } else {
+                1usize << bpp
+            };
+            let palette_bytes = palette_entries.checked_mul(4)?;
+            if palette_offset.checked_add(palette_bytes)? > data.len() {
+                return None;
+            }
+            for entry in data[palette_offset..palette_offset + palette_bytes].chunks_exact(4) {
+                palette.push([entry[0], entry[1], entry[2], entry[3]]);
+            }
+        }
+
+        let mut pixels = vec![0u8; (width as usize).checked_mul(height as usize)?];
+        let top_down = height_i32 < 0;
+
+        for y in 0..height {
+            let src_y = if top_down { y } else { height - 1 - y };
+            let row_start = data_offset + (src_y as usize) * row_stride;
+            let row = &data[row_start..row_start + row_stride];
+            let dst_row_start = (y * width) as usize;
+
+            match bpp {
+                1 => {
+                    for x in 0..width {
+                        let byte = row[(x / 8) as usize];
+                        let bit = 7 - (x % 8);
+                        let idx = ((byte >> bit) & 0x01) as usize;
+                        let [b, g, r, _] = *palette.get(idx)?;
+                        pixels[dst_row_start + x as usize] = Self::luma_from_bgr(b, g, r);
+                    }
+                }
+                8 => {
+                    for x in 0..width {
+                        let idx = row[x as usize] as usize;
+                        let [b, g, r, _] = *palette.get(idx)?;
+                        pixels[dst_row_start + x as usize] = Self::luma_from_bgr(b, g, r);
+                    }
+                }
+                24 => {
+                    for x in 0..width {
+                        let i = (x as usize) * 3;
+                        let b = *row.get(i)?;
+                        let g = *row.get(i + 1)?;
+                        let r = *row.get(i + 2)?;
+                        pixels[dst_row_start + x as usize] = Self::luma_from_bgr(b, g, r);
+                    }
+                }
+                32 => {
+                    for x in 0..width {
+                        let i = (x as usize) * 4;
+                        let b = *row.get(i)?;
+                        let g = *row.get(i + 1)?;
+                        let r = *row.get(i + 2)?;
+                        pixels[dst_row_start + x as usize] = Self::luma_from_bgr(b, g, r);
+                    }
+                }
+                _ => return None,
+            }
+        }
+
+        Some(LumaImage {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    fn scale_luma_to_binary_thumbnail(
+        source: &LumaImage,
+        max_width: u32,
+        max_height: u32,
+        threshold: u8,
+    ) -> Option<CoverThumbnail> {
+        if source.width == 0 || source.height == 0 || max_width == 0 || max_height == 0 {
+            return None;
+        }
+
+        let (dst_width, dst_height) =
+            Self::fit_dimensions(source.width, source.height, max_width, max_height)?;
+        let mut thumbnail = CoverThumbnail::new(dst_width, dst_height)?;
+
+        for y in 0..dst_height {
+            let src_y = (y as u64).checked_mul(source.height as u64)? / dst_height as u64;
+            let src_y = src_y as u32;
+            for x in 0..dst_width {
+                let src_x = (x as u64).checked_mul(source.width as u64)? / dst_width as u64;
+                let src_x = src_x as u32;
+                let src_idx = (src_y * source.width + src_x) as usize;
+                let luminance = *source.pixels.get(src_idx)?;
+                thumbnail.set_pixel(x, y, luminance < threshold);
+            }
+        }
+
+        Some(thumbnail)
+    }
+
+    fn fit_dimensions(
+        source_width: u32,
+        source_height: u32,
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<(u32, u32)> {
+        if source_width == 0 || source_height == 0 || max_width == 0 || max_height == 0 {
+            return None;
+        }
+
+        if (source_width as u64) * (max_height as u64) > (source_height as u64) * (max_width as u64)
+        {
+            let width = max_width;
+            let height = ((source_height as u64 * max_width as u64) / source_width as u64)
+                .max(1)
+                .min(max_height as u64) as u32;
+            Some((width, height))
+        } else {
+            let height = max_height;
+            let width = ((source_width as u64 * max_height as u64) / source_height as u64)
+                .max(1)
+                .min(max_width as u64) as u32;
+            Some((width, height))
+        }
+    }
+
+    fn luma_from_bgr(b: u8, g: u8, r: u8) -> u8 {
+        ((r as u16 * 77 + g as u16 * 150 + b as u16 * 29) >> 8) as u8
+    }
+
+    fn read_u16_le(data: &[u8], offset: usize) -> Option<u16> {
+        let bytes = data.get(offset..offset + 2)?;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
+        let bytes = data.get(offset..offset + 4)?;
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_i32_le(data: &[u8], offset: usize) -> Option<i32> {
+        let bytes = data.get(offset..offset + 4)?;
+        Some(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     /// Set the book list and refresh
@@ -323,6 +668,11 @@ impl LibraryActivity {
         let requested = self.refresh_requested;
         self.refresh_requested = false;
         requested
+    }
+
+    /// Consume pending open-book request.
+    pub fn take_open_request(&mut self) -> Option<String> {
+        self.pending_open_path.take()
     }
 
     /// Apply current sort order
@@ -450,8 +800,8 @@ impl LibraryActivity {
         match action {
             BookAction::Open => {
                 if let Some(book) = self.selected_book() {
-                    self.show_toast(format!("Opening: {}", book.title));
-                    // In real implementation, navigate to reader
+                    let path = book.path.clone();
+                    self.pending_open_path = Some(path);
                     ActivityResult::Consumed
                 } else {
                     ActivityResult::Consumed
@@ -522,7 +872,7 @@ impl LibraryActivity {
 
         // Title
         let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::Off)
             .build();
         Text::new(
@@ -535,7 +885,7 @@ impl LibraryActivity {
         // Sort button
         let sort_label = format!("[Sort: {}]", self.sort_order.label());
         let sort_width = ThemeMetrics::text_width(sort_label.len());
-        let sort_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
+        let sort_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
         Text::new(
             &sort_label,
             Point::new(
@@ -578,7 +928,7 @@ impl LibraryActivity {
         let x = (display_width as i32 - message_width) / 2;
 
         let style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::On)
             .build();
         Text::new(message, Point::new(x, center_y), style).draw(display)?;
@@ -586,7 +936,7 @@ impl LibraryActivity {
         let sub_message = "Searching /books recursively";
         let sub_width = ThemeMetrics::text_width(sub_message.len());
         let sub_x = (display_width as i32 - sub_width) / 2;
-        let sub_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::On);
+        let sub_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
         Text::new(sub_message, Point::new(sub_x, center_y + 25), sub_style).draw(display)?;
 
         Ok(())
@@ -606,7 +956,7 @@ impl LibraryActivity {
         let x = (display_width as i32 - message_width) / 2;
 
         let style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::On)
             .build();
 
@@ -616,7 +966,7 @@ impl LibraryActivity {
         let sub_width = ThemeMetrics::text_width(sub_message.len());
         let sub_x = (display_width as i32 - sub_width) / 2;
 
-        let sub_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::On);
+        let sub_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
         Text::new(sub_message, Point::new(sub_x, center_y + 25), sub_style).draw(display)?;
 
         Ok(())
@@ -683,14 +1033,14 @@ impl LibraryActivity {
         let cover_x = x + cover_padding as i32;
         let cover_y = y + cover_padding as i32;
         let cover_height = item_height - cover_padding * 2;
-
-        // Draw filled rectangle as cover placeholder
-        Rectangle::new(
-            Point::new(cover_x, cover_y),
-            Size::new(Self::COVER_WIDTH, cover_height),
-        )
-        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-        .draw(display)?;
+        self.render_cover_thumbnail(
+            display,
+            book,
+            cover_x,
+            cover_y,
+            Self::COVER_WIDTH,
+            cover_height,
+        )?;
 
         // Text color based on selection
         let text_color = if is_selected {
@@ -699,13 +1049,14 @@ impl LibraryActivity {
             BinaryColor::On
         };
 
-        let title_style = MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color);
-        let author_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+        let title_style = MonoTextStyle::new(ui_font_bold(), text_color);
+        let author_style = MonoTextStyle::new(ui_font(), text_color);
 
         // Title
         let title_x = x + Self::COVER_WIDTH as i32 + (cover_padding * 2) as i32;
         let title_y = y + 20;
-        let max_title_chars = ((width as i32 - title_x - x) / FONT_CHAR_WIDTH) as usize;
+        let title_max_width = (x + width as i32 - title_x).max(0);
+        let max_title_chars = (title_max_width / ui_font_char_width()) as usize;
         let title = book.display_title(max_title_chars);
         Text::new(title, Point::new(title_x, title_y), title_style).draw(display)?;
 
@@ -728,6 +1079,58 @@ impl LibraryActivity {
             .draw(display)?;
 
         Ok(())
+    }
+
+    fn render_cover_thumbnail<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        book: &BookInfo,
+        cover_x: i32,
+        cover_y: i32,
+        cover_width: u32,
+        cover_height: u32,
+    ) -> Result<(), D::Error> {
+        if let Some(thumb) = &book.cover_thumbnail {
+            // White card behind thumbnail keeps it readable when the list item is selected.
+            Rectangle::new(
+                Point::new(cover_x, cover_y),
+                Size::new(cover_width, cover_height),
+            )
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+            .draw(display)?;
+            Rectangle::new(
+                Point::new(cover_x, cover_y),
+                Size::new(cover_width, cover_height),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)?;
+
+            let offset_x = ((cover_width as i32 - thumb.width as i32).max(0)) / 2;
+            let offset_y = ((cover_height as i32 - thumb.height as i32).max(0)) / 2;
+            for y in 0..thumb.height.min(cover_height) {
+                for x in 0..thumb.width.min(cover_width) {
+                    if thumb.is_black(x, y) {
+                        Pixel(
+                            Point::new(
+                                cover_x + offset_x + x as i32,
+                                cover_y + offset_y + y as i32,
+                            ),
+                            BinaryColor::On,
+                        )
+                        .draw(display)?;
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            // Fallback placeholder if thumbnail decode/extraction failed.
+            Rectangle::new(
+                Point::new(cover_x, cover_y),
+                Size::new(cover_width, cover_height),
+            )
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+        }
     }
 
     /// Render progress bar
@@ -842,12 +1245,13 @@ impl Activity for LibraryActivity {
         self.scroll_offset = 0;
         self.show_context_menu = false;
         self.show_toast = false;
+        self.pending_open_path = None;
         // Request full refresh on enter for a clean baseline
         self.needs_full_refresh = true;
     }
 
     fn on_exit(&mut self) {
-        // Cleanup if needed
+        self.pending_open_path = None;
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
@@ -876,7 +1280,8 @@ impl Activity for LibraryActivity {
             }
             InputEvent::Press(Button::Right) | InputEvent::Press(Button::Confirm) => {
                 if let Some(book) = self.selected_book() {
-                    self.show_toast(format!("Opening: {}", book.title));
+                    let path = book.path.clone();
+                    self.pending_open_path = Some(path);
                     ActivityResult::Consumed
                 } else {
                     ActivityResult::Consumed
@@ -925,7 +1330,9 @@ impl Activity for LibraryActivity {
         if self.needs_full_refresh {
             ActivityRefreshMode::Full
         } else {
-            ActivityRefreshMode::Fast
+            // Library list redraws are large and fast diff updates can leave
+            // visible artifacts on e-ink headers/items.
+            ActivityRefreshMode::Partial
         }
     }
 }
@@ -1010,6 +1417,37 @@ mod tests {
     use super::*;
     #[cfg(feature = "std")]
     use crate::mock_filesystem::MockFileSystem;
+
+    fn build_test_bmp_24(width: u32, height: u32, pixels_top_down: &[[u8; 3]]) -> Vec<u8> {
+        let row_bytes = (width as usize) * 3;
+        let row_stride = (row_bytes + 3) & !3;
+        let pixel_data_size = row_stride * height as usize;
+        let file_size = 14 + 40 + pixel_data_size;
+        let mut out = vec![0u8; file_size];
+
+        out[0..2].copy_from_slice(b"BM");
+        out[2..6].copy_from_slice(&(file_size as u32).to_le_bytes());
+        out[10..14].copy_from_slice(&(54u32).to_le_bytes());
+        out[14..18].copy_from_slice(&(40u32).to_le_bytes());
+        out[18..22].copy_from_slice(&(width as i32).to_le_bytes());
+        out[22..26].copy_from_slice(&(height as i32).to_le_bytes());
+        out[26..28].copy_from_slice(&(1u16).to_le_bytes());
+        out[28..30].copy_from_slice(&(24u16).to_le_bytes());
+        out[34..38].copy_from_slice(&(pixel_data_size as u32).to_le_bytes());
+
+        for y in 0..height {
+            let src_y = (height - 1 - y) as usize; // BMP rows are bottom-up for positive height.
+            let row_start = 54 + (y as usize) * row_stride;
+            for x in 0..width {
+                let rgb = pixels_top_down[src_y * width as usize + x as usize];
+                let px = row_start + (x as usize) * 3;
+                out[px] = rgb[2]; // B
+                out[px + 1] = rgb[1]; // G
+                out[px + 2] = rgb[0]; // R
+            }
+        }
+        out
+    }
 
     #[test]
     fn book_info_creation() {
@@ -1450,5 +1888,60 @@ mod tests {
         assert_eq!(result, ActivityResult::Consumed);
         assert!(activity.take_refresh_request());
         assert!(!activity.take_refresh_request());
+    }
+
+    #[test]
+    fn bmp_decoder_handles_simple_24bit_image() {
+        let bmp = build_test_bmp_24(
+            2,
+            2,
+            &[[0, 0, 0], [255, 255, 255], [255, 255, 255], [0, 0, 0]],
+        );
+        let decoded = LibraryActivity::decode_bmp_to_luma(&bmp).expect("valid BMP should decode");
+        assert_eq!(decoded.width, 2);
+        assert_eq!(decoded.height, 2);
+        assert_eq!(decoded.pixels.len(), 4);
+        assert!(decoded.pixels[0] < 16);
+        assert!(decoded.pixels[1] > 240);
+    }
+
+    #[test]
+    fn scale_luma_to_binary_thumbnail_preserves_aspect_fit() {
+        let source = LumaImage {
+            width: 200,
+            height: 100,
+            pixels: vec![0u8; 200 * 100],
+        };
+        let thumb = LibraryActivity::scale_luma_to_binary_thumbnail(&source, 50, 44, 128).unwrap();
+        assert_eq!(thumb.width, 50);
+        assert_eq!(thumb.height, 25);
+        assert!(thumb.is_black(0, 0));
+    }
+
+    #[test]
+    fn decode_bmp_thumbnail_rejects_invalid_data() {
+        assert!(LibraryActivity::decode_bmp_thumbnail(b"not-a-bmp", 50, 44).is_none());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn discover_books_loads_sidecar_bmp_for_non_epub() {
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/books");
+        fs.add_file("/books/notes.txt", b"example");
+        let sidecar = build_test_bmp_24(
+            2,
+            2,
+            &[[0, 0, 0], [255, 255, 255], [255, 255, 255], [0, 0, 0]],
+        );
+        fs.add_file("/books/notes.bmp", &sidecar);
+
+        let books = LibraryActivity::discover_books(&mut fs, "/books");
+        let notes = books
+            .iter()
+            .find(|book| book.path.ends_with("notes.txt"))
+            .expect("sidecar test book should exist");
+        assert!(notes.cover_thumbnail.is_some());
     }
 }

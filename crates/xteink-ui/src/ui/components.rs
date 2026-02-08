@@ -12,14 +12,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
 
-use crate::ui::theme::{Theme, ThemeMetrics};
+use crate::ui::theme::{ui_font, ui_font_bold, Theme, ThemeMetrics};
 
 /// Button component with focus state
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +111,7 @@ impl Button {
             BinaryColor::On
         };
 
-        let character_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+        let character_style = MonoTextStyle::new(ui_font(), text_color);
         let label_text = Text::new(
             &self.label,
             Point::new(
@@ -232,7 +232,7 @@ impl List {
             } else {
                 BinaryColor::On
             };
-            let character_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+            let character_style = MonoTextStyle::new(ui_font(), text_color);
             Text::new(
                 item,
                 Point::new(self.x + theme.metrics.side_padding as i32, y + text_y),
@@ -341,7 +341,7 @@ impl Modal {
 
         // Title
         let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::On)
             .build();
         Text::new(
@@ -357,7 +357,7 @@ impl Modal {
             .draw(display)?;
 
         // Message
-        let message_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::On);
+        let message_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
         Text::new(
             &self.message,
             Point::new(x + theme.metrics.side_padding as i32, y + 60),
@@ -408,7 +408,7 @@ impl Modal {
                 } else {
                     BinaryColor::On
                 };
-                let text_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+                let text_style = MonoTextStyle::new(ui_font(), text_color);
                 let label_width = ThemeMetrics::text_width(button_label.len());
                 Text::new(
                     button_label,
@@ -477,7 +477,7 @@ impl Toast {
         .draw(display)?;
 
         // Text (inverted for contrast)
-        let character_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
+        let character_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
         Text::new(
             &self.message,
             Point::new(

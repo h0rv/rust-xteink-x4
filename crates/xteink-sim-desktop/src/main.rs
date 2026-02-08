@@ -42,14 +42,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(btn) = keycode_to_button(keycode) {
                         let input = InputEvent::Press(btn);
 
-                        if app.handle_input(input) {
+                        let needs_redraw = app.handle_input(input);
+                        let deferred_updated = app.process_deferred_tasks(&mut fs);
+
+                        if needs_redraw || deferred_updated {
                             app.render(&mut display)?;
                             window.update(&display);
-
-                            if app.process_library_scan(&mut fs) {
-                                app.render(&mut display)?;
-                                window.update(&display);
-                            }
                         }
                     }
                 }

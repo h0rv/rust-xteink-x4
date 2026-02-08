@@ -62,6 +62,22 @@ impl LineSpacing {
         }
     }
 
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Compact => Self::Normal,
+            Self::Normal => Self::Relaxed,
+            Self::Relaxed => Self::Compact,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::Compact => Self::Relaxed,
+            Self::Normal => Self::Compact,
+            Self::Relaxed => Self::Normal,
+        }
+    }
+
     /// Get line height multiplier (in tenths)
     pub const fn multiplier(self) -> u8 {
         match self {
@@ -113,6 +129,22 @@ impl MarginSize {
         }
     }
 
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Small => Self::Medium,
+            Self::Medium => Self::Large,
+            Self::Large => Self::Small,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::Small => Self::Large,
+            Self::Medium => Self::Small,
+            Self::Large => Self::Medium,
+        }
+    }
+
     /// Get margin size in pixels
     pub const fn pixels(self) -> u32 {
         match self {
@@ -158,6 +190,17 @@ impl TextAlignment {
             1 => Some(Self::Justified),
             _ => None,
         }
+    }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Left => Self::Justified,
+            Self::Justified => Self::Left,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        self.next_wrapped()
     }
 }
 
@@ -216,6 +259,26 @@ impl RefreshFrequency {
         }
     }
 
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Every1 => Self::Every5,
+            Self::Every5 => Self::Every10,
+            Self::Every10 => Self::Every15,
+            Self::Every15 => Self::Every30,
+            Self::Every30 => Self::Every1,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::Every1 => Self::Every30,
+            Self::Every5 => Self::Every1,
+            Self::Every10 => Self::Every5,
+            Self::Every15 => Self::Every10,
+            Self::Every30 => Self::Every15,
+        }
+    }
+
     /// Get number of pages between full refreshes
     pub const fn pages(self) -> u8 {
         match self {
@@ -264,6 +327,17 @@ impl TapZoneConfig {
             _ => None,
         }
     }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::LeftNext => Self::RightNext,
+            Self::RightNext => Self::LeftNext,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        self.next_wrapped()
+    }
 }
 
 /// Volume button actions
@@ -301,6 +375,17 @@ impl VolumeButtonAction {
             1 => Some(Self::Scroll),
             _ => None,
         }
+    }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::PageTurn => Self::Scroll,
+            Self::Scroll => Self::PageTurn,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        self.next_wrapped()
     }
 }
 
@@ -558,24 +643,19 @@ impl ReaderSettingsActivity {
                 }
             }
             SettingItem::FontFamily => {
-                let next_index = (self.settings.font_family.index() + 1) % FontFamily::ALL.len();
-                self.settings.font_family = FontFamily::from_index(next_index).unwrap();
+                self.settings.font_family = self.settings.font_family.next_wrapped();
                 self.show_toast(format!("Font: {}", self.settings.font_family.label()));
             }
             SettingItem::LineSpacing => {
-                let next_index = (self.settings.line_spacing.index() + 1) % LineSpacing::ALL.len();
-                self.settings.line_spacing = LineSpacing::from_index(next_index).unwrap();
+                self.settings.line_spacing = self.settings.line_spacing.next_wrapped();
                 self.show_toast(format!("Spacing: {}", self.settings.line_spacing.label()));
             }
             SettingItem::MarginSize => {
-                let next_index = (self.settings.margin_size.index() + 1) % MarginSize::ALL.len();
-                self.settings.margin_size = MarginSize::from_index(next_index).unwrap();
+                self.settings.margin_size = self.settings.margin_size.next_wrapped();
                 self.show_toast(format!("Margins: {}", self.settings.margin_size.label()));
             }
             SettingItem::TextAlignment => {
-                let next_index =
-                    (self.settings.text_alignment.index() + 1) % TextAlignment::ALL.len();
-                self.settings.text_alignment = TextAlignment::from_index(next_index).unwrap();
+                self.settings.text_alignment = self.settings.text_alignment.next_wrapped();
                 self.show_toast(format!(
                     "Alignment: {}",
                     self.settings.text_alignment.label()
@@ -591,9 +671,7 @@ impl ReaderSettingsActivity {
                 self.show_toast(format!("Page numbers: {}", status));
             }
             SettingItem::RefreshFrequency => {
-                let next_index =
-                    (self.settings.refresh_frequency.index() + 1) % RefreshFrequency::ALL.len();
-                self.settings.refresh_frequency = RefreshFrequency::from_index(next_index).unwrap();
+                self.settings.refresh_frequency = self.settings.refresh_frequency.next_wrapped();
                 self.show_toast(format!(
                     "Refresh: {}",
                     self.settings.refresh_frequency.label()
@@ -609,16 +687,12 @@ impl ReaderSettingsActivity {
                 self.show_toast(format!("Invert: {}", status));
             }
             SettingItem::TapZoneConfig => {
-                let next_index =
-                    (self.settings.tap_zone_config.index() + 1) % TapZoneConfig::ALL.len();
-                self.settings.tap_zone_config = TapZoneConfig::from_index(next_index).unwrap();
+                self.settings.tap_zone_config = self.settings.tap_zone_config.next_wrapped();
                 self.show_toast(format!("Tap: {}", self.settings.tap_zone_config.label()));
             }
             SettingItem::VolumeButtonAction => {
-                let next_index = (self.settings.volume_button_action.index() + 1)
-                    % VolumeButtonAction::ALL.len();
                 self.settings.volume_button_action =
-                    VolumeButtonAction::from_index(next_index).unwrap();
+                    self.settings.volume_button_action.next_wrapped();
                 self.show_toast(format!(
                     "Volume: {}",
                     self.settings.volume_button_action.label()
@@ -959,73 +1033,38 @@ impl ReaderSettingsActivity {
                 }
             }
             SettingItem::FontFamily => {
-                let prev_index = if self.settings.font_family.index() == 0 {
-                    FontFamily::ALL.len() - 1
-                } else {
-                    self.settings.font_family.index() - 1
-                };
-                self.settings.font_family = FontFamily::from_index(prev_index).unwrap();
+                self.settings.font_family = self.settings.font_family.prev_wrapped();
                 self.show_toast(format!("Font: {}", self.settings.font_family.label()));
             }
             SettingItem::LineSpacing => {
-                let prev_index = if self.settings.line_spacing.index() == 0 {
-                    LineSpacing::ALL.len() - 1
-                } else {
-                    self.settings.line_spacing.index() - 1
-                };
-                self.settings.line_spacing = LineSpacing::from_index(prev_index).unwrap();
+                self.settings.line_spacing = self.settings.line_spacing.prev_wrapped();
                 self.show_toast(format!("Spacing: {}", self.settings.line_spacing.label()));
             }
             SettingItem::MarginSize => {
-                let prev_index = if self.settings.margin_size.index() == 0 {
-                    MarginSize::ALL.len() - 1
-                } else {
-                    self.settings.margin_size.index() - 1
-                };
-                self.settings.margin_size = MarginSize::from_index(prev_index).unwrap();
+                self.settings.margin_size = self.settings.margin_size.prev_wrapped();
                 self.show_toast(format!("Margins: {}", self.settings.margin_size.label()));
             }
             SettingItem::TextAlignment => {
-                let prev_index = if self.settings.text_alignment.index() == 0 {
-                    TextAlignment::ALL.len() - 1
-                } else {
-                    self.settings.text_alignment.index() - 1
-                };
-                self.settings.text_alignment = TextAlignment::from_index(prev_index).unwrap();
+                self.settings.text_alignment = self.settings.text_alignment.prev_wrapped();
                 self.show_toast(format!(
                     "Alignment: {}",
                     self.settings.text_alignment.label()
                 ));
             }
             SettingItem::RefreshFrequency => {
-                let prev_index = if self.settings.refresh_frequency.index() == 0 {
-                    RefreshFrequency::ALL.len() - 1
-                } else {
-                    self.settings.refresh_frequency.index() - 1
-                };
-                self.settings.refresh_frequency = RefreshFrequency::from_index(prev_index).unwrap();
+                self.settings.refresh_frequency = self.settings.refresh_frequency.prev_wrapped();
                 self.show_toast(format!(
                     "Refresh: {}",
                     self.settings.refresh_frequency.label()
                 ));
             }
             SettingItem::TapZoneConfig => {
-                let prev_index = if self.settings.tap_zone_config.index() == 0 {
-                    TapZoneConfig::ALL.len() - 1
-                } else {
-                    self.settings.tap_zone_config.index() - 1
-                };
-                self.settings.tap_zone_config = TapZoneConfig::from_index(prev_index).unwrap();
+                self.settings.tap_zone_config = self.settings.tap_zone_config.prev_wrapped();
                 self.show_toast(format!("Tap: {}", self.settings.tap_zone_config.label()));
             }
             SettingItem::VolumeButtonAction => {
-                let prev_index = if self.settings.volume_button_action.index() == 0 {
-                    VolumeButtonAction::ALL.len() - 1
-                } else {
-                    self.settings.volume_button_action.index() - 1
-                };
                 self.settings.volume_button_action =
-                    VolumeButtonAction::from_index(prev_index).unwrap();
+                    self.settings.volume_button_action.prev_wrapped();
                 self.show_toast(format!(
                     "Volume: {}",
                     self.settings.volume_button_action.label()

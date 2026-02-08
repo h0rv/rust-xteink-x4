@@ -75,6 +75,7 @@ pub struct App {
 
 impl App {
     const SCREEN_COUNT: usize = 6;
+    const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
     /// Default number of pages between full refreshes
     const DEFAULT_REFRESH_FREQUENCY: u32 = 10;
 
@@ -242,6 +243,7 @@ impl App {
     /// Run deferred file browser work.
     ///
     /// Returns `true` when UI changed and should be redrawn.
+    #[inline(never)]
     pub fn process_file_browser_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
         if self.current_screen() != AppScreen::FileBrowser {
             return false;
@@ -250,7 +252,8 @@ impl App {
         let mut updated = false;
         // Drain chained tasks (OpenPath -> OpenFile) so Library-open lands
         // directly in reader mode without flashing the browser list.
-        for _ in 0..4 {
+        // Keep this bounded to reduce worst-case stack pressure on embedded.
+        for _ in 0..Self::MAX_FILE_BROWSER_TASKS_PER_TICK {
             if !self.file_browser.process_pending_task(fs) {
                 break;
             }
@@ -262,6 +265,7 @@ impl App {
     /// Run all deferred app tasks.
     ///
     /// Returns `true` when UI changed and should be redrawn.
+    #[inline(never)]
     pub fn process_deferred_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
         let library_open_updated = self.process_library_open_request(fs);
         let library_updated = self.process_library_scan(fs);
@@ -347,7 +351,9 @@ impl App {
             return false;
         }
 
-        let leaving = self.nav_stack.pop().unwrap();
+        let Some(leaving) = self.nav_stack.pop() else {
+            return false;
+        };
         self.call_on_exit(leaving);
 
         self.reset_refresh_counter_for(self.current_screen());

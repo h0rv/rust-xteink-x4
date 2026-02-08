@@ -136,6 +136,22 @@ impl FontFamily {
             _ => None,
         }
     }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Monospace => Self::Serif,
+            Self::Serif => Self::SansSerif,
+            Self::SansSerif => Self::Monospace,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::Monospace => Self::SansSerif,
+            Self::Serif => Self::Monospace,
+            Self::SansSerif => Self::Serif,
+        }
+    }
 }
 
 /// Settings data container (in-memory storage)
@@ -615,8 +631,7 @@ impl SettingsActivity {
                 ActivityResult::Consumed
             }
             SettingRow::FontFamily => {
-                let next_index = (self.settings.font_family.index() + 1) % FontFamily::ALL.len();
-                self.settings.font_family = FontFamily::from_index(next_index).unwrap();
+                self.settings.font_family = self.settings.font_family.next_wrapped();
                 self.show_toast(format!("Font: {}", self.settings.font_family.label()));
                 ActivityResult::Consumed
             }
@@ -643,12 +658,7 @@ impl SettingsActivity {
                 ActivityResult::Consumed
             }
             SettingRow::FontFamily => {
-                let prev_index = if self.settings.font_family.index() == 0 {
-                    FontFamily::ALL.len() - 1
-                } else {
-                    self.settings.font_family.index() - 1
-                };
-                self.settings.font_family = FontFamily::from_index(prev_index).unwrap();
+                self.settings.font_family = self.settings.font_family.prev_wrapped();
                 self.show_toast(format!("Font: {}", self.settings.font_family.label()));
                 ActivityResult::Consumed
             }

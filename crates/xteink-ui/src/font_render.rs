@@ -426,7 +426,10 @@ impl FontCache {
         for ch in text.chars() {
             // Get glyph from cache or rasterize
             let glyph = if self.lru_glyph_cache.contains(ch, self.font_size) {
-                self.lru_glyph_cache.get(ch, self.font_size).unwrap()
+                let Some(glyph) = self.lru_glyph_cache.get(ch, self.font_size) else {
+                    continue;
+                };
+                glyph
             } else {
                 // Cache miss - get font and rasterize
                 let font = match self.fonts.get(font_name) {
@@ -436,7 +439,10 @@ impl FontCache {
                 let (metrics, bitmap) = font.rasterize(ch, self.font_size);
                 self.lru_glyph_cache
                     .insert(ch, self.font_size, metrics, bitmap);
-                self.lru_glyph_cache.get(ch, self.font_size).unwrap()
+                let Some(glyph) = self.lru_glyph_cache.get(ch, self.font_size) else {
+                    continue;
+                };
+                glyph
             };
 
             // Draw glyph bitmap

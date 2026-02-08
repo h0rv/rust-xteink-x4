@@ -16,6 +16,8 @@ const SD_MAX_FILES: i32 = 16;
 
 pub struct SdCardFs {
     base_path: String,
+    mounted: bool,
+    mount_error: Option<String>,
 }
 
 impl SdCardFs {
@@ -61,7 +63,19 @@ impl SdCardFs {
 
         log::info!("SD card mounted at {}", base_path);
 
-        Ok(Self { base_path })
+        Ok(Self {
+            base_path,
+            mounted: true,
+            mount_error: None,
+        })
+    }
+
+    pub fn unavailable(reason: impl Into<String>) -> Self {
+        Self {
+            base_path: SD_MOUNT_POINT.to_string(),
+            mounted: false,
+            mount_error: Some(reason.into()),
+        }
     }
 
     fn host_path(&self, path: &str) -> String {
@@ -72,18 +86,32 @@ impl SdCardFs {
         }
     }
 
+    fn require_mounted(&self) -> Result<(), FileSystemError> {
+        if self.mounted {
+            Ok(())
+        } else {
+            Err(FileSystemError::IoError(format!(
+                "SD unavailable: {}",
+                self.mount_error.as_deref().unwrap_or("not mounted")
+            )))
+        }
+    }
+
     pub fn delete_file(&mut self, path: &str) -> Result<(), FileSystemError> {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         fatfs_remove_entry(&self.base_path, &host_path)
             .or_else(|_| fs::remove_file(host_path).map_err(to_fs_error))
     }
 
     pub fn delete_dir(&mut self, path: &str) -> Result<(), FileSystemError> {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         remove_dir_recursive(&self.base_path, &host_path)
     }
 
     pub fn make_dir(&mut self, path: &str) -> Result<(), FileSystemError> {
+        self.require_mounted()?;
         fs::create_dir(self.host_path(path))
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
     }
@@ -100,6 +128,7 @@ impl SdCardFs {
         F: FnMut(&mut [u8]) -> Result<usize, FileSystemError>,
         G: FnMut(usize) -> Result<(), FileSystemError>,
     {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         let mut file = fs::File::create(host_path)
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
@@ -170,6 +199,7 @@ fn to_fs_error(err: std::io::Error) -> FileSystemError {
 
 impl FileSystem for SdCardFs {
     fn list_files(&mut self, path: &str) -> Result<Vec<FileInfo>, FileSystemError> {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         let mut entries = Vec::new();
 
@@ -193,20 +223,23 @@ impl FileSystem for SdCardFs {
     }
 
     fn read_file(&mut self, path: &str) -> Result<String, FileSystemError> {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         fs::read_to_string(host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
     }
 
     fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError> {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         fs::read(host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
     }
 
     fn exists(&mut self, path: &str) -> bool {
-        Path::new(&self.host_path(path)).exists()
+        self.mounted && Path::new(&self.host_path(path)).exists()
     }
 
     fn file_info(&mut self, path: &str) -> Result<FileInfo, FileSystemError> {
+        self.require_mounted()?;
         let host_path = self.host_path(path);
         let meta =
             fs::metadata(&host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;

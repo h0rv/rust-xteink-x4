@@ -56,68 +56,83 @@ impl FileBrowserActivity {
         matches!(self.mode, BrowserMode::ReadingText { .. })
     }
 
+    #[inline(never)]
     pub fn process_pending_task(&mut self, fs: &mut dyn FileSystem) -> bool {
         let Some(task) = self.pending_task.take() else {
             return false;
         };
 
         match task {
-            FileBrowserTask::LoadCurrentDirectory => {
-                self.mode = BrowserMode::Browsing;
+            FileBrowserTask::LoadCurrentDirectory => self.process_load_current_directory_task(fs),
+            FileBrowserTask::OpenPath { path } => self.process_open_path_task(fs, &path),
+            FileBrowserTask::OpenTextFile { path } => self.process_open_text_file_task(fs, &path),
+            FileBrowserTask::OpenEpubFile { path } => self.process_open_epub_file_task(fs, &path),
+        }
+    }
 
-                if let Err(error) = self.browser.load(fs) {
-                    self.browser
-                        .set_status_message(format!("Unable to open folder: {}", error));
-                }
-                true
+    #[inline(never)]
+    fn process_load_current_directory_task(&mut self, fs: &mut dyn FileSystem) -> bool {
+        self.mode = BrowserMode::Browsing;
+
+        if let Err(error) = self.browser.load(fs) {
+            self.browser
+                .set_status_message(format!("Unable to open folder: {}", error));
+        }
+
+        true
+    }
+
+    #[inline(never)]
+    fn process_open_path_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
+        self.open_path(fs, path);
+        true
+    }
+
+    #[inline(never)]
+    fn process_open_text_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
+        match fs.read_file(path) {
+            Ok(content) => {
+                let title = basename(path).to_string();
+                self.mode = BrowserMode::ReadingText {
+                    title,
+                    viewer: TextViewer::new(content),
+                };
             }
-            FileBrowserTask::OpenPath { path } => {
-                self.open_path(fs, &path);
-                true
+            Err(error) => {
+                self.browser
+                    .set_status_message(format!("Unable to open file: {}", error));
+                self.mode = BrowserMode::Browsing;
             }
-            FileBrowserTask::OpenTextFile { path } => match fs.read_file(&path) {
-                Ok(content) => {
-                    let title = basename(&path).to_string();
+        }
+        true
+    }
+
+    #[inline(never)]
+    fn process_open_epub_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
+        #[cfg(feature = "std")]
+        {
+            match Self::load_epub_as_text(fs, path) {
+                Ok((title, content)) => {
                     self.mode = BrowserMode::ReadingText {
                         title,
                         viewer: TextViewer::new(content),
                     };
-                    true
                 }
                 Err(error) => {
-                    self.browser
-                        .set_status_message(format!("Unable to open file: {}", error));
                     self.mode = BrowserMode::Browsing;
-                    true
+                    self.browser.set_status_message(error);
                 }
-            },
-            FileBrowserTask::OpenEpubFile { path } => {
-                #[cfg(feature = "std")]
-                {
-                    match Self::load_epub_as_text(fs, &path) {
-                        Ok((title, content)) => {
-                            self.mode = BrowserMode::ReadingText {
-                                title,
-                                viewer: TextViewer::new(content),
-                            };
-                        }
-                        Err(error) => {
-                            self.mode = BrowserMode::Browsing;
-                            self.browser.set_status_message(error);
-                        }
-                    }
-                }
-
-                #[cfg(not(feature = "std"))]
-                {
-                    let _ = path;
-                    self.mode = BrowserMode::Browsing;
-                    self.browser
-                        .set_status_message("Unsupported file type: .epub".to_string());
-                }
-                true
             }
         }
+
+        #[cfg(not(feature = "std"))]
+        {
+            let _ = path;
+            self.mode = BrowserMode::Browsing;
+            self.browser
+                .set_status_message("Unsupported file type: .epub".to_string());
+        }
+        true
     }
 
     fn queue_task(&mut self, task: FileBrowserTask) {
@@ -194,6 +209,7 @@ impl FileBrowserActivity {
     }
 
     #[cfg(feature = "std")]
+    #[inline(never)]
     fn load_epub_as_text(_fs: &mut dyn FileSystem, path: &str) -> Result<(String, String), String> {
         let fallback_title = basename(path).to_string();
         #[cfg(not(target_arch = "wasm32"))]
@@ -210,6 +226,7 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     #[cfg(not(target_arch = "wasm32"))]
+    #[inline(never)]
     fn parse_epub_from_path(
         path: &str,
         fallback_title: String,
@@ -248,6 +265,7 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     #[cfg(target_arch = "wasm32")]
+    #[inline(never)]
     fn parse_epub_from_bytes(
         data: alloc::vec::Vec<u8>,
         fallback_title: String,
@@ -274,6 +292,7 @@ impl FileBrowserActivity {
     }
 
     #[cfg(feature = "std")]
+    #[inline(never)]
     fn tokens_to_text(tokens: &[epublet::tokenizer::Token]) -> String {
         use epublet::tokenizer::Token;
 

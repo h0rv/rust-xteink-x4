@@ -2,6 +2,18 @@
 //! Works on ESP32, WASM, and desktop.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
 
 extern crate alloc;
 

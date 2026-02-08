@@ -619,8 +619,8 @@ fn main() {
     log_heap("startup");
 
     // Stack size verification (runtime log)
-    // ESP32-C3 has ~191KB total RAM, so we use 64KB for stack
-    const REQUIRED_STACK_SIZE: u32 = 60 * 1024; // 60KB minimum
+    // std-enabled UI task handling needs additional headroom on ESP32-C3.
+    const REQUIRED_STACK_SIZE: u32 = 80 * 1024; // 80KB minimum
     let configured_stack = esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE;
     if configured_stack < REQUIRED_STACK_SIZE {
         log::warn!(
@@ -695,8 +695,15 @@ fn main() {
     let mut region_scratch: Vec<u8> = Vec::new();
     let mut region_scratch_prev: Vec<u8> = Vec::new();
 
-    // Initialize SD card filesystem via ESP-IDF FATFS
-    let mut fs = SdCardFs::new(&spi, peripherals.pins.gpio12).expect("SD card mount failed");
+    // Initialize SD card filesystem via ESP-IDF FATFS.
+    // Boot must remain usable even when SD card is absent or mount fails.
+    let mut fs = match SdCardFs::new(&spi, peripherals.pins.gpio12) {
+        Ok(fs) => fs,
+        Err(err) => {
+            log::warn!("SD card mount failed: {}", err);
+            SdCardFs::unavailable(err.to_string())
+        }
+    };
 
     // Initialize app and render initial screen
     let mut app = App::new();

@@ -7,6 +7,7 @@ use embedded_graphics::prelude::*;
 use embedded_graphics_simulator::{
     sdl2::Keycode, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
 };
+use std::path::{Path, PathBuf};
 use xteink_ui::{App, Button, InputEvent, MockFileSystem, DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,6 +19,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create activity-based app
     let mut app = App::new();
     let mut fs = MockFileSystem::new();
+    let synced = sync_sample_books_from_workspace(&mut fs).unwrap_or(0);
+    if synced > 0 {
+        println!(
+            "Loaded {} file(s) from sample_books/ into simulator FS",
+            synced
+        );
+    }
 
     // Initial render
     app.render(&mut display)?;
@@ -55,6 +63,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+}
+
+fn sync_sample_books_from_workspace(fs: &mut MockFileSystem) -> Result<usize, std::io::Error> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let sample_root = manifest_dir.join("../../sample_books");
+    if !sample_root.exists() {
+        return Ok(0);
+    }
+
+    fs.add_directory("/books");
+    let mut added = 0usize;
+    sync_directory(fs, &sample_root, &sample_root, &mut added)?;
+    Ok(added)
+}
+
+fn sync_directory(
+    fs: &mut MockFileSystem,
+    root: &Path,
+    dir: &Path,
+    added: &mut usize,
+) -> Result<(), std::io::Error> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let rel = path.strip_prefix(root).expect("sample root prefix");
+            let sim_path = rel_to_sim_path(rel);
+            fs.add_directory(&sim_path);
+            sync_directory(fs, root, &path, added)?;
+            continue;
+        }
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let rel = path.strip_prefix(root).expect("sample root prefix");
+        let sim_path = rel_to_sim_path(rel);
+        let bytes = std::fs::read(&path)?;
+        fs.add_file(&sim_path, &bytes);
+        *added += 1;
+    }
+    Ok(())
+}
+
+fn rel_to_sim_path(rel: &Path) -> String {
+    let mut out = String::from("/books");
+    for component in rel.components() {
+        out.push('/');
+        out.push_str(component.as_os_str().to_str().unwrap_or_default());
+    }
+    out
 }
 
 fn keycode_to_button(keycode: Keycode) -> Option<Button> {

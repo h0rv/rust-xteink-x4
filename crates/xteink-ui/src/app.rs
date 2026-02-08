@@ -133,6 +133,16 @@ impl App {
         self.file_browser.is_viewing_text()
     }
 
+    /// Returns true when file-browser activity is currently displaying EPUB content.
+    pub fn file_browser_is_reading_epub(&self) -> bool {
+        self.file_browser.is_viewing_epub()
+    }
+
+    /// Returns current EPUB reading position while EPUB mode is active.
+    pub fn file_browser_epub_position(&self) -> Option<(usize, usize, usize, usize)> {
+        self.file_browser.epub_position()
+    }
+
     /// Update device status on activities that display it.
     pub fn set_device_status(&mut self, status: DeviceStatus) {
         self.system_menu.set_device_status(status);

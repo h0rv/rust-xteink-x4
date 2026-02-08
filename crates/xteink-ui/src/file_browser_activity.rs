@@ -25,7 +25,14 @@ enum FileBrowserTask {
 
 enum BrowserMode {
     Browsing,
-    ReadingText { title: String, viewer: TextViewer },
+    ReadingText {
+        title: String,
+        viewer: TextViewer,
+    },
+    #[cfg(feature = "std")]
+    ReadingEpub {
+        renderer: Box<crate::epub_render::EpubRenderer>,
+    },
 }
 
 /// Raw filesystem browser activity.
@@ -54,6 +61,36 @@ impl FileBrowserActivity {
 
     pub fn is_viewing_text(&self) -> bool {
         matches!(self.mode, BrowserMode::ReadingText { .. })
+    }
+
+    pub fn is_viewing_epub(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            matches!(self.mode, BrowserMode::ReadingEpub { .. })
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            false
+        }
+    }
+
+    /// Returns current EPUB reading position as:
+    /// `(chapter_index_1_based, chapter_total, page_index_1_based, page_total_in_chapter)`.
+    pub fn epub_position(&self) -> Option<(usize, usize, usize, usize)> {
+        #[cfg(feature = "std")]
+        {
+            if let BrowserMode::ReadingEpub { renderer } = &self.mode {
+                return Some((
+                    renderer.current_chapter(),
+                    renderer.total_chapters(),
+                    renderer.current_page_number(),
+                    renderer.total_pages(),
+                ));
+            }
+        }
+
+        None
     }
 
     #[inline(never)]
@@ -111,11 +148,10 @@ impl FileBrowserActivity {
     fn process_open_epub_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
         #[cfg(feature = "std")]
         {
-            match Self::load_epub_as_text(fs, path) {
-                Ok((title, content)) => {
-                    self.mode = BrowserMode::ReadingText {
-                        title,
-                        viewer: TextViewer::new(content),
+            match Self::load_epub_renderer(fs, path) {
+                Ok(renderer) => {
+                    self.mode = BrowserMode::ReadingEpub {
+                        renderer: Box::new(renderer),
                     };
                 }
                 Err(error) => {
@@ -210,15 +246,27 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     #[inline(never)]
-    fn load_epub_as_text(fs: &mut dyn FileSystem, path: &str) -> Result<(String, String), String> {
-        let fallback_title = basename(path).to_string();
+    fn load_epub_renderer(
+        fs: &mut dyn FileSystem,
+        path: &str,
+    ) -> Result<crate::epub_render::EpubRenderer, String> {
+        let mut renderer = crate::epub_render::EpubRenderer::new();
+
         #[cfg(not(target_arch = "wasm32"))]
         {
             // Prefer bytes via FileSystem so scenario tests can use MockFileSystem.
             if let Ok(data) = fs.read_file_bytes(path) {
-                return Self::parse_epub_from_bytes(data, fallback_title);
+                renderer
+                    .load_from_bytes(data)
+                    .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+                return Ok(renderer);
             }
-            Self::parse_epub_from_path(path, fallback_title)
+
+            let resolved = Self::resolve_epub_path(path)?;
+            renderer
+                .load(&resolved)
+                .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+            Ok(renderer)
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -226,114 +274,32 @@ impl FileBrowserActivity {
             let data = fs
                 .read_file_bytes(path)
                 .map_err(|e| format!("Unable to read EPUB: {}", e))?;
-            Self::parse_epub_from_bytes(data, fallback_title)
+            renderer
+                .load_from_bytes(data)
+                .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+            Ok(renderer)
         }
     }
 
     #[cfg(feature = "std")]
     #[cfg(not(target_arch = "wasm32"))]
     #[inline(never)]
-    fn parse_epub_from_path(
-        path: &str,
-        fallback_title: String,
-    ) -> Result<(String, String), String> {
+    fn resolve_epub_path(path: &str) -> Result<String, String> {
         use std::path::Path;
 
-        let resolved_path = if Path::new(path).exists() {
-            path.to_string()
+        if Path::new(path).exists() {
+            Ok(path.to_string())
         } else {
             let candidate = crate::filesystem::resolve_mount_path(path, "/sd");
             if Path::new(&candidate).exists() {
-                candidate
+                Ok(candidate)
             } else {
-                return Err(format!("EPUB path not found: {}", path));
-            }
-        };
-
-        let mut book = epublet::EpubBook::open(&resolved_path)
-            .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
-        if book.chapter_count() == 0 {
-            return Err("EPUB has no spine items".to_string());
-        }
-
-        let tokens = book
-            .tokenize_spine_item(0)
-            .map_err(|e| format!("Unable to load first chapter: {}", e))?;
-        let content = Self::tokens_to_text(&tokens);
-        let title = if book.metadata().title.trim().is_empty() {
-            fallback_title
-        } else {
-            book.metadata().title.clone()
-        };
-
-        Ok((title, content))
-    }
-
-    #[cfg(feature = "std")]
-    #[inline(never)]
-    fn parse_epub_from_bytes(
-        data: alloc::vec::Vec<u8>,
-        fallback_title: String,
-    ) -> Result<(String, String), String> {
-        use std::io::Cursor;
-
-        let mut book = epublet::EpubBook::from_reader(Cursor::new(data))
-            .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
-        if book.chapter_count() == 0 {
-            return Err("EPUB has no spine items".to_string());
-        }
-
-        let tokens = book
-            .tokenize_spine_item(0)
-            .map_err(|e| format!("Unable to load first chapter: {}", e))?;
-        let content = Self::tokens_to_text(&tokens);
-        let title = if book.metadata().title.trim().is_empty() {
-            fallback_title
-        } else {
-            book.metadata().title.clone()
-        };
-
-        Ok((title, content))
-    }
-
-    #[cfg(feature = "std")]
-    #[inline(never)]
-    fn tokens_to_text(tokens: &[epublet::tokenizer::Token]) -> String {
-        use epublet::tokenizer::Token;
-
-        let mut out = String::new();
-        for token in tokens {
-            match token {
-                Token::Text(text) => {
-                    if text.is_empty() {
-                        continue;
-                    }
-                    if !out.is_empty() && !out.ends_with('\n') && !out.ends_with(' ') {
-                        out.push(' ');
-                    }
-                    out.push_str(text);
-                }
-                Token::ParagraphBreak
-                | Token::Heading(_)
-                | Token::LineBreak
-                | Token::ListItemStart
-                | Token::ListEnd => {
-                    if !out.ends_with('\n') {
-                        out.push('\n');
-                    }
-                }
-                _ => {}
+                Err(format!("EPUB path not found: {}", path))
             }
         }
-
-        if out.trim().is_empty() {
-            "No readable text extracted from first chapter.".to_string()
-        } else {
-            out
-        }
     }
 
-    fn handle_text_input(&mut self, event: InputEvent) -> ActivityResult {
+    fn handle_reader_input(&mut self, event: InputEvent) -> ActivityResult {
         if matches!(event, InputEvent::Press(Button::Back)) {
             self.mode = BrowserMode::Browsing;
             if self.return_to_previous_on_back {
@@ -351,6 +317,23 @@ impl FileBrowserActivity {
                     ActivityResult::Ignored
                 }
             }
+            #[cfg(feature = "std")]
+            BrowserMode::ReadingEpub { renderer } => match event {
+                InputEvent::Press(Button::Right)
+                | InputEvent::Press(Button::Down)
+                | InputEvent::Press(Button::VolumeDown)
+                | InputEvent::Press(Button::Confirm) => {
+                    renderer.next_page();
+                    ActivityResult::Consumed
+                }
+                InputEvent::Press(Button::Left)
+                | InputEvent::Press(Button::Up)
+                | InputEvent::Press(Button::VolumeUp) => {
+                    renderer.prev_page();
+                    ActivityResult::Consumed
+                }
+                _ => ActivityResult::Ignored,
+            },
             BrowserMode::Browsing => ActivityResult::Ignored,
         }
     }
@@ -371,8 +354,8 @@ impl Activity for FileBrowserActivity {
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
-        if self.is_viewing_text() {
-            return self.handle_text_input(event);
+        if self.is_viewing_text() || self.is_viewing_epub() {
+            return self.handle_reader_input(event);
         }
 
         if matches!(event, InputEvent::Press(Button::Back)) && self.return_to_previous_on_back {
@@ -416,6 +399,8 @@ impl Activity for FileBrowserActivity {
         match &self.mode {
             BrowserMode::Browsing => self.browser.render(display),
             BrowserMode::ReadingText { title, viewer } => viewer.render(display, title),
+            #[cfg(feature = "std")]
+            BrowserMode::ReadingEpub { renderer } => renderer.render(display),
         }
     }
 

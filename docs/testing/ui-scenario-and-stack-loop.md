@@ -18,6 +18,9 @@ just ui-loop
 # Run scenario tests only
 just sim-scenarios
 
+# Run scenario tests and emit PNG screenshots
+SCENARIO_CAPTURE=1 just sim-scenarios
+
 # Emit stack-size sections and summarize heavy objects
 just stack-report
 
@@ -34,3 +37,4 @@ just stack-gate 4096
   `xteink_ui|xteink_scenario_harness|xteink_firmware`
 - For firmware-specific stack behavior, still run on-device checks (e.g. high-water logging).
 - Keep hardware flashes for integration smoke checks only after this loop is green.
+- Scenario PNG snapshots are written to `crates/xteink-scenario-harness/target/scenario-snapshots/` when `SCENARIO_CAPTURE=1`.

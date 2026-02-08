@@ -1,5 +1,11 @@
 //! Host-side scenario test harness for scripted UI flows.
 
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::Path;
+
+use embedded_graphics::pixelcolor::BinaryColor;
+use png::{BitDepth, ColorType, Encoder};
 use xteink_ui::test_display::TestDisplay;
 use xteink_ui::{App, Button, InputEvent, MockFileSystem};
 
@@ -60,5 +66,33 @@ impl ScenarioHarness {
     /// Access mock filesystem for scenario setup.
     pub fn fs_mut(&mut self) -> &mut MockFileSystem {
         &mut self.fs
+    }
+
+    /// Save the current framebuffer to a PNG (white = Off, black = On).
+    pub fn save_screenshot_png(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+
+        let (width, height) = self.display.dimensions();
+        let mut data = Vec::with_capacity((width * height) as usize);
+        for pixel in self.display.pixels() {
+            let value = match pixel {
+                BinaryColor::On => 0u8,
+                BinaryColor::Off => 255u8,
+            };
+            data.push(value);
+        }
+
+        let file = File::create(path).map_err(|e| e.to_string())?;
+        let writer = BufWriter::new(file);
+        let mut encoder = Encoder::new(writer, width, height);
+        encoder.set_color(ColorType::Grayscale);
+        encoder.set_depth(BitDepth::Eight);
+        let mut png_writer = encoder.write_header().map_err(|e| e.to_string())?;
+        png_writer
+            .write_image_data(&data)
+            .map_err(|e| e.to_string())
     }
 }

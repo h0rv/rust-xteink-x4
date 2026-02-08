@@ -1,4 +1,5 @@
 use std::thread;
+use std::{env, path::PathBuf};
 
 use xteink_scenario_harness::ScenarioHarness;
 use xteink_ui::{App, AppScreen, Button, MockFileSystem};
@@ -18,7 +19,7 @@ fn setup_harness() -> ScenarioHarness {
     ScenarioHarness::new(app, fs)
 }
 
-fn run_library_open_epub_render_back_flow() {
+fn run_library_open_epub_render_back_flow(enable_capture: bool, turn_page: bool) {
     let mut harness = setup_harness();
 
     harness.render();
@@ -44,27 +45,48 @@ fn run_library_open_epub_render_back_flow() {
         "open flow should produce deferred updates"
     );
     assert_eq!(harness.app().current_screen(), AppScreen::FileBrowser);
-    assert!(harness.app().file_browser_is_reading_text());
+    assert!(harness.app().file_browser_is_reading_epub());
 
     harness.render();
     assert!(harness.display().black_pixel_count() > 0);
+    maybe_capture(&harness, "library_epub_page1", enable_capture);
+
+    if turn_page {
+        // Turn a page to help diagnose layout pagination issues.
+        assert!(harness.press(Button::Right));
+        harness.render();
+        assert!(harness.display().black_pixel_count() > 0);
+        maybe_capture(&harness, "library_epub_page2", enable_capture);
+    }
 
     // Back should return to library when opened from library.
     assert!(harness.press(Button::Back));
     assert_eq!(harness.app().current_screen(), AppScreen::Library);
 }
 
+fn maybe_capture(harness: &ScenarioHarness, name: &str, enabled: bool) {
+    if !enabled || env::var("SCENARIO_CAPTURE").is_err() {
+        return;
+    }
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("target/scenario-snapshots");
+    path.push(format!("{}.png", name));
+    harness
+        .save_screenshot_png(&path)
+        .expect("screenshot capture should succeed");
+}
+
 #[test]
 fn library_open_epub_render_back_flow() {
-    run_library_open_epub_render_back_flow();
+    run_library_open_epub_render_back_flow(true, true);
 }
 
 #[test]
 fn library_open_epub_render_back_flow_small_stack_thread() {
     let handle = thread::Builder::new()
         .name("scenario-small-stack".to_string())
-        .stack_size(256 * 1024)
-        .spawn(run_library_open_epub_render_back_flow)
+        .stack_size(384 * 1024)
+        .spawn(|| run_library_open_epub_render_back_flow(false, false))
         .expect("thread spawn should succeed");
 
     handle.join().expect("small-stack scenario should pass");

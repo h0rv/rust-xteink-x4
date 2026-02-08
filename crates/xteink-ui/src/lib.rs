@@ -35,6 +35,8 @@ pub mod test_display;
 pub mod ui;
 
 #[cfg(feature = "std")]
+pub mod epub_prep;
+#[cfg(feature = "std")]
 pub mod epub_render;
 
 #[cfg(feature = "std")]
@@ -78,6 +80,13 @@ pub use epublet::tokenizer::{tokenize_html, Token, TokenizeError};
 #[cfg(feature = "std")]
 pub use epublet::zip::{CdEntry, StreamingZip, ZipError};
 
+#[cfg(feature = "std")]
+pub use epub_prep::{
+    BlockRole, ChapterStylesheets, ComputedTextStyle, EmbeddedFontFace, EmbeddedFontStyle,
+    FontLimits, FontPolicy, FontResolutionTrace, FontResolver, LayoutHints, PreparedChapter,
+    RenderPrep, RenderPrepError, RenderPrepOptions, ResolvedFontFace, StyleConfig, StyleLimits,
+    StyledChapter, StyledEvent, StyledEventOrRun, StyledRun, Styler, StylesheetSource,
+};
 #[cfg(feature = "std")]
 pub use epub_render::EpubRenderer;
 

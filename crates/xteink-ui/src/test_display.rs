@@ -40,6 +40,16 @@ impl TestDisplay {
             .filter(|pixel| matches!(pixel, BinaryColor::On))
             .count()
     }
+
+    /// Borrow the raw framebuffer pixels in row-major order.
+    pub fn pixels(&self) -> &[BinaryColor] {
+        &self.pixels
+    }
+
+    /// Return the framebuffer dimensions.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
 }
 
 impl DrawTarget for TestDisplay {

@@ -61,11 +61,8 @@ impl MockFileSystem {
             "/books/war_and_peace_ch1.txt",
             include_str!("../../../sample_books/war_and_peace_ch1.txt").as_bytes(),
         );
-        // Add the actual accessibility test EPUB file (binary)
-        fs.add_file(
-            "/books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub",
-            include_bytes!("../../../sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub"),
-        );
+        // Add a placeholder EPUB entry for testing
+        fs.add_file("/books/sample.epub", b"PK\x03\x04placeholder-epub-data");
         fs.add_file("/documents/notes.txt", "My reading notes:\n\n- War and Peace: 1225 pages\n- Sample book: 1 page\n\nTotal: 1226 pages read".as_bytes());
 
         fs

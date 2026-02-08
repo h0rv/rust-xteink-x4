@@ -168,6 +168,7 @@ pub struct LayoutEngine {
     /// Available page width (pixels)
     page_width: f32,
     /// Available page height (pixels)
+    #[allow(dead_code)]
     page_height: f32,
     /// Line height in pixels
     line_height: f32,
@@ -395,6 +396,7 @@ impl LayoutEngine {
     }
 
     /// Flush current line to the page
+    #[allow(dead_code)]
     fn break_line(&mut self) {
         self.flush_line();
     }

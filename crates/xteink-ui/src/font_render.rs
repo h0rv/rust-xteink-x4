@@ -42,6 +42,7 @@ impl GlyphCacheKey {
         }
     }
 
+    #[allow(dead_code)]
     fn size(&self) -> f32 {
         f32::from_bits(self.size_bits)
     }

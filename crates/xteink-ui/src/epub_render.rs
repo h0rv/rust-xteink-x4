@@ -11,7 +11,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, ascii::FONT_6X10, MonoTextStyle},
+    mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::Rectangle,
@@ -118,8 +118,10 @@ impl StreamingEpubRenderer {
     /// Bottom margin - space for footer
     const BOTTOM_MARGIN: f32 = 30.0;
     /// Header height - minimal (just title)
+    #[allow(dead_code)]
     const HEADER_HEIGHT: f32 = 0.0;
     /// Footer height - space for progress bar and page numbers
+    #[allow(dead_code)]
     const FOOTER_HEIGHT: f32 = 30.0;
 
     /// Create empty renderer with improved layout
@@ -443,7 +445,7 @@ impl StreamingEpubRenderer {
         const FOOTER_HEIGHT: i32 = 40; // Space for progress bar + page numbers
 
         // Header with book title
-        let header_text = format!("{}", Self::truncate(self.title(), 40));
+        let header_text = Self::truncate(self.title(), 40).to_string();
         let header_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
         Text::new(&header_text, Point::new(MARGIN, 25), header_style).draw(display)?;
 

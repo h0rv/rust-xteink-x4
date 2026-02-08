@@ -25,19 +25,10 @@ pub struct SpineItem {
 /// Spine represents the reading order of an EPUB
 ///
 /// Tracks the ordered list of chapter IDs and provides navigation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Spine {
     pub items: Vec<SpineItem>,
     pub current: usize,
-}
-
-impl Default for Spine {
-    fn default() -> Self {
-        Self {
-            items: Vec::new(),
-            current: 0,
-        }
-    }
 }
 
 impl Spine {
@@ -98,6 +89,7 @@ impl Spine {
 
     /// Navigate to next chapter
     /// Returns true if navigation succeeded, false if at end
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> bool {
         if self.current + 1 < self.items.len() {
             self.current += 1;

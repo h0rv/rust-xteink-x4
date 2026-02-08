@@ -115,7 +115,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
                     }
                     h if h.starts_with('h') && h.len() == 2 => {
                         if let Some(level) = h.chars().nth(1).and_then(|c| c.to_digit(10)) {
-                            if level >= 1 && level <= 6 {
+                            if (1..=6).contains(&level) {
                                 element_stack.push(ElementType::Heading(level as u8));
                                 pending_heading_close = Some(level as u8);
                             }
@@ -163,9 +163,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
 
                 // Check if we're ending a skip element
                 if should_skip_element(&name) {
-                    if skip_depth > 0 {
-                        skip_depth -= 1;
-                    }
+                    skip_depth = skip_depth.saturating_sub(1);
                     continue;
                 }
 
@@ -180,7 +178,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
                         ElementType::Paragraph => {
                             pending_paragraph_break = true;
                         }
-                        ElementType::Heading(level) => {
+                        ElementType::Heading(_level) => {
                             // Heading already emitted on start, just mark for paragraph break
                             pending_paragraph_break = true;
                             // Clear any pending close since we already handled it
@@ -228,7 +226,7 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
                     }
                     h if h.starts_with('h') && h.len() == 2 => {
                         if let Some(level) = h.chars().nth(1).and_then(|c| c.to_digit(10)) {
-                            if level >= 1 && level <= 6 {
+                            if (1..=6).contains(&level) {
                                 // Empty heading - just emit the heading token
                                 tokens.push(Token::Heading(level as u8));
                                 pending_paragraph_break = true;
@@ -274,7 +272,6 @@ pub fn tokenize_html(html: &str) -> Result<Vec<Token>, TokenizeError> {
             Err(e) => {
                 return Err(TokenizeError::ParseError(format!("XML error: {:?}", e)));
             }
-            _ => {}
         }
         buf.clear();
     }

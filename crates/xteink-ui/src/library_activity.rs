@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use embedded_graphics::{
@@ -18,7 +19,7 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, Toast};
+use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, FONT_CHAR_WIDTH};
 use crate::DISPLAY_HEIGHT;
 
 /// Book information structure
@@ -54,7 +55,7 @@ impl BookInfo {
         if self.title.len() <= max_chars {
             &self.title
         } else {
-            &self.title[..max_chars.saturating_sub(3)]
+            &self.title[..max_chars]
         }
     }
 }
@@ -114,7 +115,6 @@ pub struct LibraryActivity {
     show_toast: bool,
     toast_message: String,
     toast_frames_remaining: u32,
-    item_height: u32,
     visible_count: usize,
 }
 
@@ -128,9 +128,7 @@ impl LibraryActivity {
     /// Create a new library activity with empty book list
     pub fn new() -> Self {
         let theme = Theme::default();
-        let item_height = 65; // As specified
-        let content_height = DISPLAY_HEIGHT.saturating_sub(theme.metrics.header_height);
-        let visible_count = (content_height / item_height) as usize;
+        let visible_count = theme.metrics.visible_items(DISPLAY_HEIGHT);
 
         Self {
             books: Vec::new(),
@@ -144,7 +142,6 @@ impl LibraryActivity {
             show_toast: false,
             toast_message: String::new(),
             toast_frames_remaining: 0,
-            item_height,
             visible_count,
         }
     }
@@ -221,18 +218,22 @@ impl LibraryActivity {
         self.show_toast(format!("Sorted by: {}", self.sort_order.label()));
     }
 
-    /// Move selection down
+    /// Move selection down (wraps around)
     fn select_next(&mut self) {
-        if !self.filtered_books.is_empty() && self.selected_index + 1 < self.filtered_books.len() {
-            self.selected_index += 1;
+        if !self.filtered_books.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.filtered_books.len();
             self.ensure_visible();
         }
     }
 
-    /// Move selection up
+    /// Move selection up (wraps around)
     fn select_prev(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
+        if !self.filtered_books.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.filtered_books.len() - 1
+            } else {
+                self.selected_index - 1
+            };
             self.ensure_visible();
         }
     }
@@ -264,6 +265,7 @@ impl LibraryActivity {
     }
 
     /// Open context menu for selected book
+    #[cfg(test)]
     fn open_context_menu(&mut self) {
         if !self.filtered_books.is_empty() {
             self.show_context_menu = true;
@@ -276,7 +278,7 @@ impl LibraryActivity {
         self.show_context_menu = false;
     }
 
-    /// Handle context menu navigation
+    /// Handle context menu navigation (wraps)
     fn context_menu_next(&mut self) {
         self.context_menu_index = (self.context_menu_index + 1) % 4; // 4 actions
     }
@@ -338,14 +340,15 @@ impl LibraryActivity {
         }
     }
 
-    /// Handle input when context menu is shown
+    /// Handle input when context menu is shown.
+    /// Left/Right and VolumeUp/Down navigate buttons, Confirm selects, Back cancels.
     fn handle_context_menu_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
-            InputEvent::Press(Button::Right) => {
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
                 self.context_menu_next();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Left) => {
+            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
                 self.context_menu_prev();
                 ActivityResult::Consumed
             }
@@ -368,6 +371,7 @@ impl LibraryActivity {
     ) -> Result<(), D::Error> {
         let display_width = display.bounding_box().size.width;
         let header_height = self.theme.metrics.header_height;
+        let header_y = self.theme.metrics.header_text_y();
 
         // Header background
         Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
@@ -381,20 +385,20 @@ impl LibraryActivity {
             .build();
         Text::new(
             "Library",
-            Point::new(self.theme.metrics.side_padding as i32, 32),
+            Point::new(self.theme.metrics.side_padding as i32, header_y),
             title_style,
         )
         .draw(display)?;
 
         // Sort button
         let sort_label = format!("[Sort: {}]", self.sort_order.label());
-        let sort_width = sort_label.len() as i32 * 7;
+        let sort_width = ThemeMetrics::text_width(sort_label.len());
         let sort_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
         Text::new(
             &sort_label,
             Point::new(
                 display_width as i32 - sort_width - self.theme.metrics.side_padding as i32,
-                32,
+                header_y,
             ),
             sort_style,
         )
@@ -426,7 +430,7 @@ impl LibraryActivity {
         let center_y = (display_height / 2) as i32;
 
         let message = "No books found";
-        let message_width = message.len() as i32 * 7;
+        let message_width = ThemeMetrics::text_width(message.len());
         let x = (display_width as i32 - message_width) / 2;
 
         let style = MonoTextStyleBuilder::new()
@@ -437,7 +441,7 @@ impl LibraryActivity {
         Text::new(message, Point::new(x, center_y), style).draw(display)?;
 
         let sub_message = "Add EPUB files to your library";
-        let sub_width = sub_message.len() as i32 * 7;
+        let sub_width = ThemeMetrics::text_width(sub_message.len());
         let sub_x = (display_width as i32 - sub_width) / 2;
 
         let sub_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::On);
@@ -455,6 +459,7 @@ impl LibraryActivity {
         let content_width = self.theme.metrics.content_width(display_width);
         let x = self.theme.metrics.side_padding as i32;
         let start_y = self.theme.metrics.header_height as i32;
+        let item_height = self.theme.metrics.list_item_height;
 
         for (i, &book_idx) in self
             .filtered_books
@@ -464,11 +469,11 @@ impl LibraryActivity {
             .enumerate()
         {
             let list_index = self.scroll_offset + i;
-            let y = start_y + (i as i32) * self.item_height as i32;
+            let y = start_y + (i as i32) * item_height as i32;
             let book = &self.books[book_idx];
             let is_selected = list_index == self.selected_index;
 
-            self.render_book_item(display, book, x, y, content_width, is_selected)?;
+            self.render_book_item(display, book, x, y, content_width, item_height, is_selected)?;
         }
 
         // Render scroll indicator if needed
@@ -480,6 +485,7 @@ impl LibraryActivity {
     }
 
     /// Render a single book item
+    #[allow(clippy::too_many_arguments)]
     fn render_book_item<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
@@ -487,10 +493,9 @@ impl LibraryActivity {
         x: i32,
         y: i32,
         width: u32,
+        item_height: u32,
         is_selected: bool,
     ) -> Result<(), D::Error> {
-        let item_height = self.item_height;
-
         // Background
         let bg_color = if is_selected {
             BinaryColor::On
@@ -528,7 +533,7 @@ impl LibraryActivity {
         // Title
         let title_x = x + Self::COVER_WIDTH as i32 + (cover_padding * 2) as i32;
         let title_y = y + 20;
-        let max_title_chars = ((width as i32 - title_x - x) / 7) as usize;
+        let max_title_chars = ((width as i32 - title_x - x) / FONT_CHAR_WIDTH) as usize;
         let title = book.display_title(max_title_chars);
         Text::new(title, Point::new(title_x, title_y), title_style).draw(display)?;
 
@@ -566,7 +571,7 @@ impl LibraryActivity {
         let bar_y = y + 52;
         let bar_width = 100;
         let bar_height = 6;
-        let bar_x = x + width as i32 - bar_width as i32 - 20;
+        let bar_x = x + width as i32 - bar_width as i32 - self.theme.metrics.side_padding as i32;
 
         // Background bar
         Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_width, bar_height))
@@ -724,7 +729,8 @@ impl Activity for LibraryActivity {
         if self.show_toast {
             let display_width = display.bounding_box().size.width;
             let display_height = display.bounding_box().size.height;
-            let toast = Toast::bottom_center(&self.toast_message, display_width, display_height);
+            let toast =
+                crate::ui::Toast::bottom_center(&self.toast_message, display_width, display_height);
             toast.render(display)?;
         }
 
@@ -808,7 +814,6 @@ pub fn create_mock_books() -> Vec<BookInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::mock_display::MockDisplay;
 
     #[test]
     fn book_info_creation() {
@@ -899,19 +904,17 @@ mod tests {
     }
 
     #[test]
-    fn library_activity_navigation_bounds() {
+    fn library_activity_navigation_wraps() {
         let mut activity = LibraryActivity::with_mock_books();
         activity.on_enter();
 
-        // Can't go below 0
+        // Wrap backward from 0
         activity.select_prev();
-        assert_eq!(activity.selected_index, 0);
+        assert_eq!(activity.selected_index, 7); // Last of 8 books
 
-        // Navigate to last item
-        for _ in 0..20 {
-            activity.select_next();
-        }
-        assert_eq!(activity.selected_index, 7); // 8 books, index 7 is last
+        // Wrap forward from last
+        activity.select_next();
+        assert_eq!(activity.selected_index, 0);
     }
 
     #[test]
@@ -1111,7 +1114,7 @@ mod tests {
         let mut activity = LibraryActivity::with_mock_books();
         activity.on_enter();
 
-        let mut display = MockDisplay::new();
+        let mut display = crate::test_display::TestDisplay::default_size();
         let result = activity.render(&mut display);
         assert!(result.is_ok());
     }
@@ -1121,7 +1124,7 @@ mod tests {
         let mut activity = LibraryActivity::new();
         activity.on_enter();
 
-        let mut display = MockDisplay::new();
+        let mut display = crate::test_display::TestDisplay::default_size();
         let result = activity.render(&mut display);
         assert!(result.is_ok());
     }
@@ -1132,7 +1135,7 @@ mod tests {
         activity.on_enter();
         activity.open_context_menu();
 
-        let mut display = MockDisplay::new();
+        let mut display = crate::test_display::TestDisplay::default_size();
         let result = activity.render(&mut display);
         assert!(result.is_ok());
     }
@@ -1188,6 +1191,16 @@ mod tests {
 
         // Navigate with Right
         let result = activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.context_menu_index, 1);
+
+        // Navigate with VolumeDown
+        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.context_menu_index, 2);
+
+        // Navigate back with VolumeUp
+        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.context_menu_index, 1);
 

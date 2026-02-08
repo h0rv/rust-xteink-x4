@@ -132,10 +132,8 @@ impl FileBrowser {
     /// Returns true if screen needs redraw
     /// Returns Some(path) if a file was selected
     pub fn handle_input(&mut self, event: InputEvent) -> (bool, Option<String>) {
-        if matches!(event, InputEvent::Press(_)) {
-            if self.status_message.is_some() {
-                self.status_message = None;
-            }
+        if matches!(event, InputEvent::Press(_)) && self.status_message.is_some() {
+            self.status_message = None;
         }
 
         match event {

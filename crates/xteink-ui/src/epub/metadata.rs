@@ -133,7 +133,7 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
     let mut in_metadata = false;
     let mut in_manifest = false;
     let mut in_spine = false;
-    let mut dc_ns = "http://purl.org/dc/elements/1.1/";
+    let _dc_ns = "http://purl.org/dc/elements/1.1/";
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -159,7 +159,7 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
                         if item
                             .properties
                             .as_ref()
-                            .map_or(false, |p| p.contains("cover-image"))
+                            .is_some_and(|p| p.contains("cover-image"))
                         {
                             metadata.cover_id = Some(item.id.clone());
                         }
@@ -260,7 +260,7 @@ pub fn parse_opf(content: &[u8]) -> Result<EpubMetadata, String> {
                         if item
                             .properties
                             .as_ref()
-                            .map_or(false, |p| p.contains("cover-image"))
+                            .is_some_and(|p| p.contains("cover-image"))
                         {
                             metadata.cover_id = Some(item.id.clone());
                         }

@@ -17,7 +17,7 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
-use crate::ui::{Activity, ActivityResult, Modal, Theme};
+use crate::ui::{Activity, ActivityResult, Modal, Theme, FONT_CHAR_WIDTH};
 
 /// Menu item types for the system menu
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,16 +184,13 @@ pub struct SystemMenuActivity {
     callbacks: NavigationCallbacks,
     /// Current modal dialog state
     modal_type: ModalType,
+    /// Selected button within the modal (0 = Cancel, 1 = Confirm)
+    modal_button: usize,
     /// Theme for styling
     theme: Theme,
-    /// Large list item height for touch-friendly buttons
-    list_item_height: u32,
 }
 
 impl SystemMenuActivity {
-    /// Height for large touch-friendly menu items
-    const LIST_ITEM_HEIGHT_LARGE: u32 = 60;
-
     /// Create a new system menu activity
     pub fn new() -> Self {
         Self {
@@ -201,8 +198,8 @@ impl SystemMenuActivity {
             device_status: DeviceStatus::default(),
             callbacks: NavigationCallbacks::default(),
             modal_type: ModalType::None,
+            modal_button: 0,
             theme: Theme::default(),
-            list_item_height: Self::LIST_ITEM_HEIGHT_LARGE,
         }
     }
 
@@ -233,12 +230,12 @@ impl SystemMenuActivity {
         self.device_status = status;
     }
 
-    /// Move selection down
+    /// Move selection down (wraps around)
     fn select_next(&mut self) {
         self.selected_index = (self.selected_index + 1) % MenuItem::ALL.len();
     }
 
-    /// Move selection up
+    /// Move selection up (wraps around)
     fn select_prev(&mut self) {
         self.selected_index = if self.selected_index == 0 {
             MenuItem::ALL.len() - 1
@@ -268,11 +265,13 @@ impl SystemMenuActivity {
             MenuItem::PowerOff => ModalType::ConfirmPowerOff,
             _ => ModalType::None,
         };
+        self.modal_button = 0; // Start on Cancel (safe default)
     }
 
     /// Close modal without action
     fn close_modal(&mut self) {
         self.modal_type = ModalType::None;
+        self.modal_button = 0;
     }
 
     /// Execute the callback for a menu item
@@ -316,11 +315,32 @@ impl SystemMenuActivity {
         result
     }
 
-    /// Handle input when modal is shown
+    /// Handle input when modal is shown.
+    /// Left/Right cycle buttons, Confirm executes selected, Back cancels.
     fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
-            InputEvent::Press(Button::Confirm) => self.confirm_modal(),
-            InputEvent::Press(Button::Back) | InputEvent::Press(Button::Left) => {
+            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+                if self.modal_button > 0 {
+                    self.modal_button -= 1;
+                } else {
+                    self.modal_button = 1;
+                }
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
+                self.modal_button = (self.modal_button + 1) % 2;
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Confirm) => {
+                // Button 0 = Cancel, Button 1 = Confirm
+                if self.modal_button == 1 {
+                    self.confirm_modal()
+                } else {
+                    self.close_modal();
+                    ActivityResult::Consumed
+                }
+            }
+            InputEvent::Press(Button::Back) => {
                 self.close_modal();
                 ActivityResult::Consumed
             }
@@ -336,6 +356,7 @@ impl SystemMenuActivity {
     ) -> Result<(), D::Error> {
         let display_width = display.bounding_box().size.width;
         let header_height = theme.metrics.header_height;
+        let header_y = theme.metrics.header_text_y();
 
         // Header background
         Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
@@ -349,13 +370,13 @@ impl SystemMenuActivity {
             .build();
         Text::new(
             "System Menu",
-            Point::new(theme.metrics.side_padding as i32, 32),
+            Point::new(theme.metrics.side_padding as i32, header_y),
             title_style,
         )
         .draw(display)?;
 
         // Battery indicator
-        self.render_battery_indicator(display, theme, display_width)?;
+        self.render_battery_indicator(display, theme, display_width, header_y)?;
 
         Ok(())
     }
@@ -366,6 +387,7 @@ impl SystemMenuActivity {
         display: &mut D,
         theme: &Theme,
         display_width: u32,
+        text_y: i32,
     ) -> Result<(), D::Error> {
         let battery_text = if self.device_status.is_charging {
             format!("[+] {}%", self.device_status.battery_percent)
@@ -374,13 +396,13 @@ impl SystemMenuActivity {
         };
 
         let battery_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
-        let text_width = battery_text.len() as i32 * 7;
+        let text_width = battery_text.len() as i32 * FONT_CHAR_WIDTH;
 
         Text::new(
             &battery_text,
             Point::new(
                 display_width as i32 - text_width - theme.metrics.side_padding as i32,
-                32,
+                text_y,
             ),
             battery_style,
         )
@@ -398,31 +420,43 @@ impl SystemMenuActivity {
         let display_width = display.bounding_box().size.width;
         let content_width = theme.metrics.content_width(display_width);
         let x = theme.metrics.side_padding as i32;
+        let item_height = theme.metrics.list_item_height;
         let mut y = theme.metrics.header_height as i32 + theme.metrics.spacing_double() as i32;
 
         for (i, item) in MenuItem::ALL.iter().enumerate() {
             let is_selected = i == self.selected_index;
 
-            self.render_menu_item(display, theme, x, y, content_width, *item, is_selected)?;
+            self.render_menu_item(
+                display,
+                theme,
+                x,
+                y,
+                content_width,
+                item_height,
+                *item,
+                is_selected,
+            )?;
 
-            y += self.list_item_height as i32 + theme.metrics.spacing as i32;
+            y += item_height as i32 + theme.metrics.spacing as i32;
         }
 
         Ok(())
     }
 
     /// Render a single menu item
+    #[allow(clippy::too_many_arguments)]
     fn render_menu_item<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
-        _theme: &Theme,
+        theme: &Theme,
         x: i32,
         y: i32,
         width: u32,
+        height: u32,
         item: MenuItem,
         is_selected: bool,
     ) -> Result<(), D::Error> {
-        let height = self.list_item_height;
+        let text_y = y + theme.metrics.item_text_y();
 
         // Background
         let bg_color = if is_selected {
@@ -449,7 +483,7 @@ impl SystemMenuActivity {
         let icon_style = MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color);
         Text::new(
             item.icon(),
-            Point::new(x + 15, y + (height as i32) / 2 + 5),
+            Point::new(x + theme.metrics.side_padding as i32, text_y),
             icon_style,
         )
         .draw(display)?;
@@ -457,21 +491,11 @@ impl SystemMenuActivity {
         // Label
         let label_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
         let label_x = x + 70; // Space after icon
-        Text::new(
-            item.label(),
-            Point::new(label_x, y + (height as i32) / 2 + 5),
-            label_style,
-        )
-        .draw(display)?;
+        Text::new(item.label(), Point::new(label_x, text_y), label_style).draw(display)?;
 
-        // Selection indicator (chevron)
+        // Selection indicator (chevron on right)
         if is_selected {
-            Text::new(
-                ">",
-                Point::new(x + width as i32 - 25, y + (height as i32) / 2 + 5),
-                icon_style,
-            )
-            .draw(display)?;
+            Text::new(">", Point::new(x + width as i32 - 25, text_y), icon_style).draw(display)?;
         }
 
         Ok(())
@@ -492,9 +516,10 @@ impl SystemMenuActivity {
             ModalType::None => return Ok(()),
         };
 
-        let modal = Modal::new(title, message)
+        let mut modal = Modal::new(title, message)
             .with_button("Cancel")
             .with_button("Confirm");
+        modal.selected_button = self.modal_button;
 
         modal.render(display, theme)
     }
@@ -504,10 +529,12 @@ impl Activity for SystemMenuActivity {
     fn on_enter(&mut self) {
         self.selected_index = 0;
         self.modal_type = ModalType::None;
+        self.modal_button = 0;
     }
 
     fn on_exit(&mut self) {
         self.modal_type = ModalType::None;
+        self.modal_button = 0;
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
@@ -565,7 +592,6 @@ impl Default for SystemMenuActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::mock_display::MockDisplay;
 
     #[test]
     fn menu_item_labels() {
@@ -650,7 +676,6 @@ mod tests {
         let activity = SystemMenuActivity::new();
         assert_eq!(activity.selected_index, 0);
         assert_eq!(activity.modal_type, ModalType::None);
-        assert_eq!(activity.list_item_height, 60);
     }
 
     #[test]
@@ -671,10 +696,8 @@ mod tests {
 
     #[test]
     fn system_menu_activity_with_callbacks() {
-        let mut callback_called = false;
-
         let callbacks = NavigationCallbacks {
-            on_library: || callback_called = true,
+            on_library: || {},
             on_reader_settings: || {},
             on_device_settings: || {},
             on_information: || {},
@@ -684,9 +707,9 @@ mod tests {
 
         let activity = SystemMenuActivity::new().with_callbacks(callbacks);
 
-        // Store callbacks and check they work
-        let _ = activity.callbacks;
-        assert!(!callback_called); // Not called yet
+        // Verify callbacks are stored and callable without panic
+        (activity.callbacks.on_library)();
+        (activity.callbacks.on_reader_settings)();
     }
 
     #[test]
@@ -806,6 +829,7 @@ mod tests {
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.modal_type, ModalType::ConfirmSleep);
+        assert_eq!(activity.modal_button, 0); // Starts on Cancel
 
         // Cancel with back
         let result = activity.handle_input(InputEvent::Press(Button::Back));
@@ -817,8 +841,50 @@ mod tests {
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.modal_type, ModalType::ConfirmSleep);
 
-        // Cancel with left
-        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        // Navigate to Confirm button with Right, then press Confirm
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.modal_button, 1);
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(result, ActivityResult::Consumed); // Sleep callback fires
+        assert_eq!(activity.modal_type, ModalType::None);
+    }
+
+    #[test]
+    fn system_menu_activity_modal_button_navigation() {
+        let mut activity = SystemMenuActivity::new();
+        activity.on_enter();
+
+        // Open sleep modal
+        for _ in 0..4 {
+            activity.select_next();
+        }
+        activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(activity.modal_type, ModalType::ConfirmSleep);
+        assert_eq!(activity.modal_button, 0);
+
+        // Right cycles forward
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.modal_button, 1);
+
+        // Right wraps around
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.modal_button, 0);
+
+        // Left wraps backward
+        activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(activity.modal_button, 1);
+
+        // VolumeUp goes backward
+        activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        assert_eq!(activity.modal_button, 0);
+
+        // VolumeDown goes forward
+        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert_eq!(activity.modal_button, 1);
+
+        // Confirm on Cancel button (0) dismisses
+        activity.modal_button = 0;
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.modal_type, ModalType::None);
     }
@@ -839,7 +905,8 @@ mod tests {
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.modal_type, ModalType::ConfirmPowerOff);
 
-        // Confirm modal
+        // Navigate to Confirm button and confirm
+        activity.handle_input(InputEvent::Press(Button::Right));
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.modal_type, ModalType::None);
@@ -848,7 +915,7 @@ mod tests {
     #[test]
     fn system_menu_activity_render() {
         let activity = SystemMenuActivity::new();
-        let mut display = MockDisplay::new();
+        let mut display = crate::test_display::TestDisplay::default_size();
 
         let result = activity.render(&mut display);
         assert!(result.is_ok());
@@ -859,7 +926,7 @@ mod tests {
         let mut activity = SystemMenuActivity::new();
         activity.modal_type = ModalType::ConfirmSleep;
 
-        let mut display = MockDisplay::new();
+        let mut display = crate::test_display::TestDisplay::default_size();
         let result = activity.render(&mut display);
         assert!(result.is_ok());
     }
@@ -887,7 +954,6 @@ mod tests {
     fn system_menu_activity_default_trait() {
         let activity: SystemMenuActivity = Default::default();
         assert_eq!(activity.selected_index, 0);
-        assert_eq!(activity.list_item_height, 60);
     }
 
     #[test]
@@ -907,12 +973,6 @@ mod tests {
     fn system_menu_activity_unhandled_input() {
         let mut activity = SystemMenuActivity::new();
 
-        // An unmapped button should be ignored
-        // Note: All buttons are mapped, so this tests the default case
-        // by using a button that doesn't trigger specific logic
-
-        // Back button is handled (NavigateBack), not ignored
-        // Let's verify Confirm works when no modal
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
         // Should navigate for Library (first item)
         assert_ne!(result, ActivityResult::Ignored);

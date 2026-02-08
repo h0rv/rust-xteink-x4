@@ -615,8 +615,6 @@ fn main() {
     // Initialize app and render initial screen
     let mut app = App::new();
     log_heap("before_app_init");
-    app.init(&mut fs);
-    log_heap("after_app_init");
     buffered_display.clear();
     app.render(&mut buffered_display).ok();
     log_heap("before_first_render");
@@ -697,7 +695,7 @@ fn main() {
                     log::info!("Power button short press");
                     last_button = Some(Button::Power);
 
-                    if app.handle_input(InputEvent::Press(Button::Power), &mut fs) {
+                    if app.handle_input(InputEvent::Press(Button::Power)) {
                         log::info!("UI: redraw after power short press");
                         buffered_display.clear();
                         app.render(&mut buffered_display).ok();
@@ -727,7 +725,7 @@ fn main() {
                 log::info!("Button pressed: {:?}", btn);
                 last_button = Some(btn);
 
-                if app.handle_input(InputEvent::Press(btn), &mut fs) {
+                if app.handle_input(InputEvent::Press(btn)) {
                     log::info!("UI: redraw after {:?}", btn);
                     log_heap("before_render");
                     buffered_display.clear();

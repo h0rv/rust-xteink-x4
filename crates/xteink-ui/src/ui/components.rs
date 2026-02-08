@@ -19,7 +19,7 @@ use embedded_graphics::{
     text::Text,
 };
 
-use crate::ui::theme::Theme;
+use crate::ui::theme::{Theme, ThemeMetrics};
 
 /// Button component with focus state
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +116,7 @@ impl Button {
             &self.label,
             Point::new(
                 self.x + (self.width as i32) / 2,
-                self.y + (theme.metrics.button_height as i32) / 2 + 4,
+                self.y + theme.metrics.button_text_y(),
             ),
             character_style,
         );
@@ -199,6 +199,7 @@ impl List {
         theme: &Theme,
     ) -> Result<(), D::Error> {
         let item_height = self.item_height(theme) as i32;
+        let text_y = theme.metrics.item_text_y();
 
         for (i, item) in self
             .items
@@ -234,7 +235,7 @@ impl List {
             let character_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
             Text::new(
                 item,
-                Point::new(self.x + theme.metrics.side_padding as i32, y + 28),
+                Point::new(self.x + theme.metrics.side_padding as i32, y + text_y),
                 character_style,
             )
             .draw(display)?;
@@ -372,6 +373,7 @@ impl Modal {
             let button_y = y + modal_height as i32
                 - theme.metrics.button_height as i32
                 - theme.metrics.spacing as i32;
+            let btn_text_y = theme.metrics.button_text_y();
 
             for (i, button_label) in self.buttons.iter().enumerate() {
                 let button_x = x
@@ -400,16 +402,20 @@ impl Modal {
                 .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
                 .draw(display)?;
 
-                // Button text
+                // Button text (centered)
                 let text_color = if is_selected {
                     BinaryColor::Off
                 } else {
                     BinaryColor::On
                 };
                 let text_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+                let label_width = ThemeMetrics::text_width(button_label.len());
                 Text::new(
                     button_label,
-                    Point::new(button_x + (button_width as i32) / 2 - 10, button_y + 26),
+                    Point::new(
+                        button_x + (button_width as i32 - label_width) / 2,
+                        button_y + btn_text_y,
+                    ),
                     text_style,
                 )
                 .draw(display)?;
@@ -474,7 +480,10 @@ impl Toast {
         let character_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
         Text::new(
             &self.message,
-            Point::new(self.x + 15, self.y + 26),
+            Point::new(
+                self.x + 15,
+                self.y + ThemeMetrics::text_y_offset(self.height()),
+            ),
             character_style,
         )
         .draw(display)?;
@@ -488,7 +497,6 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
     use alloc::vec;
-    use embedded_graphics::mock_display::MockDisplay;
 
     #[test]
     fn button_bounds_calculation() {
@@ -540,5 +548,10 @@ mod tests {
         assert_eq!(toast.width, 360); // 3/4 of 480
         assert_eq!(toast.x, 60); // (480 - 360) / 2
         assert_eq!(toast.y, 720); // 800 - 80
+    }
+
+    #[test]
+    fn font_char_width_constant() {
+        assert_eq!(crate::ui::theme::FONT_CHAR_WIDTH, 7);
     }
 }

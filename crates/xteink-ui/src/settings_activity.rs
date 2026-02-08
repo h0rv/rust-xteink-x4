@@ -17,13 +17,13 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, Toast};
+use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
 
 /// Font size options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FontSize {
-    #[default]
     Small,
+    #[default]
     Medium,
     Large,
     ExtraLarge,
@@ -138,19 +138,10 @@ impl FontFamily {
 }
 
 /// Settings data container (in-memory storage)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Settings {
     pub font_size: FontSize,
     pub font_family: FontFamily,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            font_size: FontSize::default(),
-            font_family: FontFamily::default(),
-        }
-    }
 }
 
 impl Settings {
@@ -160,295 +151,31 @@ impl Settings {
     }
 }
 
-/// Font size selector component with +/- buttons
-#[derive(Debug, Clone)]
-pub struct FontSizeSelector {
-    pub current_size: FontSize,
-    pub focused: bool,
-}
-
-impl FontSizeSelector {
-    /// Create a new font size selector
-    pub fn new(initial_size: FontSize) -> Self {
-        Self {
-            current_size: initial_size,
-            focused: false,
-        }
-    }
-
-    /// Increase font size
-    pub fn increase(&mut self) -> Option<FontSize> {
-        self.current_size.next().map(|size| {
-            self.current_size = size;
-            size
-        })
-    }
-
-    /// Decrease font size
-    pub fn decrease(&mut self) -> Option<FontSize> {
-        self.current_size.prev().map(|size| {
-            self.current_size = size;
-            size
-        })
-    }
-
-    /// Check if can increase
-    pub fn can_increase(&self) -> bool {
-        self.current_size.next().is_some()
-    }
-
-    /// Check if can decrease
-    pub fn can_decrease(&self) -> bool {
-        self.current_size.prev().is_some()
-    }
-
-    /// Get height
-    pub const fn height(theme: &Theme) -> u32 {
-        theme.metrics.list_item_height
-    }
-
-    /// Render the font size selector
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
-        &self,
-        display: &mut D,
-        theme: &Theme,
-        x: i32,
-        y: i32,
-        width: u32,
-    ) -> Result<(), D::Error> {
-        let height = Self::height(theme);
-        let button_width = 40u32;
-        let label_width = width.saturating_sub(button_width * 2 + theme.metrics.spacing * 2);
-
-        // Background
-        let bg_color = if self.focused {
-            BinaryColor::On
-        } else {
-            BinaryColor::Off
-        };
-        Rectangle::new(Point::new(x, y), Size::new(width, height))
-            .into_styled(PrimitiveStyle::with_fill(bg_color))
-            .draw(display)?;
-
-        // Border
-        Rectangle::new(Point::new(x, y), Size::new(width, height))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
-
-        let text_color = if self.focused {
-            BinaryColor::Off
-        } else {
-            BinaryColor::On
-        };
-
-        // Minus button
-        let minus_style = if self.can_decrease() {
-            text_color
-        } else {
-            BinaryColor::Off // Disabled look
-        };
-        let minus_text = Text::new(
-            "-",
-            Point::new(
-                x + (button_width as i32) / 2 - 3,
-                y + (height as i32) / 2 + 5,
-            ),
-            MonoTextStyle::new(&ascii::FONT_7X13_BOLD, minus_style),
-        );
-        minus_text.draw(display)?;
-
-        // Current size label (centered)
-        let label_x = x + button_width as i32 + theme.metrics.spacing as i32;
-        let label_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
-        Text::new(
-            self.current_size.label(),
-            Point::new(
-                label_x + (label_width as i32) / 2
-                    - ((self.current_size.label().len() * 7) as i32) / 2,
-                y + (height as i32) / 2 + 5,
-            ),
-            label_style,
-        )
-        .draw(display)?;
-
-        // Plus button
-        let plus_x = x + width as i32 - button_width as i32;
-        let plus_style = if self.can_increase() {
-            text_color
-        } else {
-            BinaryColor::Off // Disabled look
-        };
-        let plus_text = Text::new(
-            "+",
-            Point::new(
-                plus_x + (button_width as i32) / 2 - 3,
-                y + (height as i32) / 2 + 5,
-            ),
-            MonoTextStyle::new(&ascii::FONT_7X13_BOLD, plus_style),
-        );
-        plus_text.draw(display)?;
-
-        // Separator lines for buttons
-        Rectangle::new(Point::new(x + button_width as i32, y), Size::new(1, height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-        Rectangle::new(Point::new(plus_x, y), Size::new(1, height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        Ok(())
-    }
-}
-
-/// Font family selector component
-#[derive(Debug, Clone)]
-pub struct FontFamilySelector {
-    pub current_family: FontFamily,
-    pub focused: bool,
-}
-
-impl FontFamilySelector {
-    /// Create a new font family selector
-    pub fn new(initial_family: FontFamily) -> Self {
-        Self {
-            current_family: initial_family,
-            focused: false,
-        }
-    }
-
-    /// Select next font family
-    pub fn next(&mut self) -> FontFamily {
-        let next_index = (self.current_family.index() + 1) % FontFamily::ALL.len();
-        self.current_family = FontFamily::from_index(next_index).unwrap_or(FontFamily::default());
-        self.current_family
-    }
-
-    /// Select previous font family
-    pub fn prev(&mut self) -> FontFamily {
-        let prev_index = if self.current_family.index() == 0 {
-            FontFamily::ALL.len() - 1
-        } else {
-            self.current_family.index() - 1
-        };
-        self.current_family = FontFamily::from_index(prev_index).unwrap_or(FontFamily::default());
-        self.current_family
-    }
-
-    /// Get total height for all options
-    pub fn height(theme: &Theme) -> u32 {
-        FontFamily::ALL.len() as u32 * theme.metrics.list_item_height
-    }
-
-    /// Render the font family selector
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
-        &self,
-        display: &mut D,
-        theme: &Theme,
-        x: i32,
-        y: i32,
-        width: u32,
-    ) -> Result<(), D::Error> {
-        let item_height = theme.metrics.list_item_height as i32;
-
-        for (i, family) in FontFamily::ALL.iter().enumerate() {
-            let item_y = y + (i as i32) * item_height;
-            let is_selected = *family == self.current_family;
-
-            // Background
-            let bg_color = if is_selected {
-                BinaryColor::On
-            } else {
-                BinaryColor::Off
-            };
-            Rectangle::new(Point::new(x, item_y), Size::new(width, item_height as u32))
-                .into_styled(PrimitiveStyle::with_fill(bg_color))
-                .draw(display)?;
-
-            // Selection indicator
-            if is_selected {
-                Text::new(
-                    "> ",
-                    Point::new(x + theme.metrics.side_padding as i32, item_y + 28),
-                    MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off),
-                )
-                .draw(display)?;
-            }
-
-            // Text
-            let text_color = if is_selected {
-                BinaryColor::Off
-            } else {
-                BinaryColor::On
-            };
-            let text_x = x + theme.metrics.side_padding as i32 + if is_selected { 14 } else { 0 };
-            Text::new(
-                family.label(),
-                Point::new(text_x, item_y + 28),
-                MonoTextStyle::new(&ascii::FONT_7X13, text_color),
-            )
-            .draw(display)?;
-
-            // Separator line (except for last item)
-            if i < FontFamily::ALL.len() - 1 {
-                Rectangle::new(
-                    Point::new(x + 10, item_y + item_height - 1),
-                    Size::new(width - 20, 1),
-                )
-                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(display)?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-/// Settings group with header
-#[derive(Debug, Clone)]
-pub struct SettingsGroup {
-    pub title: String,
-}
-
-impl SettingsGroup {
-    /// Create a new settings group
-    pub fn new(title: impl Into<String>) -> Self {
-        Self {
-            title: title.into(),
-        }
-    }
-
-    /// Render the group header
-    pub fn render_header<D: DrawTarget<Color = BinaryColor>>(
-        &self,
-        display: &mut D,
-        _theme: &Theme,
-        x: i32,
-        y: i32,
-        _width: u32,
-    ) -> Result<(), D::Error> {
-        let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
-            .text_color(BinaryColor::On)
-            .build();
-
-        Text::new(&self.title, Point::new(x, y + 15), title_style).draw(display)?;
-
-        Ok(())
-    }
-
-    /// Height of the header
-    pub const fn header_height() -> u32 {
-        25
-    }
-}
-
-/// Focusable elements in the settings screen
+/// Focusable setting rows in the settings screen
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusElement {
-    FontSizeMinus,
-    FontSizePlus,
-    FontFamilyList(usize),
+pub enum SettingRow {
+    FontSize,
+    FontFamily,
     ResetButton,
+}
+
+impl SettingRow {
+    /// All setting rows in display order
+    pub const ALL: [Self; 3] = [Self::FontSize, Self::FontFamily, Self::ResetButton];
+
+    /// Get the label for this setting row
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FontSize => "Font Size",
+            Self::FontFamily => "Font Family",
+            Self::ResetButton => "Reset to Defaults",
+        }
+    }
+
+    /// Check if this is an action button (not a value row)
+    pub const fn is_button(self) -> bool {
+        matches!(self, Self::ResetButton)
+    }
 }
 
 /// Settings Activity implementing the Activity trait
@@ -456,20 +183,17 @@ pub enum FocusElement {
 pub struct SettingsActivity {
     settings: Settings,
     original_settings: Settings,
-    focus_index: usize,
+    selected_index: usize,
     show_toast: bool,
     toast_message: String,
     toast_frames_remaining: u32,
     show_reset_modal: bool,
-    font_size_selector: FontSizeSelector,
-    font_family_selector: FontFamilySelector,
+    /// Tracks which button is selected in the reset modal (0=Cancel, 1=Reset)
+    modal_button: usize,
     theme: Theme,
 }
 
 impl SettingsActivity {
-    /// Number of focusable elements
-    const FOCUS_COUNT: usize = 5; // minus, plus, font families (3)
-
     /// Toast display duration in frames
     const TOAST_DURATION: u32 = 120; // ~2 seconds at 60fps
 
@@ -479,13 +203,12 @@ impl SettingsActivity {
         Self {
             settings,
             original_settings: settings,
-            focus_index: 0,
+            selected_index: 0,
             show_toast: false,
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_reset_modal: false,
-            font_size_selector: FontSizeSelector::new(settings.font_size),
-            font_family_selector: FontFamilySelector::new(settings.font_family),
+            modal_button: 0,
             theme: Theme::default(),
         }
     }
@@ -495,13 +218,12 @@ impl SettingsActivity {
         Self {
             settings,
             original_settings: settings,
-            focus_index: 0,
+            selected_index: 0,
             show_toast: false,
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_reset_modal: false,
-            font_size_selector: FontSizeSelector::new(settings.font_size),
-            font_family_selector: FontFamilySelector::new(settings.font_family),
+            modal_button: 0,
             theme: Theme::default(),
         }
     }
@@ -533,86 +255,46 @@ impl SettingsActivity {
         }
     }
 
-    /// Get current focus element
-    fn current_focus(&self) -> FocusElement {
-        match self.focus_index {
-            0 => FocusElement::FontSizeMinus,
-            1 => FocusElement::FontSizePlus,
-            2 => FocusElement::FontFamilyList(0),
-            3 => FocusElement::FontFamilyList(1),
-            4 => FocusElement::FontFamilyList(2),
-            _ => FocusElement::ResetButton,
-        }
+    /// Get currently selected row
+    fn current_row(&self) -> SettingRow {
+        SettingRow::ALL[self.selected_index]
     }
 
-    /// Move focus to next element
-    fn focus_next(&mut self) {
-        self.focus_index = (self.focus_index + 1) % Self::FOCUS_COUNT;
-        self.update_focus_states();
+    /// Move selection to next row (wraps)
+    fn select_next(&mut self) {
+        self.selected_index = (self.selected_index + 1) % SettingRow::ALL.len();
     }
 
-    /// Move focus to previous element
-    fn focus_prev(&mut self) {
-        self.focus_index = if self.focus_index == 0 {
-            Self::FOCUS_COUNT - 1
+    /// Move selection to previous row (wraps)
+    fn select_prev(&mut self) {
+        if self.selected_index == 0 {
+            self.selected_index = SettingRow::ALL.len() - 1;
         } else {
-            self.focus_index - 1
-        };
-        self.update_focus_states();
-    }
-
-    /// Update component focus states based on current focus
-    fn update_focus_states(&mut self) {
-        // Font size selector focus is handled separately in input handling
-        // Font family selector focus is based on focus_index
-        let family_index = self.focus_index.saturating_sub(2);
-        self.font_family_selector.focused = family_index < FontFamily::ALL.len();
-    }
-
-    /// Handle font size decrease
-    fn handle_font_size_minus(&mut self) -> ActivityResult {
-        if let Some(new_size) = self.font_size_selector.decrease() {
-            self.settings.font_size = new_size;
-            self.show_toast(format!("Font size: {}", new_size.label()));
+            self.selected_index -= 1;
         }
-        ActivityResult::Consumed
-    }
-
-    /// Handle font size increase
-    fn handle_font_size_plus(&mut self) -> ActivityResult {
-        if let Some(new_size) = self.font_size_selector.increase() {
-            self.settings.font_size = new_size;
-            self.show_toast(format!("Font size: {}", new_size.label()));
-        }
-        ActivityResult::Consumed
-    }
-
-    /// Handle font family selection
-    fn handle_font_family_select(&mut self, index: usize) {
-        if let Some(family) = FontFamily::from_index(index) {
-            self.font_family_selector.current_family = family;
-            self.settings.font_family = family;
-            self.show_toast(format!("Font: {}", family.label()));
-        }
-    }
-
-    /// Handle reset to defaults
-    fn handle_reset(&mut self) {
-        self.show_reset_modal = true;
     }
 
     /// Confirm reset to defaults
     fn confirm_reset(&mut self) {
         self.settings.reset_to_defaults();
-        self.font_size_selector.current_size = self.settings.font_size;
-        self.font_family_selector.current_family = self.settings.font_family;
         self.show_toast("Settings reset to defaults");
         self.show_reset_modal = false;
+        self.modal_button = 0;
     }
 
     /// Cancel reset
     fn cancel_reset(&mut self) {
         self.show_reset_modal = false;
+        self.modal_button = 0;
+    }
+
+    /// Get the current value label for a setting row
+    fn get_value_label(&self, row: SettingRow) -> &'static str {
+        match row {
+            SettingRow::FontSize => self.settings.font_size.label(),
+            SettingRow::FontFamily => self.settings.font_family.label(),
+            SettingRow::ResetButton => "",
+        }
     }
 
     /// Render header bar
@@ -623,6 +305,7 @@ impl SettingsActivity {
     ) -> Result<(), D::Error> {
         let display_width = display.bounding_box().size.width;
         let header_height = theme.metrics.header_height;
+        let header_y = theme.metrics.header_text_y();
 
         // Header background
         Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
@@ -636,7 +319,7 @@ impl SettingsActivity {
             .build();
         Text::new(
             "Settings",
-            Point::new(theme.metrics.side_padding as i32, 32),
+            Point::new(theme.metrics.side_padding as i32, header_y),
             title_style,
         )
         .draw(display)?;
@@ -644,12 +327,12 @@ impl SettingsActivity {
         // Back button label
         let back_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
         let back_text = "[Back]";
-        let back_width = back_text.len() as i32 * 7;
+        let back_width = ThemeMetrics::text_width(back_text.len());
         Text::new(
             back_text,
             Point::new(
                 display_width as i32 - back_width - theme.metrics.side_padding as i32,
-                32,
+                header_y,
             ),
             back_style,
         )
@@ -667,76 +350,103 @@ impl SettingsActivity {
         let display_width = display.bounding_box().size.width;
         let content_width = theme.metrics.content_width(display_width);
         let x = theme.metrics.side_padding as i32;
-        let mut y = theme.metrics.header_height as i32 + theme.metrics.spacing as i32;
+        let mut y = theme.metrics.header_height as i32 + theme.metrics.spacing_double() as i32;
 
-        // Font Size Group
-        let font_size_group = SettingsGroup::new("Font Size");
-        font_size_group.render_header(display, theme, x, y, content_width)?;
-        y += SettingsGroup::header_height() as i32;
+        for (i, row) in SettingRow::ALL.iter().enumerate() {
+            let row = *row;
+            let is_selected = i == self.selected_index;
 
-        // Font size selector
-        self.font_size_selector
-            .render(display, theme, x, y, content_width)?;
-        y += FontSizeSelector::height(theme) as i32 + theme.metrics.spacing_double() as i32;
+            if row.is_button() {
+                // Extra spacing above the reset button
+                y += theme.metrics.spacing_double() as i32;
 
-        // Font Family Group
-        let font_family_group = SettingsGroup::new("Font Family");
-        font_family_group.render_header(display, theme, x, y, content_width)?;
-        y += SettingsGroup::header_height() as i32;
+                let height = theme.metrics.button_height;
+                let text_y = theme.metrics.button_text_y();
 
-        // Font family selector
-        self.font_family_selector
-            .render(display, theme, x, y, content_width)?;
-        y += FontFamilySelector::height(theme) as i32 + theme.metrics.spacing_double() as i32;
+                // Background
+                let bg_color = if is_selected {
+                    BinaryColor::On
+                } else {
+                    BinaryColor::Off
+                };
+                Rectangle::new(Point::new(x, y), Size::new(content_width, height))
+                    .into_styled(PrimitiveStyle::with_fill(bg_color))
+                    .draw(display)?;
 
-        // Reset button
-        self.render_reset_button(display, theme, x, y, content_width)?;
+                // Border
+                Rectangle::new(Point::new(x, y), Size::new(content_width, height))
+                    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                    .draw(display)?;
 
-        Ok(())
-    }
+                // Centered bold text
+                let text_color = if is_selected {
+                    BinaryColor::Off
+                } else {
+                    BinaryColor::On
+                };
+                let label = row.label();
+                let label_width = ThemeMetrics::text_width(label.len());
+                let label_x = x + (content_width as i32 - label_width) / 2;
+                Text::new(
+                    label,
+                    Point::new(label_x, y + text_y),
+                    MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color),
+                )
+                .draw(display)?;
 
-    /// Render reset button
-    fn render_reset_button<D: DrawTarget<Color = BinaryColor>>(
-        &self,
-        display: &mut D,
-        theme: &Theme,
-        x: i32,
-        y: i32,
-        width: u32,
-    ) -> Result<(), D::Error> {
-        let height = theme.metrics.button_height;
-        let is_focused = self.focus_index == 5;
+                y += height as i32;
+            } else {
+                // Value row: label on left, < Value > on right
+                let height = theme.metrics.list_item_height;
+                let text_y = theme.metrics.item_text_y();
 
-        // Background
-        let bg_color = if is_focused {
-            BinaryColor::On
-        } else {
-            BinaryColor::Off
-        };
-        Rectangle::new(Point::new(x, y), Size::new(width, height))
-            .into_styled(PrimitiveStyle::with_fill(bg_color))
-            .draw(display)?;
+                // Background
+                let bg_color = if is_selected {
+                    BinaryColor::On
+                } else {
+                    BinaryColor::Off
+                };
+                Rectangle::new(Point::new(x, y), Size::new(content_width, height))
+                    .into_styled(PrimitiveStyle::with_fill(bg_color))
+                    .draw(display)?;
 
-        // Border
-        Rectangle::new(Point::new(x, y), Size::new(width, height))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
+                let text_color = if is_selected {
+                    BinaryColor::Off
+                } else {
+                    BinaryColor::On
+                };
 
-        // Text
-        let text_color = if is_focused {
-            BinaryColor::Off
-        } else {
-            BinaryColor::On
-        };
-        let label = "Reset to Defaults";
-        let text_width = label.len() as i32 * 7;
-        let text_x = x + (width as i32 - text_width) / 2;
-        Text::new(
-            label,
-            Point::new(text_x, y + (height as i32) / 2 + 5),
-            MonoTextStyle::new(&ascii::FONT_7X13, text_color),
-        )
-        .draw(display)?;
+                // Label on left
+                Text::new(
+                    row.label(),
+                    Point::new(x + theme.metrics.side_padding as i32, y + text_y),
+                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                )
+                .draw(display)?;
+
+                // < Value > on right
+                let value = self.get_value_label(row);
+                let value_text = format!("< {} >", value);
+                let value_width = ThemeMetrics::text_width(value_text.len());
+                let value_x =
+                    x + content_width as i32 - value_width - theme.metrics.side_padding as i32;
+                Text::new(
+                    &value_text,
+                    Point::new(value_x, y + text_y),
+                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                )
+                .draw(display)?;
+
+                y += height as i32;
+
+                // Separator line between value rows (not after the last value row before button)
+                if i < SettingRow::ALL.len() - 1 && !SettingRow::ALL[i + 1].is_button() {
+                    Rectangle::new(Point::new(x + 10, y - 1), Size::new(content_width - 20, 1))
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display)?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -745,15 +455,14 @@ impl SettingsActivity {
 impl Activity for SettingsActivity {
     fn on_enter(&mut self) {
         self.original_settings = self.settings;
-        self.focus_index = 0;
+        self.selected_index = 0;
         self.show_toast = false;
         self.show_reset_modal = false;
-        self.update_focus_states();
+        self.modal_button = 0;
     }
 
     fn on_exit(&mut self) {
         // Settings are persisted in memory (self.settings)
-        // Could add persistence logic here in the future
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
@@ -763,26 +472,18 @@ impl Activity for SettingsActivity {
 
         match event {
             InputEvent::Press(Button::Back) => ActivityResult::NavigateBack,
-            InputEvent::Press(Button::Left) => {
-                self.focus_prev();
+            InputEvent::Press(Button::VolumeUp) | InputEvent::Press(Button::Up) => {
+                self.select_prev();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Right) => {
-                self.focus_next();
+            InputEvent::Press(Button::VolumeDown) | InputEvent::Press(Button::Down) => {
+                self.select_next();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Confirm) => {
-                self.handle_confirm_press();
-                ActivityResult::Consumed
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::Confirm) => {
+                self.handle_right_or_confirm()
             }
-            InputEvent::Press(Button::VolumeUp) => {
-                self.focus_prev();
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::VolumeDown) => {
-                self.focus_next();
-                ActivityResult::Consumed
-            }
+            InputEvent::Press(Button::Left) => self.handle_left(),
             _ => ActivityResult::Ignored,
         }
     }
@@ -813,11 +514,12 @@ impl Activity for SettingsActivity {
             toast.render(display)?;
         }
 
-        // Modal dialog
+        // Modal dialog — use tracked modal_button for selection
         if self.show_reset_modal {
-            let modal = Modal::new("Reset Settings", "Restore all settings to defaults?")
+            let mut modal = Modal::new("Reset Settings", "Restore all settings to defaults?")
                 .with_button("Cancel")
                 .with_button("Reset");
+            modal.selected_button = self.modal_button;
             modal.render(display, &self.theme)?;
         }
 
@@ -826,15 +528,31 @@ impl Activity for SettingsActivity {
 }
 
 impl SettingsActivity {
-    /// Handle input when modal is shown
+    /// Handle input when modal is shown.
+    /// Left/Right cycle buttons, Confirm executes selected, Back cancels.
     fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
-        // For simplicity, Confirm resets, Back/Left cancels
         match event {
-            InputEvent::Press(Button::Confirm) => {
-                self.confirm_reset();
+            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+                if self.modal_button > 0 {
+                    self.modal_button -= 1;
+                } else {
+                    self.modal_button = 1;
+                }
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Back) | InputEvent::Press(Button::Left) => {
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
+                self.modal_button = (self.modal_button + 1) % 2;
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Confirm) => {
+                if self.modal_button == 1 {
+                    self.confirm_reset();
+                } else {
+                    self.cancel_reset();
+                }
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Back) => {
                 self.cancel_reset();
                 ActivityResult::Consumed
             }
@@ -842,21 +560,51 @@ impl SettingsActivity {
         }
     }
 
-    /// Handle confirm button press based on current focus
-    fn handle_confirm_press(&mut self) {
-        match self.current_focus() {
-            FocusElement::FontSizeMinus => {
-                self.handle_font_size_minus();
+    /// Handle Right or Confirm press on the current row
+    fn handle_right_or_confirm(&mut self) -> ActivityResult {
+        match self.current_row() {
+            SettingRow::FontSize => {
+                if let Some(next) = self.settings.font_size.next() {
+                    self.settings.font_size = next;
+                    self.show_toast(format!("Font size: {}", next.label()));
+                }
+                ActivityResult::Consumed
             }
-            FocusElement::FontSizePlus => {
-                self.handle_font_size_plus();
+            SettingRow::FontFamily => {
+                let next_index = (self.settings.font_family.index() + 1) % FontFamily::ALL.len();
+                self.settings.font_family = FontFamily::from_index(next_index).unwrap();
+                self.show_toast(format!("Font: {}", self.settings.font_family.label()));
+                ActivityResult::Consumed
             }
-            FocusElement::FontFamilyList(index) => {
-                self.handle_font_family_select(index);
+            SettingRow::ResetButton => {
+                self.show_reset_modal = true;
+                self.modal_button = 0; // Start on Cancel (safe default)
+                ActivityResult::Consumed
             }
-            FocusElement::ResetButton => {
-                self.handle_reset();
+        }
+    }
+
+    /// Handle Left press on the current row
+    fn handle_left(&mut self) -> ActivityResult {
+        match self.current_row() {
+            SettingRow::FontSize => {
+                if let Some(prev) = self.settings.font_size.prev() {
+                    self.settings.font_size = prev;
+                    self.show_toast(format!("Font size: {}", prev.label()));
+                }
+                ActivityResult::Consumed
             }
+            SettingRow::FontFamily => {
+                let prev_index = if self.settings.font_family.index() == 0 {
+                    FontFamily::ALL.len() - 1
+                } else {
+                    self.settings.font_family.index() - 1
+                };
+                self.settings.font_family = FontFamily::from_index(prev_index).unwrap();
+                self.show_toast(format!("Font: {}", self.settings.font_family.label()));
+                ActivityResult::Consumed
+            }
+            SettingRow::ResetButton => ActivityResult::Ignored,
         }
     }
 }
@@ -870,7 +618,6 @@ impl Default for SettingsActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::mock_display::MockDisplay;
 
     #[test]
     fn font_size_cycling() {
@@ -941,48 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn font_family_selector_navigation() {
-        let mut selector = FontFamilySelector::new(FontFamily::Monospace);
-        assert_eq!(selector.current_family, FontFamily::Monospace);
-
-        selector.next();
-        assert_eq!(selector.current_family, FontFamily::Serif);
-
-        selector.next();
-        assert_eq!(selector.current_family, FontFamily::SansSerif);
-
-        selector.next();
-        assert_eq!(selector.current_family, FontFamily::Monospace);
-
-        selector.prev();
-        assert_eq!(selector.current_family, FontFamily::SansSerif);
-
-        selector.prev();
-        assert_eq!(selector.current_family, FontFamily::Serif);
-    }
-
-    #[test]
-    fn font_size_selector_increase_decrease() {
-        let mut selector = FontSizeSelector::new(FontSize::Medium);
-        assert_eq!(selector.current_size, FontSize::Medium);
-
-        selector.increase();
-        assert_eq!(selector.current_size, FontSize::Large);
-
-        selector.decrease();
-        assert_eq!(selector.current_size, FontSize::Medium);
-
-        // Test boundaries
-        let mut small = FontSizeSelector::new(FontSize::Small);
-        assert!(small.decrease().is_none());
-        assert_eq!(small.current_size, FontSize::Small);
-
-        let mut xl = FontSizeSelector::new(FontSize::ExtraLarge);
-        assert!(xl.increase().is_none());
-        assert_eq!(xl.current_size, FontSize::ExtraLarge);
-    }
-
-    #[test]
     fn settings_defaults() {
         let settings = Settings::default();
         assert_eq!(settings.font_size, FontSize::Medium);
@@ -1003,12 +708,24 @@ mod tests {
     }
 
     #[test]
+    fn setting_row_labels() {
+        assert_eq!(SettingRow::FontSize.label(), "Font Size");
+        assert_eq!(SettingRow::FontFamily.label(), "Font Family");
+        assert_eq!(SettingRow::ResetButton.label(), "Reset to Defaults");
+
+        assert!(!SettingRow::FontSize.is_button());
+        assert!(!SettingRow::FontFamily.is_button());
+        assert!(SettingRow::ResetButton.is_button());
+    }
+
+    #[test]
     fn settings_activity_lifecycle() {
         let mut activity = SettingsActivity::new();
 
         activity.on_enter();
         assert!(!activity.show_reset_modal);
         assert!(!activity.show_toast);
+        assert_eq!(activity.selected_index, 0);
 
         activity.on_exit();
         // Settings should still be accessible
@@ -1016,60 +733,225 @@ mod tests {
     }
 
     #[test]
-    fn settings_activity_input_navigation() {
+    fn settings_activity_row_navigation() {
         let mut activity = SettingsActivity::new();
         activity.on_enter();
 
-        // Initial focus
-        assert_eq!(activity.focus_index, 0);
+        // Initial selection
+        assert_eq!(activity.selected_index, 0);
+        assert_eq!(activity.current_row(), SettingRow::FontSize);
 
-        // Navigate next
-        let result = activity.handle_input(InputEvent::Press(Button::Right));
+        // Navigate down
+        let result = activity.handle_input(InputEvent::Press(Button::Down));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.focus_index, 1);
+        assert_eq!(activity.selected_index, 1);
+        assert_eq!(activity.current_row(), SettingRow::FontFamily);
 
-        // Navigate prev
-        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        // Navigate down again
+        let result = activity.handle_input(InputEvent::Press(Button::Down));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.focus_index, 0);
+        assert_eq!(activity.selected_index, 2);
+        assert_eq!(activity.current_row(), SettingRow::ResetButton);
 
-        // Navigate back
+        // Wrap forward
+        let result = activity.handle_input(InputEvent::Press(Button::Down));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.selected_index, 0);
+
+        // Navigate up (wraps backward)
+        let result = activity.handle_input(InputEvent::Press(Button::Up));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.selected_index, 2);
+
+        // Navigate up
+        let result = activity.handle_input(InputEvent::Press(Button::Up));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.selected_index, 1);
+
+        // Back navigates back
         let result = activity.handle_input(InputEvent::Press(Button::Back));
         assert_eq!(result, ActivityResult::NavigateBack);
     }
 
     #[test]
-    fn settings_activity_font_size_change() {
+    fn settings_activity_font_size_adjust() {
         let mut activity = SettingsActivity::new();
         activity.on_enter();
 
-        // Focus should be on font size minus initially
-        // Navigate to plus button
-        activity.handle_input(InputEvent::Press(Button::Right));
-        assert_eq!(activity.focus_index, 1);
+        // Start on FontSize row, default is Medium
+        assert_eq!(activity.current_row(), SettingRow::FontSize);
+        assert_eq!(activity.settings().font_size, FontSize::Medium);
 
-        // Press confirm to increase
-        activity.handle_input(InputEvent::Press(Button::Confirm));
-
+        // Right increases font size
+        let result = activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.settings().font_size, FontSize::Large);
         assert!(activity.show_toast);
         assert_eq!(activity.toast_message, "Font size: Large");
+
+        // Left decreases font size
+        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().font_size, FontSize::Medium);
+        assert_eq!(activity.toast_message, "Font size: Medium");
+
+        // Confirm also increases (same as Right)
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().font_size, FontSize::Large);
     }
 
     #[test]
-    fn settings_activity_font_family_change() {
+    fn settings_activity_font_family_adjust() {
         let mut activity = SettingsActivity::new();
         activity.on_enter();
 
-        // Navigate to font family list (index 2 = first font family item)
-        activity.handle_input(InputEvent::Press(Button::Right));
-        activity.handle_input(InputEvent::Press(Button::Right));
-        assert_eq!(activity.focus_index, 2);
-
-        // Confirm to select current font family
-        activity.handle_input(InputEvent::Press(Button::Confirm));
-
+        // Navigate to FontFamily row
+        activity.handle_input(InputEvent::Press(Button::Down));
+        assert_eq!(activity.current_row(), SettingRow::FontFamily);
         assert_eq!(activity.settings().font_family, FontFamily::Monospace);
+
+        // Right cycles forward
+        let result = activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().font_family, FontFamily::Serif);
+
+        // Right again
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.settings().font_family, FontFamily::SansSerif);
+
+        // Right wraps to beginning
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.settings().font_family, FontFamily::Monospace);
+
+        // Left cycles backward (wraps)
+        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().font_family, FontFamily::SansSerif);
+
+        // Left again
+        activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(activity.settings().font_family, FontFamily::Serif);
+    }
+
+    #[test]
+    fn settings_activity_font_size_at_bounds() {
+        // Right at ExtraLarge doesn't change
+        let mut activity = SettingsActivity::with_settings(Settings {
+            font_size: FontSize::ExtraLarge,
+            font_family: FontFamily::Monospace,
+        });
+        activity.on_enter();
+
+        let result = activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().font_size, FontSize::ExtraLarge);
+
+        // Left at Small doesn't change
+        let mut activity = SettingsActivity::with_settings(Settings {
+            font_size: FontSize::Small,
+            font_family: FontFamily::Monospace,
+        });
+        activity.on_enter();
+
+        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().font_size, FontSize::Small);
+    }
+
+    #[test]
+    fn settings_activity_left_on_reset_ignored() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to ResetButton
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Down));
+        assert_eq!(activity.current_row(), SettingRow::ResetButton);
+
+        // Left on ResetButton returns Ignored
+        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(result, ActivityResult::Ignored);
+    }
+
+    #[test]
+    fn settings_activity_confirm_on_reset_opens_modal() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to ResetButton
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Down));
+        assert_eq!(activity.current_row(), SettingRow::ResetButton);
+
+        // Confirm opens modal
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert!(activity.show_reset_modal);
+        assert_eq!(activity.modal_button, 0); // Starts on Cancel
+    }
+
+    #[test]
+    fn settings_activity_reset_modal() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to ResetButton and open modal
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(activity.show_reset_modal);
+        assert_eq!(activity.modal_button, 0); // Starts on Cancel
+
+        // Cancel modal with Back
+        activity.handle_input(InputEvent::Press(Button::Back));
+        assert!(!activity.show_reset_modal);
+
+        // Reopen modal
+        activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(activity.show_reset_modal);
+
+        // Navigate to Reset button and confirm
+        activity.handle_input(InputEvent::Press(Button::Right)); // Navigate to Reset
+        assert_eq!(activity.modal_button, 1);
+        activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(!activity.show_reset_modal);
+        assert!(activity.show_toast);
+    }
+
+    #[test]
+    fn settings_activity_modal_button_navigation() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to reset button and open modal
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Down));
+        activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert!(activity.show_reset_modal);
+
+        // Test button navigation
+        assert_eq!(activity.modal_button, 0);
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.modal_button, 1);
+        activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(activity.modal_button, 0);
+
+        // Wrapping left from 0 → 1
+        activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(activity.modal_button, 1);
+
+        // Wrapping right from 1 → 0
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.modal_button, 0);
+
+        // VolumeUp
+        activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        assert_eq!(activity.modal_button, 1);
+
+        // VolumeDown
+        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert_eq!(activity.modal_button, 0);
     }
 
     #[test]
@@ -1079,37 +961,9 @@ mod tests {
 
         assert!(!activity.is_modified());
 
-        // Change font size
-        activity.font_size_selector.increase();
-        activity.settings.font_size = activity.font_size_selector.current_size;
-
+        // Change font size via Right
+        activity.handle_input(InputEvent::Press(Button::Right));
         assert!(activity.is_modified());
-    }
-
-    #[test]
-    fn settings_activity_reset_modal() {
-        let mut activity = SettingsActivity::new();
-        activity.on_enter();
-
-        // Navigate to reset button and confirm
-        for _ in 0..5 {
-            activity.handle_input(InputEvent::Press(Button::Right));
-        }
-        activity.handle_input(InputEvent::Press(Button::Confirm));
-
-        assert!(activity.show_reset_modal);
-
-        // Cancel modal
-        activity.handle_input(InputEvent::Press(Button::Back));
-        assert!(!activity.show_reset_modal);
-
-        // Reopen and confirm reset
-        activity.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(activity.show_reset_modal);
-
-        activity.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(!activity.show_reset_modal);
-        assert!(activity.show_toast);
     }
 
     #[test]
@@ -1126,9 +980,29 @@ mod tests {
     }
 
     #[test]
-    fn settings_group_creation() {
-        let group = SettingsGroup::new("Test Group");
-        assert_eq!(group.title, "Test Group");
+    fn settings_activity_render() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        let mut display = crate::test_display::TestDisplay::default_size();
+        let result = activity.render(&mut display);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn settings_activity_volume_buttons_navigation() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        // VolumeDown navigates next
+        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.selected_index, 1);
+
+        // VolumeUp navigates previous
+        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.selected_index, 0);
     }
 
     #[test]
@@ -1148,45 +1022,5 @@ mod tests {
         }
 
         assert!(!activity.show_toast);
-    }
-
-    #[test]
-    fn settings_activity_render() {
-        let mut activity = SettingsActivity::new();
-        activity.on_enter();
-
-        let mut display = MockDisplay::new();
-        let result = activity.render(&mut display);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn focus_element_enum() {
-        let elements = [
-            FocusElement::FontSizeMinus,
-            FocusElement::FontSizePlus,
-            FocusElement::FontFamilyList(0),
-            FocusElement::FontFamilyList(1),
-            FocusElement::FontFamilyList(2),
-            FocusElement::ResetButton,
-        ];
-
-        // Just verify the enum variants exist and can be compared
-        assert_ne!(elements[0], elements[1]);
-        assert_eq!(elements[2], FocusElement::FontFamilyList(0));
-    }
-
-    #[test]
-    fn volume_buttons_navigation() {
-        let mut activity = SettingsActivity::new();
-        activity.on_enter();
-
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
-        assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.focus_index, 1);
-
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
-        assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.focus_index, 0);
     }
 }

@@ -19,6 +19,7 @@ const MAX_CD_ENTRIES: usize = 256;
 const MAX_FILENAME_LEN: usize = 256;
 
 /// Decompression buffer size (4KB)
+#[allow(dead_code)]
 const DECOMPRESS_BUF_SIZE: usize = 4096;
 
 /// Local file header signature (little-endian)
@@ -95,6 +96,7 @@ pub struct StreamingZip<F: Read + Seek> {
     /// Number of entries in central directory
     num_entries: usize,
     /// Offset to central directory start
+    #[allow(dead_code)]
     cd_offset: u64,
 }
 

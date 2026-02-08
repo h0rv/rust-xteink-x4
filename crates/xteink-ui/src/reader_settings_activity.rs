@@ -8,7 +8,6 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use embedded_graphics::{
     mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
@@ -20,7 +19,7 @@ use embedded_graphics::{
 
 use crate::input::{Button, InputEvent};
 use crate::settings_activity::{FontFamily, FontSize};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, Toast};
+use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
 
 /// Line spacing options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -317,7 +316,7 @@ impl Default for ReaderSettings {
     fn default() -> Self {
         Self {
             font_size: FontSize::default(),
-            font_family: FontFamily::default(),
+            font_family: FontFamily::Serif,
             line_spacing: LineSpacing::default(),
             margin_size: MarginSize::default(),
             text_alignment: TextAlignment::default(),
@@ -408,6 +407,9 @@ impl SettingItem {
     }
 }
 
+/// Section header height in pixels
+const SECTION_HEADER_HEIGHT: i32 = 25;
+
 /// Reader Settings Activity implementing the Activity trait
 #[derive(Debug, Clone)]
 pub struct ReaderSettingsActivity {
@@ -418,6 +420,8 @@ pub struct ReaderSettingsActivity {
     toast_message: String,
     toast_frames_remaining: u32,
     show_cancel_modal: bool,
+    /// Tracks which button is selected in the cancel modal (0=Keep, 1=Discard)
+    modal_button: usize,
     theme: Theme,
 }
 
@@ -436,6 +440,7 @@ impl ReaderSettingsActivity {
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_cancel_modal: false,
+            modal_button: 0,
             theme: Theme::default(),
         }
     }
@@ -450,6 +455,7 @@ impl ReaderSettingsActivity {
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_cancel_modal: false,
+            modal_button: 0,
             theme: Theme::default(),
         }
     }
@@ -478,6 +484,7 @@ impl ReaderSettingsActivity {
     fn cancel_changes(&mut self) {
         if self.is_modified() {
             self.show_cancel_modal = true;
+            self.modal_button = 0; // Start on Keep (safe default)
         }
     }
 
@@ -485,11 +492,13 @@ impl ReaderSettingsActivity {
     fn confirm_cancel(&mut self) {
         self.settings = self.original_settings;
         self.show_cancel_modal = false;
+        self.modal_button = 0;
     }
 
     /// Dismiss cancel modal
     fn dismiss_cancel(&mut self) {
         self.show_cancel_modal = false;
+        self.modal_button = 0;
     }
 
     /// Show a toast notification
@@ -514,12 +523,12 @@ impl ReaderSettingsActivity {
         SettingItem::ALL[self.selected_index]
     }
 
-    /// Move selection to next item
+    /// Move selection to next item (wraps)
     fn select_next(&mut self) {
         self.selected_index = (self.selected_index + 1) % SettingItem::ALL.len();
     }
 
-    /// Move selection to previous item
+    /// Move selection to previous item (wraps)
     fn select_prev(&mut self) {
         if self.selected_index == 0 {
             self.selected_index = SettingItem::ALL.len() - 1;
@@ -649,6 +658,7 @@ impl ReaderSettingsActivity {
     ) -> Result<(), D::Error> {
         let display_width = display.bounding_box().size.width;
         let header_height = theme.metrics.header_height;
+        let header_y = theme.metrics.header_text_y();
 
         // Header background
         Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
@@ -662,7 +672,7 @@ impl ReaderSettingsActivity {
             .build();
         Text::new(
             "Reader Settings",
-            Point::new(theme.metrics.side_padding as i32, 32),
+            Point::new(theme.metrics.side_padding as i32, header_y),
             title_style,
         )
         .draw(display)?;
@@ -670,12 +680,12 @@ impl ReaderSettingsActivity {
         // Save button indicator
         let save_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
         let save_text = "[Save]";
-        let save_width = save_text.len() as i32 * 7;
+        let save_width = ThemeMetrics::text_width(save_text.len());
         Text::new(
             save_text,
             Point::new(
                 display_width as i32 - save_width - theme.metrics.side_padding as i32,
-                32,
+                header_y,
             ),
             save_style,
         )
@@ -706,8 +716,8 @@ impl ReaderSettingsActivity {
                 if !last_section.is_empty() {
                     y += theme.metrics.spacing as i32; // Extra spacing between sections
                 }
-                self.render_section_header(display, theme, x, y, section)?;
-                y += 25i32; // Section header height
+                self.render_section_header(display, x, y, section)?;
+                y += SECTION_HEADER_HEIGHT;
                 last_section = section;
             }
 
@@ -717,6 +727,7 @@ impl ReaderSettingsActivity {
             } else {
                 theme.metrics.list_item_height
             };
+            let text_y = ThemeMetrics::text_y_offset(item_height);
 
             // Background
             let bg_color = if is_selected {
@@ -745,11 +756,11 @@ impl ReaderSettingsActivity {
             if item.is_save() {
                 // Center the save button text
                 let label = item.label();
-                let text_width = label.len() as i32 * 7;
-                let text_x = x + (content_width as i32 - text_width) / 2;
+                let label_width = ThemeMetrics::text_width(label.len());
+                let label_x = x + (content_width as i32 - label_width) / 2;
                 Text::new(
                     label,
-                    Point::new(text_x, y + (item_height as i32) / 2 + 5),
+                    Point::new(label_x, y + text_y),
                     MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color),
                 )
                 .draw(display)?;
@@ -757,25 +768,25 @@ impl ReaderSettingsActivity {
                 // Label on left
                 Text::new(
                     item.label(),
-                    Point::new(x + 10, y + 28),
+                    Point::new(x + theme.metrics.side_padding as i32, y + text_y),
                     MonoTextStyle::new(&ascii::FONT_7X13, text_color),
                 )
                 .draw(display)?;
 
                 // Value on right with [>] indicator
                 let value_label = self.get_value_label(item);
-                let value_width = (value_label.len() + 4) as i32 * 7; // +4 for " [>]"
-                let value_x = x + content_width as i32 - value_width - 10;
-
                 let value_text = if item.is_toggle() {
                     value_label
                 } else {
                     format!("{} [>]", value_label)
                 };
+                let value_width = ThemeMetrics::text_width(value_text.len());
+                let value_x =
+                    x + content_width as i32 - value_width - theme.metrics.side_padding as i32;
 
                 Text::new(
                     &value_text,
-                    Point::new(value_x, y + 28),
+                    Point::new(value_x, y + text_y),
                     MonoTextStyle::new(&ascii::FONT_7X13, text_color),
                 )
                 .draw(display)?;
@@ -791,7 +802,6 @@ impl ReaderSettingsActivity {
     fn render_section_header<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
-        _theme: &Theme,
         x: i32,
         y: i32,
         title: &str,
@@ -813,6 +823,7 @@ impl Activity for ReaderSettingsActivity {
         self.selected_index = 0;
         self.show_toast = false;
         self.show_cancel_modal = false;
+        self.modal_button = 0;
     }
 
     fn on_exit(&mut self) {
@@ -833,11 +844,11 @@ impl Activity for ReaderSettingsActivity {
                     ActivityResult::NavigateBack
                 }
             }
-            InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::VolumeUp) | InputEvent::Press(Button::Up) => {
                 self.select_prev();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::VolumeDown) | InputEvent::Press(Button::Down) => {
                 self.select_next();
                 ActivityResult::Consumed
             }
@@ -878,11 +889,12 @@ impl Activity for ReaderSettingsActivity {
             toast.render(display)?;
         }
 
-        // Cancel modal dialog
+        // Cancel modal dialog — use tracked modal_button for selection
         if self.show_cancel_modal {
-            let modal = Modal::new("Discard Changes?", "You have unsaved changes.")
+            let mut modal = Modal::new("Discard Changes?", "You have unsaved changes.")
                 .with_button("Keep")
                 .with_button("Discard");
+            modal.selected_button = self.modal_button;
             modal.render(display, &self.theme)?;
         }
 
@@ -891,14 +903,34 @@ impl Activity for ReaderSettingsActivity {
 }
 
 impl ReaderSettingsActivity {
-    /// Handle input when modal is shown
+    /// Handle input when modal is shown.
+    /// Left/Right cycle buttons, Confirm executes selected, Back cancels.
     fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
-            InputEvent::Press(Button::Confirm) | InputEvent::Press(Button::Right) => {
-                self.confirm_cancel();
-                ActivityResult::NavigateBack
+            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+                if self.modal_button > 0 {
+                    self.modal_button -= 1;
+                } else {
+                    self.modal_button = 1;
+                }
+                ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Back) | InputEvent::Press(Button::Left) => {
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
+                self.modal_button = (self.modal_button + 1) % 2;
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Confirm) => {
+                if self.modal_button == 1 {
+                    // Discard
+                    self.confirm_cancel();
+                    ActivityResult::NavigateBack
+                } else {
+                    // Keep
+                    self.dismiss_cancel();
+                    ActivityResult::Consumed
+                }
+            }
+            InputEvent::Press(Button::Back) => {
                 self.dismiss_cancel();
                 ActivityResult::Consumed
             }
@@ -1003,7 +1035,6 @@ impl Default for ReaderSettingsActivity {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use embedded_graphics::mock_display::MockDisplay;
 
     #[test]
     fn font_size_cycling() {
@@ -1289,18 +1320,54 @@ mod tests {
         // Cancel should show modal
         activity.cancel_changes();
         assert!(activity.show_cancel_modal);
+        assert_eq!(activity.modal_button, 0); // Starts on Keep
 
         // Dismiss modal
         activity.dismiss_cancel();
         assert!(!activity.show_cancel_modal);
 
-        // Reopen and confirm cancel
+        // Reopen, navigate to Discard, confirm
         activity.cancel_changes();
         assert!(activity.show_cancel_modal);
 
+        activity.modal_button = 1; // Discard
         activity.confirm_cancel();
         assert!(!activity.show_cancel_modal);
         assert!(!activity.is_modified()); // Changes discarded
+    }
+
+    #[test]
+    fn reader_settings_activity_modal_button_navigation() {
+        let mut activity = ReaderSettingsActivity::new();
+        activity.on_enter();
+
+        // Make a change and open modal
+        activity.handle_confirm();
+        activity.cancel_changes();
+        assert!(activity.show_cancel_modal);
+
+        // Test button navigation
+        assert_eq!(activity.modal_button, 0);
+        activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(activity.modal_button, 1);
+        activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(activity.modal_button, 0);
+
+        // VolumeDown/Up
+        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert_eq!(activity.modal_button, 1);
+        activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        assert_eq!(activity.modal_button, 0);
+
+        // Wrapping
+        activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(activity.modal_button, 1);
+
+        // Confirm on Keep (0) dismisses
+        activity.modal_button = 0;
+        let result = activity.handle_input(InputEvent::Press(Button::Confirm));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert!(!activity.show_cancel_modal);
     }
 
     #[test]
@@ -1326,7 +1393,7 @@ mod tests {
         let mut activity = ReaderSettingsActivity::new();
         activity.on_enter();
 
-        let mut display = MockDisplay::new();
+        let mut display = crate::test_display::TestDisplay::default_size();
         let result = activity.render(&mut display);
         assert!(result.is_ok());
     }

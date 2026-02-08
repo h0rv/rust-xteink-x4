@@ -7,4 +7,4 @@ pub mod theme;
 
 pub use activity::{Activity, ActivityResult};
 pub use components::{Button, List, Modal, Toast};
-pub use theme::{Theme, ThemeMetrics};
+pub use theme::{Theme, ThemeMetrics, FONT_CHAR_WIDTH};

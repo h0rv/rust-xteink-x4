@@ -165,23 +165,31 @@ impl TextAlignment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RefreshFrequency {
     Every1,
-    #[default]
-    Every3,
     Every5,
+    #[default]
     Every10,
+    Every15,
+    Every30,
 }
 
 impl RefreshFrequency {
     /// All refresh frequency variants
-    pub const ALL: [Self; 4] = [Self::Every1, Self::Every3, Self::Every5, Self::Every10];
+    pub const ALL: [Self; 5] = [
+        Self::Every1,
+        Self::Every5,
+        Self::Every10,
+        Self::Every15,
+        Self::Every30,
+    ];
 
     /// Get display label
     pub const fn label(self) -> &'static str {
         match self {
             Self::Every1 => "Every 1 page",
-            Self::Every3 => "Every 3 pages",
             Self::Every5 => "Every 5 pages",
             Self::Every10 => "Every 10 pages",
+            Self::Every15 => "Every 15 pages",
+            Self::Every30 => "Every 30 pages",
         }
     }
 
@@ -189,9 +197,10 @@ impl RefreshFrequency {
     pub const fn index(self) -> usize {
         match self {
             Self::Every1 => 0,
-            Self::Every3 => 1,
-            Self::Every5 => 2,
-            Self::Every10 => 3,
+            Self::Every5 => 1,
+            Self::Every10 => 2,
+            Self::Every15 => 3,
+            Self::Every30 => 4,
         }
     }
 
@@ -199,9 +208,10 @@ impl RefreshFrequency {
     pub const fn from_index(index: usize) -> Option<Self> {
         match index {
             0 => Some(Self::Every1),
-            1 => Some(Self::Every3),
-            2 => Some(Self::Every5),
-            3 => Some(Self::Every10),
+            1 => Some(Self::Every5),
+            2 => Some(Self::Every10),
+            3 => Some(Self::Every15),
+            4 => Some(Self::Every30),
             _ => None,
         }
     }
@@ -210,9 +220,10 @@ impl RefreshFrequency {
     pub const fn pages(self) -> u8 {
         match self {
             Self::Every1 => 1,
-            Self::Every3 => 3,
             Self::Every5 => 5,
             Self::Every10 => 10,
+            Self::Every15 => 15,
+            Self::Every30 => 30,
         }
     }
 }
@@ -1089,9 +1100,10 @@ mod tests {
     #[test]
     fn refresh_frequency_pages() {
         assert_eq!(RefreshFrequency::Every1.pages(), 1);
-        assert_eq!(RefreshFrequency::Every3.pages(), 3);
         assert_eq!(RefreshFrequency::Every5.pages(), 5);
         assert_eq!(RefreshFrequency::Every10.pages(), 10);
+        assert_eq!(RefreshFrequency::Every15.pages(), 15);
+        assert_eq!(RefreshFrequency::Every30.pages(), 30);
     }
 
     #[test]
@@ -1115,7 +1127,7 @@ mod tests {
         assert_eq!(settings.margin_size, MarginSize::Medium);
         assert_eq!(settings.text_alignment, TextAlignment::Justified);
         assert!(settings.show_page_numbers);
-        assert_eq!(settings.refresh_frequency, RefreshFrequency::Every3);
+        assert_eq!(settings.refresh_frequency, RefreshFrequency::Every10);
         assert!(!settings.invert_colors);
         assert_eq!(settings.tap_zone_config, TapZoneConfig::LeftNext);
         assert_eq!(settings.volume_button_action, VolumeButtonAction::Scroll);

@@ -18,8 +18,11 @@ use embedded_graphics::{
     text::Text,
 };
 
+use crate::filesystem::{basename, FileSystem};
 use crate::input::{Button, InputEvent};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, FONT_CHAR_WIDTH};
+use crate::ui::{
+    Activity, ActivityRefreshMode, ActivityResult, Modal, Theme, ThemeMetrics, FONT_CHAR_WIDTH,
+};
 use crate::DISPLAY_HEIGHT;
 
 /// Book information structure
@@ -116,9 +119,16 @@ pub struct LibraryActivity {
     toast_message: String,
     toast_frames_remaining: u32,
     visible_count: usize,
+    /// Tracks if this is the first render after entering (for full refresh)
+    needs_full_refresh: bool,
+    is_loading: bool,
+    refresh_requested: bool,
 }
 
 impl LibraryActivity {
+    /// Default books directory for auto-detection.
+    pub const DEFAULT_BOOKS_ROOT: &'static str = "/books";
+
     /// Toast display duration in frames
     const TOAST_DURATION: u32 = 120; // ~2 seconds at 60fps
 
@@ -143,6 +153,9 @@ impl LibraryActivity {
             toast_message: String::new(),
             toast_frames_remaining: 0,
             visible_count,
+            needs_full_refresh: true,
+            is_loading: false,
+            refresh_requested: false,
         }
     }
 
@@ -150,12 +163,124 @@ impl LibraryActivity {
     pub fn with_books(books: Vec<BookInfo>) -> Self {
         let mut activity = Self::new();
         activity.set_books(books);
+        activity.needs_full_refresh = true;
         activity
     }
 
     /// Create with mock books for testing
     pub fn with_mock_books() -> Self {
         Self::with_books(create_mock_books())
+    }
+
+    /// Scan filesystem for books and populate the library
+    ///
+    /// # Arguments
+    /// * `fs` - Filesystem to scan
+    /// * `root_path` - Root directory to scan (e.g., "/books")
+    pub fn scan_books(&mut self, fs: &mut dyn FileSystem, root_path: &str) {
+        let books = Self::discover_books(fs, root_path);
+        self.set_books(books);
+    }
+
+    /// Discover books from filesystem.
+    pub fn discover_books(fs: &mut dyn FileSystem, root_path: &str) -> Vec<BookInfo> {
+        let book_paths = match fs.scan_directory(root_path) {
+            Ok(paths) => paths,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut books = Vec::new();
+        for path in book_paths {
+            books.push(Self::extract_book_info(fs, &path));
+        }
+
+        books.sort_by(|a, b| a.title.cmp(&b.title));
+        books
+    }
+
+    /// Extract book info from file path
+    fn extract_book_info(fs: &mut dyn FileSystem, path: &str) -> BookInfo {
+        let filename = basename(path);
+        let extension = filename
+            .rsplit_once('.')
+            .map(|(_, ext)| ext)
+            .unwrap_or_default();
+
+        if extension.eq_ignore_ascii_case("epub") {
+            if let Some((title, author)) = Self::extract_epub_metadata(fs, path) {
+                return BookInfo::new(title, author, path, 0, None);
+            }
+        }
+
+        BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None)
+    }
+
+    #[cfg(feature = "std")]
+    fn extract_epub_metadata(fs: &mut dyn FileSystem, path: &str) -> Option<(String, String)> {
+        use std::io::Cursor;
+
+        let data = fs.read_file_bytes(path).ok()?;
+        let mut zip = crate::epub::streaming_zip::StreamingZip::new(Cursor::new(data)).ok()?;
+
+        let container_entry = zip
+            .get_entry("META-INF/container.xml")
+            .or_else(|| zip.get_entry("meta-inf/container.xml"))?
+            .clone();
+        let container_size = container_entry.uncompressed_size as usize;
+        let mut container_buf = vec![0u8; container_size];
+        let container_read = zip.read_file(&container_entry, &mut container_buf).ok()?;
+
+        let opf_path =
+            crate::epub::metadata::parse_container_xml(&container_buf[..container_read]).ok()?;
+
+        let opf_entry = zip.get_entry(&opf_path)?.clone();
+        let opf_size = opf_entry.uncompressed_size as usize;
+        let mut opf_buf = vec![0u8; opf_size];
+        let opf_read = zip.read_file(&opf_entry, &mut opf_buf).ok()?;
+
+        let metadata = crate::epub::metadata::parse_opf(&opf_buf[..opf_read]).ok()?;
+        let title = if metadata.title.trim().is_empty() {
+            Self::filename_to_title(basename(path))
+        } else {
+            metadata.title
+        };
+        let author = if metadata.author.trim().is_empty() {
+            "Unknown".to_string()
+        } else {
+            metadata.author
+        };
+        Some((title, author))
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn extract_epub_metadata(_fs: &mut dyn FileSystem, _path: &str) -> Option<(String, String)> {
+        None
+    }
+
+    /// Convert filename to title (remove extension, replace underscores/hyphens with spaces)
+    fn filename_to_title(filename: &str) -> String {
+        // Remove extension
+        let name = filename
+            .rsplit_once('.')
+            .map(|(name, _)| name)
+            .unwrap_or(filename);
+
+        // Replace underscores and hyphens with spaces
+        let name = name.replace(['_', '-'], " ");
+
+        // Capitalize first letter of each word
+        name.split_whitespace()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => {
+                        first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Set the book list and refresh
@@ -181,6 +306,23 @@ impl LibraryActivity {
         self.filtered_books
             .get(self.selected_index)
             .and_then(|&idx| self.books.get(idx))
+    }
+
+    /// Mark library as currently scanning.
+    pub fn begin_loading_scan(&mut self) {
+        self.is_loading = true;
+    }
+
+    /// Mark library scan complete.
+    pub fn finish_loading_scan(&mut self) {
+        self.is_loading = false;
+    }
+
+    /// Consume manual refresh request.
+    pub fn take_refresh_request(&mut self) -> bool {
+        let requested = self.refresh_requested;
+        self.refresh_requested = false;
+        requested
     }
 
     /// Apply current sort order
@@ -412,11 +554,41 @@ impl LibraryActivity {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        if self.filtered_books.is_empty() {
+        if self.is_loading {
+            self.render_loading_state(display)?;
+        } else if self.filtered_books.is_empty() {
             self.render_empty_state(display)?;
         } else {
             self.render_books(display)?;
         }
+        Ok(())
+    }
+
+    /// Render loading state while scanning the filesystem.
+    fn render_loading_state<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+    ) -> Result<(), D::Error> {
+        let display_width = display.bounding_box().size.width;
+        let display_height = display.bounding_box().size.height;
+        let center_y = (display_height / 2) as i32;
+
+        let message = "Scanning library...";
+        let message_width = ThemeMetrics::text_width(message.len());
+        let x = (display_width as i32 - message_width) / 2;
+
+        let style = MonoTextStyleBuilder::new()
+            .font(&ascii::FONT_7X13_BOLD)
+            .text_color(BinaryColor::On)
+            .build();
+        Text::new(message, Point::new(x, center_y), style).draw(display)?;
+
+        let sub_message = "Searching /books recursively";
+        let sub_width = ThemeMetrics::text_width(sub_message.len());
+        let sub_x = (display_width as i32 - sub_width) / 2;
+        let sub_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::On);
+        Text::new(sub_message, Point::new(sub_x, center_y + 25), sub_style).draw(display)?;
+
         Ok(())
     }
 
@@ -440,7 +612,7 @@ impl LibraryActivity {
 
         Text::new(message, Point::new(x, center_y), style).draw(display)?;
 
-        let sub_message = "Add EPUB files to your library";
+        let sub_message = "Add EPUB/TXT/MD files to /books";
         let sub_width = ThemeMetrics::text_width(sub_message.len());
         let sub_x = (display_width as i32 - sub_width) / 2;
 
@@ -670,6 +842,8 @@ impl Activity for LibraryActivity {
         self.scroll_offset = 0;
         self.show_context_menu = false;
         self.show_toast = false;
+        // Request full refresh on enter for a clean baseline
+        self.needs_full_refresh = true;
     }
 
     fn on_exit(&mut self) {
@@ -693,6 +867,11 @@ impl Activity for LibraryActivity {
             }
             InputEvent::Press(Button::Left) => {
                 self.cycle_sort();
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Power) => {
+                self.refresh_requested = true;
+                self.begin_loading_scan();
                 ActivityResult::Consumed
             }
             InputEvent::Press(Button::Right) | InputEvent::Press(Button::Confirm) => {
@@ -740,6 +919,21 @@ impl Activity for LibraryActivity {
         }
 
         Ok(())
+    }
+
+    fn refresh_mode(&self) -> ActivityRefreshMode {
+        if self.needs_full_refresh {
+            ActivityRefreshMode::Full
+        } else {
+            ActivityRefreshMode::Fast
+        }
+    }
+}
+
+impl LibraryActivity {
+    /// Mark that the initial full refresh has been performed
+    pub fn mark_refresh_complete(&mut self) {
+        self.needs_full_refresh = false;
     }
 }
 
@@ -814,6 +1008,8 @@ pub fn create_mock_books() -> Vec<BookInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "std")]
+    use crate::mock_filesystem::MockFileSystem;
 
     #[test]
     fn book_info_creation() {
@@ -1221,5 +1417,38 @@ mod tests {
         assert_eq!(result, ActivityResult::Consumed);
         assert!(!activity.show_context_menu);
         assert!(activity.show_toast);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn discover_books_reads_epub_metadata_and_recurses() {
+        let mut fs = MockFileSystem::new();
+        let books = LibraryActivity::discover_books(&mut fs, "/books");
+
+        assert!(books.len() >= 4);
+        assert!(!books.iter().any(|book| book.path.contains("/.hidden/")));
+
+        let epub = books
+            .iter()
+            .find(|book| book.path.ends_with("sample.epub"))
+            .expect("sample EPUB should be discovered");
+        assert_eq!(epub.title, "Sample EPUB Book");
+        assert_eq!(epub.author, "Sample Author");
+
+        let markdown = books
+            .iter()
+            .find(|book| book.path.ends_with("notes.md"))
+            .expect("nested markdown should be discovered");
+        assert_eq!(markdown.author, "Unknown");
+        assert_eq!(markdown.title, "Notes");
+    }
+
+    #[test]
+    fn power_button_requests_manual_refresh() {
+        let mut activity = LibraryActivity::new();
+        let result = activity.handle_input(InputEvent::Press(Button::Power));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert!(activity.take_refresh_request());
+        assert!(!activity.take_refresh_request());
     }
 }

@@ -8,20 +8,22 @@ use embedded_graphics_web_simulator::{
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
-use xteink_ui::{App, Button, InputEvent, DISPLAY_HEIGHT, DISPLAY_WIDTH};
+use xteink_ui::{App, Button, InputEvent, MockFileSystem, DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
 use embedded_graphics::pixelcolor::BinaryColor;
 
 struct State {
     app: App,
+    fs: MockFileSystem,
     display: WebSimulatorDisplay<BinaryColor>,
 }
 
 impl State {
     fn new(display: WebSimulatorDisplay<BinaryColor>) -> Self {
         let app = App::new();
+        let fs = MockFileSystem::new();
 
-        let mut state = Self { app, display };
+        let mut state = Self { app, fs, display };
 
         state.render();
         state
@@ -37,6 +39,10 @@ impl State {
 
         if self.app.handle_input(input) {
             self.render();
+
+            if self.app.process_library_scan(&mut self.fs) {
+                self.render();
+            }
         }
     }
 }

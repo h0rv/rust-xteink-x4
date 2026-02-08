@@ -12,6 +12,7 @@ use esp_idf_svc::hal::{
 };
 use esp_idf_svc::sys;
 
+use xteink_ui::ui::ActivityRefreshMode;
 use xteink_ui::FileSystem;
 use xteink_ui::{
     compute_diff_region, extract_region, App, BufferedDisplay, Builder, Button, Dimensions,
@@ -237,7 +238,10 @@ fn handle_cli_command<I, D>(
                 }
             }
             match fs.delete_file(path) {
-                Ok(()) => cli.write_line("OK"),
+                Ok(()) => {
+                    app.invalidate_library_cache();
+                    cli.write_line("OK");
+                }
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
             }
         }
@@ -262,7 +266,10 @@ fn handle_cli_command<I, D>(
                 }
             }
             match fs.delete_dir(path) {
-                Ok(()) => cli.write_line("OK"),
+                Ok(()) => {
+                    app.invalidate_library_cache();
+                    cli.write_line("OK");
+                }
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
             }
         }
@@ -275,7 +282,10 @@ fn handle_cli_command<I, D>(
                 }
             };
             match fs.make_dir(path) {
-                Ok(()) => cli.write_line("OK"),
+                Ok(()) => {
+                    app.invalidate_library_cache();
+                    cli.write_line("OK");
+                }
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
             }
         }
@@ -351,6 +361,7 @@ fn handle_cli_command<I, D>(
             }
 
             let crc = hasher.finalize();
+            app.invalidate_library_cache();
             cli.write_line(&format!("OK DONE {:08x}", crc));
         }
         "refresh" => {
@@ -516,6 +527,72 @@ fn apply_update<I, D>(
     }
 }
 
+/// Apply display update using the new ActivityRefreshMode system.
+///
+/// Maps ActivityRefreshMode to the appropriate update strategy:
+/// - Full: Full screen full refresh (highest quality, slowest)
+/// - Partial: Full screen partial refresh (for ghost cleanup)
+/// - Fast: Diff-based fast refresh (most efficient for small changes)
+fn apply_update_with_mode<I, D>(
+    mode: ActivityRefreshMode,
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    current: &[u8],
+    last: &mut Vec<u8>,
+    scratch: &mut Vec<u8>,
+    scratch_prev: &mut Vec<u8>,
+    width_bytes: usize,
+    height: usize,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    match mode {
+        ActivityRefreshMode::Full => {
+            log::info!("UI: Activity requested full refresh");
+            apply_update(
+                UpdateStrategy::Full,
+                display,
+                delay,
+                current,
+                last,
+                scratch,
+                scratch_prev,
+                width_bytes,
+                height,
+            );
+        }
+        ActivityRefreshMode::Partial => {
+            log::info!("UI: Periodic partial refresh for ghost cleanup");
+            apply_update(
+                UpdateStrategy::PartialFull,
+                display,
+                delay,
+                current,
+                last,
+                scratch,
+                scratch_prev,
+                width_bytes,
+                height,
+            );
+        }
+        ActivityRefreshMode::Fast => {
+            // Use diff-based fast refresh for most efficient updates
+            apply_update(
+                UpdateStrategy::DiffFast,
+                display,
+                delay,
+                current,
+                last,
+                scratch,
+                scratch_prev,
+                width_bytes,
+                height,
+            );
+        }
+    }
+}
+
 fn enter_deep_sleep(power_btn_pin: i32) {
     log::info!("Entering deep sleep...");
     unsafe {
@@ -624,8 +701,7 @@ fn main() {
     log_heap("after_first_render");
     last_buffer.copy_from_slice(buffered_display.buffer());
 
-    let update_strategy = UpdateStrategy::FastFull;
-    log::info!("Update strategy: {:?}", update_strategy);
+    log::info!("Starting event loop with adaptive refresh strategy");
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
@@ -700,8 +776,10 @@ fn main() {
                         buffered_display.clear();
                         app.render(&mut buffered_display).ok();
 
-                        apply_update(
-                            UpdateStrategy::FastFull,
+                        let refresh_mode = app.get_refresh_mode();
+                        log::info!("UI: using refresh mode {:?}", refresh_mode);
+                        apply_update_with_mode(
+                            refresh_mode,
                             &mut display,
                             &mut delay,
                             buffered_display.buffer(),
@@ -730,8 +808,10 @@ fn main() {
                     log_heap("before_render");
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
-                    apply_update(
-                        update_strategy,
+                    let refresh_mode = app.get_refresh_mode();
+                    log::info!("UI: using refresh mode {:?}", refresh_mode);
+                    apply_update_with_mode(
+                        refresh_mode,
                         &mut display,
                         &mut delay,
                         buffered_display.buffer(),
@@ -748,6 +828,23 @@ fn main() {
             }
         } else if !power_pressed {
             last_button = None;
+        }
+
+        if app.process_library_scan(&mut fs) {
+            buffered_display.clear();
+            app.render(&mut buffered_display).ok();
+            let refresh_mode = app.get_refresh_mode();
+            apply_update_with_mode(
+                refresh_mode,
+                &mut display,
+                &mut delay,
+                buffered_display.buffer(),
+                &mut last_buffer,
+                &mut region_scratch,
+                &mut region_scratch_prev,
+                buffered_display.width_bytes(),
+                buffered_display.height_pixels() as usize,
+            );
         }
 
         FreeRtos::delay_ms(50);

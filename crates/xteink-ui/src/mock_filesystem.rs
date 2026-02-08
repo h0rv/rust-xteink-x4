@@ -49,6 +49,8 @@ impl MockFileSystem {
 
         // Create directory structure FIRST (before adding files)
         fs.add_directory("/books");
+        fs.add_directory("/books/classics");
+        fs.add_directory("/books/.hidden");
         fs.add_directory("/documents");
 
         // Add sample files for testing
@@ -61,8 +63,15 @@ impl MockFileSystem {
             "/books/war_and_peace_ch1.txt",
             include_str!("../../../sample_books/war_and_peace_ch1.txt").as_bytes(),
         );
-        // Add a placeholder EPUB entry for testing
-        fs.add_file("/books/sample.epub", b"PK\x03\x04placeholder-epub-data");
+        fs.add_file(
+            "/books/sample.epub",
+            include_bytes!("../../../sample_books/sample.epub"),
+        );
+        fs.add_file(
+            "/books/classics/notes.md",
+            b"# Reading Notes\n\n- Keep this markdown file in library scans.\n",
+        );
+        fs.add_file("/books/.hidden/secret.txt", b"ignore hidden");
         fs.add_file("/documents/notes.txt", "My reading notes:\n\n- War and Peace: 1225 pages\n- Sample book: 1 page\n\nTotal: 1226 pages read".as_bytes());
 
         fs
@@ -173,6 +182,18 @@ impl FileSystem for MockFileSystem {
         }
     }
 
+    fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError> {
+        let path = self.normalize_path(path);
+
+        match self.files.get(&path) {
+            Some(MockEntry::File { content, .. }) => Ok(content.clone()),
+            Some(MockEntry::Directory { .. }) => {
+                Err(FileSystemError::IoError("Is a directory".to_string()))
+            }
+            None => Err(FileSystemError::NotFound),
+        }
+    }
+
     fn exists(&mut self, path: &str) -> bool {
         let path = self.normalize_path(path);
         self.files.contains_key(&path)
@@ -193,21 +214,6 @@ impl FileSystem for MockFileSystem {
                 size: 0,
                 is_directory: true,
             }),
-            None => Err(FileSystemError::NotFound),
-        }
-    }
-}
-
-impl MockFileSystem {
-    /// Read file as raw bytes (for binary files like EPUB)
-    pub fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError> {
-        let path = self.normalize_path(path);
-
-        match self.files.get(&path) {
-            Some(MockEntry::File { content, .. }) => Ok(content.clone()),
-            Some(MockEntry::Directory { .. }) => {
-                Err(FileSystemError::IoError("Is a directory".to_string()))
-            }
             None => Err(FileSystemError::NotFound),
         }
     }

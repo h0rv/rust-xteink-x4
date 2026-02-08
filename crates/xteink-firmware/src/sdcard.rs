@@ -197,6 +197,11 @@ impl FileSystem for SdCardFs {
         fs::read_to_string(host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
     }
 
+    fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError> {
+        let host_path = self.host_path(path);
+        fs::read(host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
+    }
+
     fn exists(&mut self, path: &str) -> bool {
         Path::new(&self.host_path(path)).exists()
     }

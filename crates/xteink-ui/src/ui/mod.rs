@@ -5,6 +5,6 @@ pub mod activity;
 pub mod components;
 pub mod theme;
 
-pub use activity::{Activity, ActivityResult};
+pub use activity::{Activity, ActivityRefreshMode, ActivityResult};
 pub use components::{Button, List, Modal, Toast};
 pub use theme::{Theme, ThemeMetrics, FONT_CHAR_WIDTH};

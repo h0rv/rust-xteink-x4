@@ -3,6 +3,7 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec;
 use alloc::vec::Vec;
 
 /// A file entry in the filesystem
@@ -57,11 +58,71 @@ pub trait FileSystem {
     /// Returns FileSystemError if file not found or read fails
     fn read_file(&mut self, path: &str) -> Result<String, FileSystemError>;
 
+    /// Read entire file as bytes
+    ///
+    /// # Arguments
+    /// * `path` - Path to file (e.g., "/books/book.epub")
+    ///
+    /// # Returns
+    /// File contents as bytes
+    ///
+    /// # Errors
+    /// Returns FileSystemError if file not found or read fails
+    fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError>;
+
     /// Check if file exists
     fn exists(&mut self, path: &str) -> bool;
 
     /// Get file info
     fn file_info(&mut self, path: &str) -> Result<FileInfo, FileSystemError>;
+
+    /// Scan directory recursively for book files
+    ///
+    /// # Arguments
+    /// * `root` - Root directory to scan (e.g., "/books")
+    ///
+    /// # Returns
+    /// List of file paths for supported book formats (.epub, .txt, .md)
+    fn scan_directory(&mut self, root: &str) -> Result<Vec<String>, FileSystemError> {
+        let mut results = Vec::new();
+        let mut dirs_to_scan = vec![root.to_string()];
+        const SUPPORTED_EXTENSIONS: &[&str] = &[".epub", ".txt", ".md"];
+        const HIDDEN_PREFIXES: &[&str] = &[".", "System Volume Information"];
+
+        while let Some(current_dir) = dirs_to_scan.pop() {
+            match self.list_files(&current_dir) {
+                Ok(entries) => {
+                    for entry in entries {
+                        let full_path = join_path(&current_dir, &entry.name);
+
+                        // Skip hidden files and system directories
+                        if HIDDEN_PREFIXES
+                            .iter()
+                            .any(|prefix| entry.name.starts_with(prefix))
+                        {
+                            continue;
+                        }
+
+                        if entry.is_directory {
+                            dirs_to_scan.push(full_path);
+                        } else {
+                            // Check if it's a supported book format
+                            let name_lower = entry.name.to_lowercase();
+                            if SUPPORTED_EXTENSIONS
+                                .iter()
+                                .any(|ext| name_lower.ends_with(ext))
+                            {
+                                results.push(full_path);
+                            }
+                        }
+                    }
+                }
+                Err(_) => continue, // Skip directories we can't read
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 /// Filter files by extension

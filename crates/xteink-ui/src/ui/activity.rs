@@ -61,6 +61,18 @@ pub enum ActivityResult {
 ///     }
 /// }
 /// ```
+/// Display refresh mode preference for an activity
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivityRefreshMode {
+    /// Use fast refresh mode (default for most interactions)
+    #[default]
+    Fast,
+    /// Use partial refresh mode (for periodic ghost cleanup)
+    Partial,
+    /// Use full refresh mode (on activity enter or manual trigger)
+    Full,
+}
+
 pub trait Activity {
     /// Called when the activity becomes visible
     fn on_enter(&mut self);
@@ -78,6 +90,15 @@ pub trait Activity {
     ///
     /// The display uses BinaryColor (black/white) for e-ink optimization.
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error>;
+
+    /// Get the preferred refresh mode for this activity.
+    ///
+    /// Called by the firmware after rendering to determine which
+    /// e-ink refresh mode to use. Activities can override this
+    /// to request full or partial refreshes when needed.
+    fn refresh_mode(&self) -> ActivityRefreshMode {
+        ActivityRefreshMode::default()
+    }
 }
 
 /// Stack-based activity manager for navigation

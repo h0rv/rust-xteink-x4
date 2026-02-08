@@ -7,7 +7,7 @@ use embedded_graphics::prelude::*;
 use embedded_graphics_simulator::{
     sdl2::Keycode, OutputSettingsBuilder, SimulatorDisplay, SimulatorEvent, Window,
 };
-use xteink_ui::{App, Button, InputEvent, DISPLAY_HEIGHT, DISPLAY_WIDTH};
+use xteink_ui::{App, Button, InputEvent, MockFileSystem, DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_settings = OutputSettingsBuilder::new().scale(1).build();
@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create activity-based app
     let mut app = App::new();
+    let mut fs = MockFileSystem::new();
 
     // Initial render
     app.render(&mut display)?;
@@ -44,6 +45,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if app.handle_input(input) {
                             app.render(&mut display)?;
                             window.update(&display);
+
+                            if app.process_library_scan(&mut fs) {
+                                app.render(&mut display)?;
+                                window.update(&display);
+                            }
                         }
                     }
                 }

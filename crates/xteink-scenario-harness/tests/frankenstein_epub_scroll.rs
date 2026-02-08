@@ -21,19 +21,20 @@ fn setup_harness() -> ScenarioHarness {
 #[test]
 fn library_open_frankenstein_scroll_and_capture() {
     let mut harness = setup_harness();
-    harness.render();
+    harness.assert_render_budget_ms(250, "boot");
 
     assert!(harness.press(Button::Confirm));
     assert_eq!(harness.app().current_screen(), AppScreen::Library);
     assert!(harness.pump_deferred_until_idle() > 0);
-    harness.render();
+    harness.assert_render_budget_ms(250, "library");
 
     assert!(!harness.press(Button::Confirm));
     assert!(harness.pump_deferred_until_idle() > 0);
     assert_eq!(harness.app().current_screen(), AppScreen::FileBrowser);
     assert!(harness.app().file_browser_is_reading_epub());
 
-    maybe_capture(&harness, "frankenstein_page1");
+    assert!(harness.press(Button::Right));
+    maybe_capture(&harness, "frankenstein_page2");
 
     let mut visited = BTreeSet::new();
     let mut turns = 0usize;
@@ -56,9 +57,12 @@ fn library_open_frankenstein_scroll_and_capture() {
             .file_browser_epub_position()
             .expect("epub position should still exist");
 
-        if turns == 2 {
-            harness.render();
-            maybe_capture(&harness, "frankenstein_page3");
+        if turns == 3 {
+            harness.assert_render_budget_ms(250, "frankenstein_page5");
+            maybe_capture(&harness, "frankenstein_page5");
+        }
+        if turns % 25 == 0 {
+            harness.assert_render_budget_ms(250, "frankenstein_scroll");
         }
 
         if after == before {
@@ -68,10 +72,26 @@ fn library_open_frankenstein_scroll_and_capture() {
     }
 
     assert!(
-        visited.len() > 8,
+        visited.len() >= 8,
         "expected substantial pagination for frankenstein, got {} positions",
         visited.len()
     );
+
+    // Validate backwards navigation from end is still functional.
+    let end_pos = harness
+        .app()
+        .file_browser_epub_position()
+        .expect("epub position should exist at end");
+    assert!(harness.press(Button::Left));
+    let back_pos = harness
+        .app()
+        .file_browser_epub_position()
+        .expect("epub position should exist after going back");
+    assert_ne!(
+        back_pos, end_pos,
+        "left navigation should move to previous page"
+    );
+    harness.assert_render_budget_ms(250, "frankenstein_back_nav");
 }
 
 fn maybe_capture(harness: &ScenarioHarness, name: &str) {

@@ -12,6 +12,8 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
+#[cfg(all(feature = "fontdue", test))]
+use fontdue::OutlineBounds;
 #[cfg(feature = "fontdue")]
 use fontdue::{Font, FontSettings, Metrics};
 
@@ -635,11 +637,13 @@ mod tests {
 
         // Insert a glyph
         let metrics = Metrics {
+            xmin: 0,
+            ymin: -2,
             width: 10,
             height: 12,
             advance_width: 8.0,
             advance_height: 14.0,
-            bounds: fontdue::LineBounds {
+            bounds: OutlineBounds {
                 xmin: 0.0,
                 ymin: -2.0,
                 width: 8.0,
@@ -673,11 +677,13 @@ mod tests {
         // Insert 3 glyphs
         for i in 0..3 {
             let metrics = Metrics {
+                xmin: 0,
+                ymin: -2,
                 width: 8,
                 height: 10,
                 advance_width: 8.0,
                 advance_height: 12.0,
-                bounds: fontdue::LineBounds {
+                bounds: OutlineBounds {
                     xmin: 0.0,
                     ymin: -2.0,
                     width: 8.0,
@@ -685,7 +691,7 @@ mod tests {
                 },
             };
             cache.insert(
-                (('A' as u8 + i as u8) as char),
+                ('A' as u8 + i as u8) as char,
                 16.0,
                 metrics,
                 vec![255u8; 80],
@@ -699,11 +705,13 @@ mod tests {
 
         // Insert 4th glyph, should evict 'B' (the LRU)
         let metrics = Metrics {
+            xmin: 0,
+            ymin: -2,
             width: 8,
             height: 10,
             advance_width: 8.0,
             advance_height: 12.0,
-            bounds: fontdue::LineBounds {
+            bounds: OutlineBounds {
                 xmin: 0.0,
                 ymin: -2.0,
                 width: 8.0,
@@ -725,11 +733,13 @@ mod tests {
         let mut cache = GlyphCache::new();
 
         let metrics = Metrics {
+            xmin: 0,
+            ymin: -2,
             width: 8,
             height: 10,
             advance_width: 8.0,
             advance_height: 12.0,
-            bounds: fontdue::LineBounds {
+            bounds: OutlineBounds {
                 xmin: 0.0,
                 ymin: -2.0,
                 width: 8.0,
@@ -753,11 +763,13 @@ mod tests {
         let mut cache = GlyphCache::new();
 
         let metrics1 = Metrics {
+            xmin: 0,
+            ymin: -2,
             width: 8,
             height: 10,
             advance_width: 8.0,
             advance_height: 12.0,
-            bounds: fontdue::LineBounds {
+            bounds: OutlineBounds {
                 xmin: 0.0,
                 ymin: -2.0,
                 width: 8.0,
@@ -768,11 +780,13 @@ mod tests {
 
         // Update with new data
         let metrics2 = Metrics {
+            xmin: 0,
+            ymin: -2,
             width: 10,
             height: 12,
             advance_width: 10.0,
             advance_height: 14.0,
-            bounds: fontdue::LineBounds {
+            bounds: OutlineBounds {
                 xmin: 0.0,
                 ymin: -2.0,
                 width: 10.0,

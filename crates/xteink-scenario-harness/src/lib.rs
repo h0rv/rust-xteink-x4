@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use embedded_graphics::pixelcolor::BinaryColor;
 use png::{BitDepth, ColorType, Encoder};
@@ -51,6 +52,25 @@ impl ScenarioHarness {
         self.app
             .render(&mut self.display)
             .expect("scenario render should succeed");
+    }
+
+    /// Render and return elapsed wall time.
+    pub fn render_timed(&mut self) -> Duration {
+        let start = Instant::now();
+        self.render();
+        start.elapsed()
+    }
+
+    /// Render and assert wall-time budget in milliseconds.
+    pub fn assert_render_budget_ms(&mut self, max_ms: u128, label: &str) {
+        let elapsed = self.render_timed();
+        assert!(
+            elapsed.as_millis() <= max_ms,
+            "{} render exceeded budget: {}ms > {}ms",
+            label,
+            elapsed.as_millis(),
+            max_ms
+        );
     }
 
     /// Access the app for assertions.

@@ -27,6 +27,7 @@ Documentation for **ox4** - Rust-powered e-reader firmware for the Xteink X4 (ES
 
 #### ✨ Features
 - **[wasm-simulator.md](./features/wasm-simulator.md)** - Browser-based UI simulator
+- **[rss-feeds.md](./features/rss-feeds.md)** - RSS/Atom sync and offline article caching plan
 - **[future-ideas.md](./features/future-ideas.md)** - Future feature ideas
 
 ---
@@ -110,9 +111,10 @@ docs/
 │
 └── features/              # Feature documentation
     ├── wasm-simulator.md
+    ├── rss-feeds.md
     └── future-ideas.md
 ```
 
 ---
 
-*Last Updated: 2026-02-07*
+*Last Updated: 2026-02-08*

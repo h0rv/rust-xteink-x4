@@ -210,10 +210,16 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     #[inline(never)]
-    fn load_epub_as_text(_fs: &mut dyn FileSystem, path: &str) -> Result<(String, String), String> {
+    fn load_epub_as_text(fs: &mut dyn FileSystem, path: &str) -> Result<(String, String), String> {
         let fallback_title = basename(path).to_string();
         #[cfg(not(target_arch = "wasm32"))]
-        return Self::parse_epub_from_path(path, fallback_title);
+        {
+            // Prefer bytes via FileSystem so scenario tests can use MockFileSystem.
+            if let Ok(data) = fs.read_file_bytes(path) {
+                return Self::parse_epub_from_bytes(data, fallback_title);
+            }
+            Self::parse_epub_from_path(path, fallback_title)
+        }
 
         #[cfg(target_arch = "wasm32")]
         {
@@ -264,7 +270,6 @@ impl FileBrowserActivity {
     }
 
     #[cfg(feature = "std")]
-    #[cfg(target_arch = "wasm32")]
     #[inline(never)]
     fn parse_epub_from_bytes(
         data: alloc::vec::Vec<u8>,

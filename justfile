@@ -171,6 +171,22 @@ test-diff:
 test:
     cargo test --workspace --features std --target x86_64-unknown-linux-gnu
 
+# Run scripted scenario harness tests (host target)
+sim-scenarios:
+    cargo test -p xteink-scenario-harness --target x86_64-unknown-linux-gnu
+
+# Build stack-size report for scenario harness host builds
+stack-report:
+    ./scripts/stack_sizes_report.sh xteink-scenario-harness x86_64-unknown-linux-gnu
+
+# Enforce a max per-function stack threshold for project symbols (host scenario build)
+stack-gate max_bytes="100000":
+    STACK_MAX_BYTES={{ max_bytes }} ./scripts/stack_sizes_report.sh xteink-scenario-harness x86_64-unknown-linux-gnu
+
+# Tight host-side UI reliability loop: fmt + lint + scenarios + stack report
+ui-loop:
+    ./scripts/ui_loop.sh
+
 # Show CLI helpers
 cli-help:
     @just --list cli

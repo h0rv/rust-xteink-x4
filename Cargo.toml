@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/xteink-ui",
+    "crates/xteink-scenario-harness",
     "crates/xteink-sim-web",
     "crates/xteink-sim-desktop",
     "crates/xteink-firmware",

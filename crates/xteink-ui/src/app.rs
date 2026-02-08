@@ -128,6 +128,11 @@ impl App {
         self.nav_stack.len()
     }
 
+    /// Returns true when file-browser activity is currently displaying text content.
+    pub fn file_browser_is_reading_text(&self) -> bool {
+        self.file_browser.is_viewing_text()
+    }
+
     /// Update device status on activities that display it.
     pub fn set_device_status(&mut self, status: DeviceStatus) {
         self.system_menu.set_device_status(status);
@@ -451,6 +456,8 @@ mod tests {
     use crate::input::Button;
     #[cfg(feature = "std")]
     use crate::MockFileSystem;
+    #[cfg(feature = "std")]
+    use std::thread;
 
     #[test]
     fn app_starts_on_system_menu() {
@@ -686,5 +693,66 @@ mod tests {
         // Back from text viewer returns to browser.
         app.handle_input(InputEvent::Press(Button::Back));
         assert_eq!(app.current_screen(), AppScreen::FileBrowser);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn ui_flow_runs_on_limited_stack() {
+        let stack_bytes = std::env::var("XTEINK_UI_STACK_TEST_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(128 * 1024);
+
+        let handle = thread::Builder::new()
+            .name(String::from("ui-flow-limited-stack"))
+            .stack_size(stack_bytes)
+            .spawn(|| {
+                let mut app = App::new();
+                let mut fs = MockFileSystem::new();
+                let mut display = crate::test_display::TestDisplay::default_size();
+
+                // Render root activity.
+                app.render(&mut display).unwrap();
+
+                // System menu -> Library.
+                app.handle_input(InputEvent::Press(Button::Confirm));
+                app.process_deferred_tasks(&mut fs);
+                app.render(&mut display).unwrap();
+
+                // Library -> open first book path (deferred chain to file browser viewer).
+                app.handle_input(InputEvent::Press(Button::Confirm));
+                for _ in 0..3 {
+                    app.process_deferred_tasks(&mut fs);
+                }
+                app.render(&mut display).unwrap();
+
+                // Back to file browser list, then system menu.
+                app.handle_input(InputEvent::Press(Button::Back));
+                app.handle_input(InputEvent::Press(Button::Back));
+                app.render(&mut display).unwrap();
+
+                // Exercise additional activities.
+                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Files
+                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Reader Settings
+                app.handle_input(InputEvent::Press(Button::Confirm));
+                app.render(&mut display).unwrap();
+                app.handle_input(InputEvent::Press(Button::Back));
+
+                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Device Settings
+                app.handle_input(InputEvent::Press(Button::Confirm));
+                app.render(&mut display).unwrap();
+                app.handle_input(InputEvent::Press(Button::Back));
+
+                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Information
+                app.handle_input(InputEvent::Press(Button::Confirm));
+                app.render(&mut display).unwrap();
+
+                assert_eq!(app.current_screen(), AppScreen::Information);
+            })
+            .expect("spawn limited-stack ui-flow test thread");
+
+        handle
+            .join()
+            .expect("ui flow thread panicked or hit stack overflow");
     }
 }

@@ -32,6 +32,14 @@ impl TestDisplay {
     pub fn default_size() -> Self {
         Self::new(crate::DISPLAY_WIDTH, crate::DISPLAY_HEIGHT)
     }
+
+    /// Count black pixels in the current framebuffer.
+    pub fn black_pixel_count(&self) -> usize {
+        self.pixels
+            .iter()
+            .filter(|pixel| matches!(pixel, BinaryColor::On))
+            .count()
+    }
 }
 
 impl DrawTarget for TestDisplay {

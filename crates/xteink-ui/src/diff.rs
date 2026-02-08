@@ -143,7 +143,7 @@ mod tests {
     fn extract_region_bytes() {
         let mut buf = vec![0xFFu8; 16];
         buf[5] = 0x00;
-        let region = compute_diff_region(&buf, &vec![0xFFu8; 16], 4, 4).unwrap();
+        let region = compute_diff_region(&buf, &[0xFFu8; 16], 4, 4).unwrap();
         let mut out = Vec::new();
         extract_region(&buf, 4, region, &mut out);
         assert_eq!(out.len(), 1);

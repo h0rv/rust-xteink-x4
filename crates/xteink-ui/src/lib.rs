@@ -34,10 +34,10 @@ pub mod system_menu_activity;
 pub mod test_display;
 pub mod ui;
 
+#[cfg(all(feature = "std", feature = "fontdue"))]
+pub mod epub_font_backend;
 #[cfg(feature = "std")]
 pub mod epub_prep;
-#[cfg(feature = "std")]
-pub mod epub_render;
 
 #[cfg(feature = "std")]
 pub mod mock_filesystem;
@@ -87,8 +87,6 @@ pub use epub_prep::{
     RenderPrep, RenderPrepError, RenderPrepOptions, ResolvedFontFace, StyleConfig, StyleLimits,
     StyledChapter, StyledEvent, StyledEventOrRun, StyledRun, Styler, StylesheetSource,
 };
-#[cfg(feature = "std")]
-pub use epub_render::EpubRenderer;
 
 #[cfg(feature = "std")]
 pub use mock_filesystem::MockFileSystem;

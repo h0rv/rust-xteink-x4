@@ -10,6 +10,8 @@ members = [
 
 [workspace.dependencies]
 epublet = { path = "../epublet", default-features = false }
+epublet-render = { path = "../epublet/crates/epublet-render" }
+epublet-embedded-graphics = { path = "../epublet/crates/epublet-embedded-graphics" }
 
 [profile.release]
 opt-level = "s"

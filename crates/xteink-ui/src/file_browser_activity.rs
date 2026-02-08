@@ -7,9 +7,21 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::{String, ToString};
+#[cfg(feature = "std")]
+use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+#[cfg(feature = "std")]
+use epublet::EpubBook;
+#[cfg(feature = "std")]
+use epublet_embedded_graphics::{EgRenderConfig, EgRenderer};
+#[cfg(feature = "std")]
+use epublet_render::{RenderEngine, RenderEngineOptions, RenderPage};
+#[cfg(feature = "std")]
+use std::io::Cursor;
 
+#[cfg(all(feature = "std", feature = "fontdue"))]
+use crate::epub_font_backend::BookerlyFontBackend;
 use crate::file_browser::{FileBrowser, TextViewer};
 use crate::filesystem::{basename, dirname, FileSystem};
 use crate::input::{Button, InputEvent};
@@ -31,8 +43,122 @@ enum BrowserMode {
     },
     #[cfg(feature = "std")]
     ReadingEpub {
-        renderer: Box<crate::epub_render::EpubRenderer>,
+        renderer: Box<EpubReadingState>,
     },
+}
+
+#[cfg(feature = "std")]
+struct EpubReadingState {
+    book: EpubBook<Cursor<Vec<u8>>>,
+    engine: RenderEngine,
+    eg_renderer: ReaderRenderer,
+    pages: Vec<RenderPage>,
+    chapter_idx: usize,
+    page_idx: usize,
+}
+
+#[cfg(all(feature = "std", feature = "fontdue"))]
+type ReaderRenderer = EgRenderer<BookerlyFontBackend>;
+
+#[cfg(all(feature = "std", not(feature = "fontdue")))]
+type ReaderRenderer = EgRenderer<epublet_embedded_graphics::MonoFontBackend>;
+
+#[cfg(feature = "std")]
+impl EpubReadingState {
+    fn from_bytes(data: Vec<u8>) -> Result<Self, String> {
+        let book = EpubBook::from_reader(Cursor::new(data))
+            .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+        let mut state = Self {
+            book,
+            engine: RenderEngine::new(RenderEngineOptions::for_display(
+                crate::DISPLAY_WIDTH as i32,
+                crate::DISPLAY_HEIGHT as i32,
+            )),
+            eg_renderer: Self::create_renderer(),
+            pages: Vec::new(),
+            chapter_idx: 0,
+            page_idx: 0,
+        };
+        state.load_chapter(0)?;
+        Ok(state)
+    }
+
+    fn load_chapter(&mut self, chapter_idx: usize) -> Result<(), String> {
+        self.pages = self
+            .engine
+            .prepare_chapter(&mut self.book, chapter_idx)
+            .map_err(|e| format!("Unable to prepare EPUB chapter: {}", e))?;
+        if self.pages.is_empty() {
+            self.pages.push(RenderPage::new(1));
+        }
+        self.chapter_idx = chapter_idx;
+        self.page_idx = 0;
+        Ok(())
+    }
+
+    fn current_chapter(&self) -> usize {
+        self.chapter_idx + 1
+    }
+
+    fn total_chapters(&self) -> usize {
+        self.book.chapter_count()
+    }
+
+    fn current_page_number(&self) -> usize {
+        self.page_idx + 1
+    }
+
+    fn total_pages(&self) -> usize {
+        self.pages.len()
+    }
+
+    fn next_page(&mut self) -> bool {
+        if self.page_idx + 1 < self.pages.len() {
+            self.page_idx += 1;
+            return true;
+        }
+        if self.chapter_idx + 1 < self.book.chapter_count()
+            && self.load_chapter(self.chapter_idx + 1).is_ok()
+        {
+            return true;
+        }
+        false
+    }
+
+    fn prev_page(&mut self) -> bool {
+        if self.page_idx > 0 {
+            self.page_idx -= 1;
+            return true;
+        }
+        if self.chapter_idx > 0 {
+            let prev_chapter = self.chapter_idx - 1;
+            if self.load_chapter(prev_chapter).is_ok() {
+                self.page_idx = self.pages.len().saturating_sub(1);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
+        if let Some(page) = self.pages.get(self.page_idx) {
+            self.eg_renderer.render_page(page, display)
+        } else {
+            display.clear(BinaryColor::Off)
+        }
+    }
+
+    fn create_renderer() -> ReaderRenderer {
+        let cfg = EgRenderConfig { clear_first: true };
+        #[cfg(all(feature = "std", feature = "fontdue"))]
+        {
+            EgRenderer::with_backend(cfg, BookerlyFontBackend::default())
+        }
+        #[cfg(not(all(feature = "std", feature = "fontdue")))]
+        {
+            EgRenderer::with_backend(cfg, epublet_embedded_graphics::MonoFontBackend)
+        }
+    }
 }
 
 /// Raw filesystem browser activity.
@@ -246,57 +372,11 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     #[inline(never)]
-    fn load_epub_renderer(
-        fs: &mut dyn FileSystem,
-        path: &str,
-    ) -> Result<crate::epub_render::EpubRenderer, String> {
-        let mut renderer = crate::epub_render::EpubRenderer::new();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            // Prefer bytes via FileSystem so scenario tests can use MockFileSystem.
-            if let Ok(data) = fs.read_file_bytes(path) {
-                renderer
-                    .load_from_bytes(data)
-                    .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
-                return Ok(renderer);
-            }
-
-            let resolved = Self::resolve_epub_path(path)?;
-            renderer
-                .load(&resolved)
-                .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
-            Ok(renderer)
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let data = fs
-                .read_file_bytes(path)
-                .map_err(|e| format!("Unable to read EPUB: {}", e))?;
-            renderer
-                .load_from_bytes(data)
-                .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
-            Ok(renderer)
-        }
-    }
-
-    #[cfg(feature = "std")]
-    #[cfg(not(target_arch = "wasm32"))]
-    #[inline(never)]
-    fn resolve_epub_path(path: &str) -> Result<String, String> {
-        use std::path::Path;
-
-        if Path::new(path).exists() {
-            Ok(path.to_string())
-        } else {
-            let candidate = crate::filesystem::resolve_mount_path(path, "/sd");
-            if Path::new(&candidate).exists() {
-                Ok(candidate)
-            } else {
-                Err(format!("EPUB path not found: {}", path))
-            }
-        }
+    fn load_epub_renderer(fs: &mut dyn FileSystem, path: &str) -> Result<EpubReadingState, String> {
+        let data = fs
+            .read_file_bytes(path)
+            .map_err(|e| format!("Unable to read EPUB: {}", e))?;
+        EpubReadingState::from_bytes(data)
     }
 
     fn handle_reader_input(&mut self, event: InputEvent) -> ActivityResult {

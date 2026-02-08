@@ -690,12 +690,7 @@ mod tests {
                     height: 10.0,
                 },
             };
-            cache.insert(
-                ('A' as u8 + i as u8) as char,
-                16.0,
-                metrics,
-                vec![255u8; 80],
-            );
+            cache.insert((b'A' + i as u8) as char, 16.0, metrics, vec![255u8; 80]);
         }
 
         assert_eq!(cache.len(), 3);

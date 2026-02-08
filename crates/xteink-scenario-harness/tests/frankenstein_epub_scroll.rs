@@ -61,7 +61,7 @@ fn library_open_frankenstein_scroll_and_capture() {
             harness.assert_render_budget_ms(250, "frankenstein_page5");
             maybe_capture(&harness, "frankenstein_page5");
         }
-        if turns % 25 == 0 {
+        if turns.is_multiple_of(25) {
             harness.assert_render_budget_ms(250, "frankenstein_scroll");
         }
 

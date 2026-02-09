@@ -12,11 +12,11 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
-use epublet::{EmbeddedFontStyle, EpubBook};
+use mu_epub::{EmbeddedFontStyle, EpubBook};
 #[cfg(feature = "std")]
-use epublet_embedded_graphics::{EgRenderConfig, EgRenderer, FontFaceRegistration};
+use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer, FontFaceRegistration};
 #[cfg(feature = "std")]
-use epublet_render::{RenderEngine, RenderEngineOptions, RenderPage};
+use mu_epub_render::{RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(feature = "std")]
 use std::io::Cursor;
 
@@ -61,7 +61,7 @@ struct EpubReadingState {
 type ReaderRenderer = EgRenderer<BookerlyFontBackend>;
 
 #[cfg(all(feature = "std", not(feature = "fontdue")))]
-type ReaderRenderer = EgRenderer<epublet_embedded_graphics::MonoFontBackend>;
+type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
 
 #[cfg(feature = "std")]
 impl EpubReadingState {
@@ -158,7 +158,7 @@ impl EpubReadingState {
         }
         #[cfg(not(all(feature = "std", feature = "fontdue")))]
         {
-            EgRenderer::with_backend(cfg, epublet_embedded_graphics::MonoFontBackend)
+            EgRenderer::with_backend(cfg, mu_epub_embedded_graphics::MonoFontBackend)
         }
     }
 

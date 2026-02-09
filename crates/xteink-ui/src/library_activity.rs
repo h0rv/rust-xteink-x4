@@ -279,8 +279,8 @@ impl LibraryActivity {
         fs: &mut dyn FileSystem,
         path: &str,
     ) -> Option<(String, String, Option<CoverThumbnail>)> {
-        use epublet::metadata::{parse_container_xml, parse_opf};
-        use epublet::zip::StreamingZip;
+        use mu_epub::metadata::{parse_container_xml, parse_opf};
+        use mu_epub::zip::StreamingZip;
         use std::io::Cursor;
 
         let data = fs.read_file_bytes(path).ok()?;
@@ -369,9 +369,9 @@ impl LibraryActivity {
 
     #[cfg(feature = "std")]
     fn extract_epub_cover_thumbnail<F: std::io::Read + std::io::Seek>(
-        zip: &mut epublet::zip::StreamingZip<F>,
+        zip: &mut mu_epub::zip::StreamingZip<F>,
         opf_path: &str,
-        metadata: &epublet::metadata::EpubMetadata,
+        metadata: &mu_epub::metadata::EpubMetadata,
     ) -> Option<CoverThumbnail> {
         let cover_item = metadata.get_cover_item()?;
         let is_bmp_media = cover_item

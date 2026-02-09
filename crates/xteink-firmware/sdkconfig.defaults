@@ -23,7 +23,7 @@ CONFIG_FATFS_MAX_LFN=255
 
 # Use custom partition table from this crate.
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="/home/h0rv/projects/rust-xteink-x4/crates/xteink-firmware/partitions.csv"
 
 # Flash size
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

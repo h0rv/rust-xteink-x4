@@ -7,3 +7,4 @@ crosspoint-reader
 ssd1675
 flash.log
 crates/xteink-scenario-harness/target/
+microreader

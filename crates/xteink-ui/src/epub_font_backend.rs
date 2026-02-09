@@ -9,11 +9,11 @@ use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
-use epublet_embedded_graphics::{
+use mu_epub_embedded_graphics::{
     BackendCapabilities, FontBackend, FontFaceRegistration, FontFallbackReason, FontId,
     FontMetrics, FontSelection,
 };
-use epublet_render::ResolvedTextStyle;
+use mu_epub_render::ResolvedTextStyle;
 
 use crate::font_render::FontCache;
 

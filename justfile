@@ -104,14 +104,14 @@ test-firmware-size:
 flash:
     cargo build -p xteink-firmware --release
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition app0 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
     cargo clean -p xteink-firmware
     cargo build -p xteink-firmware --release
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition app0 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Clean flash (full rebuild with sdkconfig regeneration)
 flash-clean:
@@ -119,7 +119,7 @@ flash-clean:
     rm -rf target/riscv32imc-esp-espidf/release/build/esp-idf-sys-*
     cargo build -p xteink-firmware --release
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition app0 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Just monitor serial output
 monitor:
@@ -162,7 +162,7 @@ clean-firmware:
 
 # Check firmware binary size against partition limits
 size-check:
-    python3 scripts/check_binary_size.py {{ partition_table }} target/riscv32imc-esp-espidf/release/xteink-firmware app0
+    python3 scripts/check_binary_size.py {{ partition_table }} target/riscv32imc-esp-espidf/release/xteink-firmware factory
 
 # Format code
 fmt:

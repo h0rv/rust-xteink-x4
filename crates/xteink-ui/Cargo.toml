@@ -6,10 +6,10 @@ edition = "2021"
 [features]
 default = ["fontdue"]
 std = [
-    "epublet/std",
-    "epublet/layout",
-    "dep:epublet-render",
-    "dep:epublet-embedded-graphics",
+    "mu_epub/std",
+    "mu_epub/layout",
+    "dep:mu_epub_render",
+    "dep:mu_epub_embedded_graphics",
 ]
 
 [dependencies]
@@ -19,15 +19,15 @@ embedded-text = "0.7.3"
 # Logging (no_std compatible)
 log = "0.4"
 
-# EPUB support now provided by external epublet crate
+# EPUB support now provided by external mu_epub crate
 
 # TTF font rendering with no_std support - always enabled
 fontdue = { version = "0.9.3", optional = true }
 
 # External EPUB parser crate
-epublet = { workspace = true }
-epublet-render = { workspace = true, optional = true }
-epublet-embedded-graphics = { workspace = true, optional = true }
+mu_epub = { workspace = true }
+mu_epub_render = { workspace = true, optional = true }
+mu_epub_embedded_graphics = { workspace = true, optional = true }
 
 # E-ink display driver (re-exported for firmware use)
 # Using local path during development - change to crates.io version when published

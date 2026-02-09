@@ -123,11 +123,20 @@ fn format_size(size: u64) -> String {
 fn log_heap(label: &str) {
     let free_heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
     let min_free = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
+    let free_8bit = unsafe { esp_idf_svc::sys::heap_caps_get_free_size(sys::MALLOC_CAP_8BIT) };
+    let largest_8bit =
+        unsafe { esp_idf_svc::sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) };
+    let stack_hwm_words =
+        unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
+    let stack_hwm_bytes = (stack_hwm_words as usize) * core::mem::size_of::<sys::StackType_t>();
     log::info!(
-        "[HEAP] {}: free={} bytes min_free={} bytes",
+        "[MEM] {}: free={} min_free={} free_8bit={} largest_8bit={} stack_hwm={}B",
         label,
         free_heap,
-        min_free
+        min_free,
+        free_8bit,
+        largest_8bit,
+        stack_hwm_bytes
     );
 }
 
@@ -752,6 +761,7 @@ fn main() {
 
     // Initialize app and render initial screen
     let mut app = App::new();
+    let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
     log_heap("before_app_init");
     buffered_display.clear();
     app.render(&mut buffered_display).ok();
@@ -888,6 +898,7 @@ fn main() {
             if btn != Button::Power && last_button != Some(btn) {
                 log::info!("Button pressed: {:?}", btn);
                 last_button = Some(btn);
+                log_heap("before_handle_input");
 
                 if app.handle_input(InputEvent::Press(btn)) {
                     log::info!("UI: redraw after {:?}", btn);
@@ -908,8 +919,25 @@ fn main() {
                         buffered_display.height_pixels() as usize,
                     );
                     log_heap("after_render");
+                    if app.file_browser_is_reading_epub() {
+                        let pos = app.file_browser_epub_position();
+                        if pos != last_epub_pos {
+                            if let Some((ch, ch_total, pg, pg_total)) = pos {
+                                log::info!(
+                                    "[EPUB] position changed: ch {}/{} pg {}/{}",
+                                    ch,
+                                    ch_total,
+                                    pg,
+                                    pg_total
+                                );
+                            }
+                            log_heap("after_epub_page_change");
+                            last_epub_pos = pos;
+                        }
+                    }
                 } else {
                     log::info!("UI: no redraw after {:?}", btn);
+                    log_heap("after_handle_input_no_redraw");
                 }
             }
         } else if !power_pressed {
@@ -917,6 +945,7 @@ fn main() {
         }
 
         if app.process_deferred_tasks(&mut fs) {
+            log_heap("before_deferred_render");
             buffered_display.clear();
             app.render(&mut buffered_display).ok();
             let refresh_mode = app.get_refresh_mode();
@@ -931,6 +960,23 @@ fn main() {
                 buffered_display.width_bytes(),
                 buffered_display.height_pixels() as usize,
             );
+            log_heap("after_deferred_render");
+            if app.file_browser_is_reading_epub() {
+                let pos = app.file_browser_epub_position();
+                if pos != last_epub_pos {
+                    if let Some((ch, ch_total, pg, pg_total)) = pos {
+                        log::info!(
+                            "[EPUB] deferred position changed: ch {}/{} pg {}/{}",
+                            ch,
+                            ch_total,
+                            pg,
+                            pg_total
+                        );
+                    }
+                    log_heap("after_epub_deferred_change");
+                    last_epub_pos = pos;
+                }
+            }
         }
 
         FreeRtos::delay_ms(50);

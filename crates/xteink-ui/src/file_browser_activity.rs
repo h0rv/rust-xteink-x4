@@ -17,16 +17,20 @@ use std::fs::File;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use mu_epub::book::{ChapterEventsOptions, OpenConfig};
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use mu_epub::{EmbeddedFontStyle, FontLimits};
 #[cfg(feature = "std")]
-use mu_epub::{EmbeddedFontStyle, EpubBook, FontLimits, ZipLimits};
+use mu_epub::{EpubBook, ScratchBuffers, ZipLimits};
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use mu_epub_embedded_graphics::FontFaceRegistration;
 #[cfg(feature = "std")]
-use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer, FontFaceRegistration};
+use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
 #[cfg(feature = "std")]
 use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(feature = "std")]
 use std::io::{Read, Seek, SeekFrom};
 
-#[cfg(all(feature = "std", feature = "fontdue"))]
+#[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
 use crate::epub_font_backend::BookerlyFontBackend;
 use crate::file_browser::{FileBrowser, TextViewer};
 use crate::filesystem::{basename, dirname, FileSystem};
@@ -64,6 +68,8 @@ struct EpubReadingState {
     book: EpubBook<Box<dyn ReadSeek>>,
     engine: RenderEngine,
     eg_renderer: ReaderRenderer,
+    chapter_buf: Vec<u8>,
+    chapter_scratch: ScratchBuffers,
     current_page: Option<RenderPage>,
     page_cache: BTreeMap<(usize, usize), RenderPage>,
     chapter_page_counts: BTreeMap<usize, usize>,
@@ -167,24 +173,35 @@ impl Seek for ChunkedEpubReader {
     }
 }
 
-#[cfg(all(feature = "std", feature = "fontdue"))]
+#[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
 type ReaderRenderer = EgRenderer<BookerlyFontBackend>;
 
-#[cfg(all(feature = "std", not(feature = "fontdue")))]
+#[cfg(any(
+    all(feature = "std", not(feature = "fontdue")),
+    all(feature = "std", target_os = "espidf")
+))]
 type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
 
 #[cfg(feature = "std")]
 impl EpubReadingState {
+    #[cfg(not(target_os = "espidf"))]
     const MAX_FONT_FACE_BYTES: usize = 512 * 1024;
+    #[cfg(not(target_os = "espidf"))]
     const MAX_FONT_TOTAL_BYTES: usize = 2 * 1024 * 1024;
     const MAX_ZIP_ENTRY_BYTES: usize = 8 * 1024 * 1024;
     const MAX_MIMETYPE_BYTES: usize = 1024;
     const MAX_NAV_BYTES: usize = 256 * 1024;
     const MAX_EOCD_SCAN_BYTES: usize = 8 * 1024;
     const MAX_CHAPTER_EVENTS: usize = 65_536;
+    const CHAPTER_BUF_CAPACITY_BYTES: usize = 64 * 1024;
+    #[cfg(target_os = "espidf")]
+    const PAGE_CACHE_LIMIT: usize = 0;
+    #[cfg(not(target_os = "espidf"))]
     const PAGE_CACHE_LIMIT: usize = 8;
+    const OUT_OF_RANGE_ERR: &'static str = "Requested EPUB page is out of range";
 
     fn from_reader(reader: Box<dyn ReadSeek>) -> Result<Self, String> {
+        log::info!("[EPUB] opening reader");
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
         let open_cfg = OpenConfig {
@@ -197,6 +214,7 @@ impl EpubReadingState {
         };
         let book = EpubBook::from_reader_with_config(reader, open_cfg)
             .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+        log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
         let mut state = Self {
             book,
             engine: RenderEngine::new(RenderEngineOptions::for_display(
@@ -204,6 +222,8 @@ impl EpubReadingState {
                 crate::DISPLAY_HEIGHT as i32,
             )),
             eg_renderer: Self::create_renderer(),
+            chapter_buf: Vec::with_capacity(Self::CHAPTER_BUF_CAPACITY_BYTES),
+            chapter_scratch: ScratchBuffers::embedded(),
             current_page: None,
             page_cache: BTreeMap::new(),
             chapter_page_counts: BTreeMap::new(),
@@ -211,16 +231,47 @@ impl EpubReadingState {
             page_idx: 0,
         };
         state.register_embedded_fonts();
-        state.load_chapter(0)?;
+        state.load_chapter_forward(0)?;
+        log::info!("[EPUB] initial chapter/page loaded");
         Ok(state)
     }
 
-    fn load_chapter(&mut self, chapter_idx: usize) -> Result<(), String> {
+    fn load_chapter_exact(&mut self, chapter_idx: usize) -> Result<(), String> {
+        log::info!("[EPUB] load_chapter_exact idx={}", chapter_idx);
         self.chapter_idx = chapter_idx;
         self.page_idx = 0;
         self.current_page = None;
         self.load_current_page()?;
         Ok(())
+    }
+
+    fn load_chapter_forward(&mut self, start_chapter_idx: usize) -> Result<(), String> {
+        for idx in start_chapter_idx..self.book.chapter_count() {
+            match self.load_chapter_exact(idx) {
+                Ok(()) => return Ok(()),
+                Err(err) if Self::is_out_of_range_error(&err) => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        Err("No renderable pages found in remaining chapters".to_string())
+    }
+
+    fn load_chapter_backward(&mut self, start_chapter_idx: usize) -> Result<(), String> {
+        let mut idx = start_chapter_idx as i32;
+        while idx >= 0 {
+            match self.load_chapter_exact(idx as usize) {
+                Ok(()) => return Ok(()),
+                Err(err) if Self::is_out_of_range_error(&err) => {
+                    idx -= 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err("No renderable pages found in previous chapters".to_string())
+    }
+
+    fn is_out_of_range_error(err: &str) -> bool {
+        err.contains(Self::OUT_OF_RANGE_ERR)
     }
 
     fn current_chapter(&self) -> usize {
@@ -243,21 +294,27 @@ impl EpubReadingState {
     }
 
     fn next_page(&mut self) -> bool {
+        // Free the currently rendered page before loading the next one to
+        // maximize contiguous heap on constrained devices.
+        self.current_page = None;
         let known_total = self.chapter_page_counts.get(&self.chapter_idx).copied();
         if known_total.is_none() {
             let next_idx = self.page_idx + 1;
-            if self.load_page(self.chapter_idx, next_idx).is_ok() {
+            if let Ok(page) = self.load_page(self.chapter_idx, next_idx) {
                 self.page_idx = next_idx;
-                self.current_page = self.load_page(self.chapter_idx, self.page_idx).ok();
+                self.current_page = Some(page);
                 return true;
             }
         } else if self.page_idx + 1 < known_total.unwrap_or(0) {
-            self.page_idx += 1;
-            self.current_page = self.load_page(self.chapter_idx, self.page_idx).ok();
-            return true;
+            let next_idx = self.page_idx + 1;
+            if let Ok(page) = self.load_page(self.chapter_idx, next_idx) {
+                self.page_idx = next_idx;
+                self.current_page = Some(page);
+                return true;
+            }
         }
         if self.chapter_idx + 1 < self.book.chapter_count()
-            && self.load_chapter(self.chapter_idx + 1).is_ok()
+            && self.load_chapter_forward(self.chapter_idx + 1).is_ok()
         {
             return true;
         }
@@ -265,22 +322,30 @@ impl EpubReadingState {
     }
 
     fn prev_page(&mut self) -> bool {
+        // Free the currently rendered page before loading the previous one to
+        // maximize contiguous heap on constrained devices.
+        self.current_page = None;
         if self.page_idx > 0 {
-            self.page_idx -= 1;
-            self.current_page = self.load_page(self.chapter_idx, self.page_idx).ok();
-            return true;
+            let prev_idx = self.page_idx - 1;
+            if let Ok(page) = self.load_page(self.chapter_idx, prev_idx) {
+                self.page_idx = prev_idx;
+                self.current_page = Some(page);
+                return true;
+            }
         }
         if self.chapter_idx > 0 {
             let prev_chapter = self.chapter_idx - 1;
-            if self.load_chapter(prev_chapter).is_ok() {
+            if self.load_chapter_backward(prev_chapter).is_ok() {
                 let total_prev = self
                     .chapter_page_counts
                     .get(&prev_chapter)
                     .copied()
                     .unwrap_or(1);
                 self.page_idx = total_prev.saturating_sub(1);
-                self.current_page = self.load_page(self.chapter_idx, self.page_idx).ok();
-                return true;
+                if let Ok(page) = self.load_page(self.chapter_idx, self.page_idx) {
+                    self.current_page = Some(page);
+                    return true;
+                }
             }
         }
         false
@@ -302,8 +367,19 @@ impl EpubReadingState {
 
     fn load_page(&mut self, chapter_idx: usize, page_idx: usize) -> Result<RenderPage, String> {
         if let Some(page) = self.page_cache.get(&(chapter_idx, page_idx)) {
+            log::info!(
+                "[EPUB] page cache hit chapter={} page={}",
+                chapter_idx,
+                page_idx
+            );
             return Ok(page.clone());
         }
+        log::info!(
+            "[EPUB] load_page start chapter={} page={} cache_entries={}",
+            chapter_idx,
+            page_idx,
+            self.page_cache.len()
+        );
 
         let mut target_page: Option<RenderPage> = None;
         let mut session = self.engine.begin(
@@ -317,45 +393,68 @@ impl EpubReadingState {
         };
 
         self.book
-            .chapter_events(chapter_idx, chapter_opts, |item| {
-                if layout_error.is_some() {
-                    return Ok(());
-                }
-                if let Err(err) = session.push(item) {
-                    layout_error = Some(err.to_string());
-                    return Ok(());
-                }
-                session.drain_pages(|page| {
-                    if target_page.is_none() {
-                        target_page = Some(page);
+            .chapter_events_with_scratch(
+                chapter_idx,
+                chapter_opts,
+                &mut self.chapter_buf,
+                &mut self.chapter_scratch,
+                |item| {
+                    if layout_error.is_some() {
+                        return Ok(());
                     }
-                });
-                Ok(())
-            })
+                    if target_page.is_some() {
+                        return Ok(());
+                    }
+                    if let Err(err) = session.push(item) {
+                        layout_error = Some(err.to_string());
+                        return Ok(());
+                    }
+                    session.drain_pages(|page| {
+                        if target_page.is_none() {
+                            target_page = Some(page);
+                        }
+                    });
+                    Ok(())
+                },
+            )
             .map_err(|e| format!("Unable to stream EPUB chapter: {}", e))?;
+        log::info!("[EPUB] chapter_events streamed chapter={}", chapter_idx);
 
         if let Some(err) = layout_error {
             return Err(format!("Unable to layout EPUB chapter: {}", err));
         }
 
-        session
-            .finish()
-            .map_err(|e| format!("Unable to finalize EPUB chapter layout: {}", e))?;
-        session.drain_pages(|page| {
-            if target_page.is_none() {
-                target_page = Some(page);
-            }
-        });
+        // If the target page was already found, avoid finalizing this session:
+        // `mu_epub_render` currently retains rendered page clones internally
+        // during session finish, which can spike memory on constrained devices.
+        if target_page.is_none() {
+            session
+                .finish()
+                .map_err(|e| format!("Unable to finalize EPUB chapter layout: {}", e))?;
+            session.drain_pages(|page| {
+                if target_page.is_none() {
+                    target_page = Some(page);
+                }
+            });
+        }
 
-        let page = target_page.ok_or_else(|| "Requested EPUB page is out of range".to_string())?;
+        let page = target_page.ok_or_else(|| Self::OUT_OF_RANGE_ERR.to_string())?;
+        log::info!(
+            "[EPUB] load_page ok chapter={} page={} total_in_chapter={:?}",
+            chapter_idx,
+            page_idx,
+            page.metrics.chapter_page_count
+        );
 
         if let Some(count) = page.metrics.chapter_page_count {
             self.chapter_page_counts.insert(chapter_idx, count);
         }
 
-        self.page_cache
-            .insert((chapter_idx, page_idx), page.clone());
-        self.trim_page_cache();
+        if Self::PAGE_CACHE_LIMIT > 0 {
+            self.page_cache
+                .insert((chapter_idx, page_idx), page.clone());
+            self.trim_page_cache();
+        }
         Ok(page)
     }
 
@@ -370,45 +469,58 @@ impl EpubReadingState {
 
     fn create_renderer() -> ReaderRenderer {
         let cfg = EgRenderConfig::default();
-        #[cfg(all(feature = "std", feature = "fontdue"))]
+        #[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
         {
             EgRenderer::with_backend(cfg, BookerlyFontBackend::default())
         }
-        #[cfg(not(all(feature = "std", feature = "fontdue")))]
+        #[cfg(any(
+            all(feature = "std", not(feature = "fontdue")),
+            all(feature = "std", target_os = "espidf")
+        ))]
         {
             EgRenderer::with_backend(cfg, mu_epub_embedded_graphics::MonoFontBackend)
         }
     }
 
     fn register_embedded_fonts(&mut self) {
-        let font_limits = FontLimits {
-            max_faces: 16,
-            max_bytes_per_font: Self::MAX_FONT_FACE_BYTES,
-            max_total_font_bytes: Self::MAX_FONT_TOTAL_BYTES,
-        };
-        let Ok(embedded) = self.book.embedded_fonts_with_limits(font_limits) else {
+        #[cfg(target_os = "espidf")]
+        {
+            // On-device we default to bundled font families (e.g. Bookerly) and
+            // avoid eager runtime TTF parsing to keep EPUB open deterministic.
             return;
-        };
-        for face in embedded {
-            let italic = matches!(
-                face.style,
-                EmbeddedFontStyle::Italic | EmbeddedFontStyle::Oblique
-            );
-            let mut bytes = Vec::new();
-            let Ok(_) = self.book.read_resource_into_with_limit(
-                &face.href,
-                &mut bytes,
-                Self::MAX_FONT_FACE_BYTES,
-            ) else {
-                continue;
+        }
+
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let font_limits = FontLimits {
+                max_faces: 16,
+                max_bytes_per_font: Self::MAX_FONT_FACE_BYTES,
+                max_total_font_bytes: Self::MAX_FONT_TOTAL_BYTES,
             };
-            let registration = [FontFaceRegistration {
-                family: &face.family,
-                weight: face.weight,
-                italic,
-                data: &bytes,
-            }];
-            let _ = self.eg_renderer.register_faces(&registration);
+            let Ok(embedded) = self.book.embedded_fonts_with_limits(font_limits) else {
+                return;
+            };
+            for face in embedded {
+                let italic = matches!(
+                    face.style,
+                    EmbeddedFontStyle::Italic | EmbeddedFontStyle::Oblique
+                );
+                let mut bytes = Vec::new();
+                let Ok(_) = self.book.read_resource_into_with_limit(
+                    &face.href,
+                    &mut bytes,
+                    Self::MAX_FONT_FACE_BYTES,
+                ) else {
+                    continue;
+                };
+                let registration = [FontFaceRegistration {
+                    family: &face.family,
+                    weight: face.weight,
+                    italic,
+                    data: &bytes,
+                }];
+                let _ = self.eg_renderer.register_faces(&registration);
+            }
         }
     }
 }
@@ -773,6 +885,14 @@ impl Activity for FileBrowserActivity {
     }
 
     fn refresh_mode(&self) -> crate::ui::ActivityRefreshMode {
+        #[cfg(feature = "std")]
+        if self.is_viewing_epub() {
+            // Avoid diff-based updates for EPUB pages on-device: diff mode keeps
+            // large scratch buffers alive and can starve chapter parsing of
+            // contiguous heap during page turns.
+            return crate::ui::ActivityRefreshMode::Partial;
+        }
+
         crate::ui::ActivityRefreshMode::Fast
     }
 }

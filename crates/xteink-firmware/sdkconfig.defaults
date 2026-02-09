@@ -1,6 +1,6 @@
 # Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
-# ESP32-C3 has ~191KB total RAM, so we use 96KB for stack to keep
-# headroom for std-enabled UI/deferred task processing.
+# ESP32-C3 has ~191KB total RAM. Use a balanced main-task stack that avoids
+# EPUB open-time stack faults while preserving heap for pagination/rendering.
 # (display buffers: 48KB, filesystem, app state, etc.)
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=122880
 

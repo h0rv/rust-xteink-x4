@@ -399,10 +399,7 @@ trait FsCliOps: FileSystem {
         G: FnMut(usize) -> Result<(), xteink_ui::filesystem::FileSystemError>;
 }
 
-impl<SPI> FsCliOps for SdCardFs<SPI>
-where
-    SPI: embedded_hal::spi::SpiDevice,
-{
+impl FsCliOps for SdCardFs {
     fn delete_file(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError> {
         SdCardFs::delete_file(self, path)
     }
@@ -704,14 +701,6 @@ fn main() {
 
     let spi_device =
         SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio21), &spi_config).unwrap();
-    let sd_spi_config = Config::default()
-        .baudrate(esp_idf_svc::hal::units::Hertz(20_000_000))
-        .data_mode(embedded_hal::spi::Mode {
-            polarity: embedded_hal::spi::Polarity::IdleLow,
-            phase: embedded_hal::spi::Phase::CaptureOnFirstTransition,
-        });
-    let sd_spi = SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio12), &sd_spi_config).unwrap();
-
     let dc = PinDriver::output(peripherals.pins.gpio4).unwrap();
     let rst = PinDriver::output(peripherals.pins.gpio5).unwrap();
     let busy = PinDriver::input(peripherals.pins.gpio6).unwrap();
@@ -753,7 +742,7 @@ fn main() {
 
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
-    let mut fs = match SdCardFs::new(sd_spi) {
+    let mut fs = match SdCardFs::new(spi.host() as i32, 12) {
         Ok(fs) => fs,
         Err(err) => {
             log::warn!("SD card mount failed: {}", err);

@@ -12,11 +12,13 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
-use mu_epub::{EmbeddedFontStyle, EpubBook};
+use mu_epub::book::OpenConfig;
+#[cfg(feature = "std")]
+use mu_epub::{EmbeddedFontStyle, EpubBook, FontLimits};
 #[cfg(feature = "std")]
 use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer, FontFaceRegistration};
 #[cfg(feature = "std")]
-use mu_epub_render::{RenderEngine, RenderEngineOptions, RenderPage};
+use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(feature = "std")]
 use std::io::{Read, Seek, SeekFrom};
 
@@ -161,9 +163,15 @@ type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
 
 #[cfg(feature = "std")]
 impl EpubReadingState {
+    const MAX_FONT_FACE_BYTES: usize = 512 * 1024;
+
     fn from_chunked_reader(reader: ChunkedEpubReader) -> Result<Self, String> {
-        let book =
-            EpubBook::from_reader(reader).map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+        let open_cfg = OpenConfig {
+            options: Default::default(),
+            lazy_navigation: true,
+        };
+        let book = EpubBook::from_reader_with_config(reader, open_cfg)
+            .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
         let mut state = Self {
             book,
             engine: RenderEngine::new(RenderEngineOptions::for_display(
@@ -183,9 +191,12 @@ impl EpubReadingState {
     fn load_chapter(&mut self, chapter_idx: usize) -> Result<(), String> {
         self.pages = self
             .engine
-            .prepare_chapter_iter(&mut self.book, chapter_idx)
-            .map_err(|e| format!("Unable to prepare EPUB chapter: {}", e))?
-            .collect();
+            .prepare_chapter_with_config_collect(
+                &mut self.book,
+                chapter_idx,
+                RenderConfig::default(),
+            )
+            .map_err(|e| format!("Unable to prepare EPUB chapter: {}", e))?;
         if self.pages.is_empty() {
             self.pages.push(RenderPage::new(1));
         }
@@ -259,7 +270,7 @@ impl EpubReadingState {
     }
 
     fn register_embedded_fonts(&mut self) {
-        let Ok(embedded) = self.book.embedded_fonts() else {
+        let Ok(embedded) = self.book.embedded_fonts_with_limits(FontLimits::default()) else {
             return;
         };
 
@@ -276,7 +287,12 @@ impl EpubReadingState {
                 face.style,
                 EmbeddedFontStyle::Italic | EmbeddedFontStyle::Oblique
             );
-            let Ok(bytes) = self.book.read_resource(&face.href) else {
+            let mut bytes = Vec::new();
+            let Ok(_) = self.book.read_resource_into_with_limit(
+                &face.href,
+                &mut bytes,
+                Self::MAX_FONT_FACE_BYTES,
+            ) else {
                 continue;
             };
             loaded.push(LoadedFace {

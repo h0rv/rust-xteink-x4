@@ -12,9 +12,9 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
-use epublet::EpubBook;
+use epublet::{EmbeddedFontStyle, EpubBook};
 #[cfg(feature = "std")]
-use epublet_embedded_graphics::{EgRenderConfig, EgRenderer};
+use epublet_embedded_graphics::{EgRenderConfig, EgRenderer, FontFaceRegistration};
 #[cfg(feature = "std")]
 use epublet_render::{RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(feature = "std")]
@@ -79,6 +79,7 @@ impl EpubReadingState {
             chapter_idx: 0,
             page_idx: 0,
         };
+        state.register_embedded_fonts();
         state.load_chapter(0)?;
         Ok(state)
     }
@@ -149,7 +150,10 @@ impl EpubReadingState {
     }
 
     fn create_renderer() -> ReaderRenderer {
-        let cfg = EgRenderConfig { clear_first: true };
+        let cfg = EgRenderConfig {
+            clear_first: true,
+            ..EgRenderConfig::default()
+        };
         #[cfg(all(feature = "std", feature = "fontdue"))]
         {
             EgRenderer::with_backend(cfg, BookerlyFontBackend::default())
@@ -158,6 +162,47 @@ impl EpubReadingState {
         {
             EgRenderer::with_backend(cfg, epublet_embedded_graphics::MonoFontBackend)
         }
+    }
+
+    fn register_embedded_fonts(&mut self) {
+        let Ok(embedded) = self.book.embedded_fonts() else {
+            return;
+        };
+
+        struct LoadedFace {
+            family: String,
+            weight: u16,
+            italic: bool,
+            data: Vec<u8>,
+        }
+
+        let mut loaded = Vec::<LoadedFace>::new();
+        for face in embedded {
+            let italic = matches!(
+                face.style,
+                EmbeddedFontStyle::Italic | EmbeddedFontStyle::Oblique
+            );
+            let Ok(bytes) = self.book.read_resource(&face.href) else {
+                continue;
+            };
+            loaded.push(LoadedFace {
+                family: face.family,
+                weight: face.weight,
+                italic,
+                data: bytes,
+            });
+        }
+
+        let faces: Vec<FontFaceRegistration<'_>> = loaded
+            .iter()
+            .map(|face| FontFaceRegistration {
+                family: &face.family,
+                weight: face.weight,
+                italic: face.italic,
+                data: &face.data,
+            })
+            .collect();
+        let _ = self.eg_renderer.register_faces(&faces);
     }
 }
 

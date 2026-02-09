@@ -5,10 +5,13 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 use epublet_embedded_graphics::{
-    FontBackend, FontFaceRegistration, FontId, FontMetrics, FontSelection,
+    BackendCapabilities, FontBackend, FontFaceRegistration, FontFallbackReason, FontId,
+    FontMetrics, FontSelection,
 };
 use epublet_render::ResolvedTextStyle;
 
@@ -25,41 +28,35 @@ const FONT_BOLD: &str = "bookerly-bold";
 const FONT_ITALIC: &str = "bookerly-italic";
 const FONT_BOLD_ITALIC: &str = "bookerly-bold-italic";
 
-const DEFAULT_FONT_ID: FontId = 0;
+const DEFAULT_SLOT_ID: FontId = 0;
 const MIN_SIZE_PX: f32 = 10.0;
 const MAX_SIZE_PX: f32 = 36.0;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct FontSpec {
-    size_px: f32,
-    bold: bool,
-    italic: bool,
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FontSlotKey {
+    font_name: String,
+    size_bits: u32,
 }
 
-impl FontSpec {
-    fn from_style(style: &ResolvedTextStyle) -> Self {
+impl FontSlotKey {
+    fn new(font_name: String, size_px: f32) -> Self {
         Self {
-            size_px: style.size_px.clamp(MIN_SIZE_PX, MAX_SIZE_PX),
-            bold: style.weight >= 700,
-            italic: style.italic,
+            font_name,
+            size_bits: size_px.clamp(MIN_SIZE_PX, MAX_SIZE_PX).to_bits(),
         }
     }
 
-    fn font_name(self) -> &'static str {
-        match (self.bold, self.italic) {
-            (true, true) => FONT_BOLD_ITALIC,
-            (true, false) => FONT_BOLD,
-            (false, true) => FONT_ITALIC,
-            (false, false) => FONT_REGULAR,
-        }
+    fn size_px(&self) -> f32 {
+        f32::from_bits(self.size_bits)
     }
 }
 
 struct BackendState {
     cache: FontCache,
-    next_id: FontId,
-    specs: BTreeMap<FontId, FontSpec>,
-    upstream_to_local: BTreeMap<u32, FontId>,
+    next_slot_id: FontId,
+    slots_by_key: BTreeMap<FontSlotKey, FontId>,
+    slot_keys_by_id: BTreeMap<FontId, FontSlotKey>,
+    embedded_font_names_by_resolved_id: BTreeMap<u32, String>,
 }
 
 impl BackendState {
@@ -69,35 +66,53 @@ impl BackendState {
         let _ = cache.load_font(FONT_BOLD, BOOKERLY_BOLD);
         let _ = cache.load_font(FONT_ITALIC, BOOKERLY_ITALIC);
         let _ = cache.load_font(FONT_BOLD_ITALIC, BOOKERLY_BOLD_ITALIC);
+
+        let default_key = FontSlotKey::new(FONT_REGULAR.to_string(), 16.0);
+        let mut slots_by_key = BTreeMap::new();
+        slots_by_key.insert(default_key.clone(), DEFAULT_SLOT_ID);
+        let mut slot_keys_by_id = BTreeMap::new();
+        slot_keys_by_id.insert(DEFAULT_SLOT_ID, default_key);
+
         Self {
             cache,
-            next_id: 1,
-            specs: BTreeMap::new(),
-            upstream_to_local: BTreeMap::new(),
+            next_slot_id: 1,
+            slots_by_key,
+            slot_keys_by_id,
+            embedded_font_names_by_resolved_id: BTreeMap::new(),
         }
     }
 
-    fn spec_for_id(&self, font_id: FontId) -> FontSpec {
-        self.specs.get(&font_id).copied().unwrap_or(FontSpec {
-            size_px: 16.0,
-            bold: false,
-            italic: false,
-        })
+    fn default_font_name_for_style(style: &ResolvedTextStyle) -> &'static str {
+        match (style.weight >= 700, style.italic) {
+            (true, true) => FONT_BOLD_ITALIC,
+            (true, false) => FONT_BOLD,
+            (false, true) => FONT_ITALIC,
+            (false, false) => FONT_REGULAR,
+        }
     }
 
-    fn ensure_font_id_for_spec(&mut self, spec: FontSpec) -> FontId {
-        if let Some((font_id, _)) = self.specs.iter().find(|(_, existing)| **existing == spec) {
-            return *font_id;
+    fn ensure_slot_for(&mut self, key: FontSlotKey) -> FontId {
+        if let Some(existing) = self.slots_by_key.get(&key) {
+            return *existing;
         }
 
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1).max(1);
-        self.specs.insert(id, spec);
+        let id = self.next_slot_id;
+        self.next_slot_id = self.next_slot_id.saturating_add(1).max(1);
+        self.slots_by_key.insert(key.clone(), id);
+        self.slot_keys_by_id.insert(id, key);
         id
+    }
+
+    fn slot_key_for_id(&self, font_id: FontId) -> FontSlotKey {
+        self.slot_keys_by_id
+            .get(&font_id)
+            .cloned()
+            .unwrap_or_else(|| FontSlotKey::new(FONT_REGULAR.to_string(), 16.0))
     }
 }
 
-/// Font backend that renders with Bookerly faces and style-derived size/weight.
+/// Font backend that renders with Bookerly by default and supports
+/// dynamic registration of EPUB embedded fonts.
 pub struct BookerlyFontBackend {
     state: std::sync::Mutex<BackendState>,
 }
@@ -111,8 +126,29 @@ impl Default for BookerlyFontBackend {
 }
 
 impl FontBackend for BookerlyFontBackend {
-    fn register_faces(&mut self, _faces: &[FontFaceRegistration<'_>]) -> usize {
-        0
+    fn register_faces(&mut self, faces: &[FontFaceRegistration<'_>]) -> usize {
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        let mut accepted = 0usize;
+        for (index, face) in faces.iter().enumerate() {
+            let font_name = format!(
+                "embedded-{}-{}-{}-{}",
+                index,
+                face.family,
+                face.weight,
+                if face.italic { "i" } else { "n" }
+            );
+            if state.cache.load_font(&font_name, face.data).is_ok() {
+                state
+                    .embedded_font_names_by_resolved_id
+                    .insert((index as u32) + 1, font_name);
+                accepted += 1;
+            }
+        }
+        accepted
     }
 
     fn resolve_font(&self, style: &ResolvedTextStyle, font_id: Option<u32>) -> FontSelection {
@@ -120,14 +156,19 @@ impl FontBackend for BookerlyFontBackend {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let spec = FontSpec::from_style(style);
-        let mapped = state.ensure_font_id_for_spec(spec);
-        if let Some(raw) = font_id {
-            state.upstream_to_local.insert(raw, mapped);
-        }
+
+        let fallback_reason = font_id
+            .filter(|id| !state.embedded_font_names_by_resolved_id.contains_key(id))
+            .map(|_| FontFallbackReason::UnknownFontId);
+
+        let chosen_name = font_id
+            .and_then(|id| state.embedded_font_names_by_resolved_id.get(&id).cloned())
+            .unwrap_or_else(|| BackendState::default_font_name_for_style(style).to_string());
+
+        let slot_id = state.ensure_slot_for(FontSlotKey::new(chosen_name, style.size_px));
         FontSelection {
-            font_id: mapped,
-            fallback_reason: None,
+            font_id: slot_id,
+            fallback_reason,
         }
     }
 
@@ -136,27 +177,18 @@ impl FontBackend for BookerlyFontBackend {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let resolved_id = if font_id == DEFAULT_FONT_ID {
-            DEFAULT_FONT_ID
-        } else {
-            state
-                .upstream_to_local
-                .get(&(font_id as u32))
-                .copied()
-                .unwrap_or(font_id)
-        };
-        let spec = state.spec_for_id(resolved_id);
-        state.cache.set_font(spec.font_name());
-        state.cache.set_font_size(spec.size_px);
+        let slot = state.slot_key_for_id(font_id);
+        state.cache.set_font(&slot.font_name);
+        state.cache.set_font_size(slot.size_px());
         let space_width = state
             .cache
-            .metrics(spec.font_name(), ' ')
+            .metrics(&slot.font_name, ' ')
             .map(|m| m.advance_width.round() as i32)
             .unwrap_or(6)
             .max(1);
         let char_width = state
             .cache
-            .metrics(spec.font_name(), 'n')
+            .metrics(&slot.font_name, 'n')
             .map(|m| m.advance_width.round() as i32)
             .unwrap_or(space_width)
             .max(1);
@@ -180,26 +212,26 @@ impl FontBackend for BookerlyFontBackend {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let resolved_id = if font_id == DEFAULT_FONT_ID {
-            DEFAULT_FONT_ID
-        } else {
-            state
-                .upstream_to_local
-                .get(&(font_id as u32))
-                .copied()
-                .unwrap_or(font_id)
-        };
-        let spec = state.spec_for_id(resolved_id);
-        state.cache.set_font(spec.font_name());
-        state.cache.set_font_size(spec.size_px);
+        let slot = state.slot_key_for_id(font_id);
+        state.cache.set_font(&slot.font_name);
+        state.cache.set_font_size(slot.size_px());
         let width = state
             .cache
-            .measure_text(text, spec.font_name())
+            .measure_text(text, &slot.font_name)
             .round()
             .max(0.0) as i32;
         state
             .cache
-            .render_text(display, text, spec.font_name(), origin.x, origin.y)?;
+            .render_text(display, text, &slot.font_name, origin.x, origin.y)?;
         Ok(width)
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            ttf: true,
+            images: false,
+            svg: false,
+            justification: true,
+        }
     }
 }

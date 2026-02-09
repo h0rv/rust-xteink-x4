@@ -2,6 +2,7 @@
 
 port := "/dev/ttyACM0"
 backup_file := "firmware_backup.bin"
+partition_table := "crates/xteink-firmware/partitions.csv"
 
 mod cli "cli/justfile"
 
@@ -94,23 +95,31 @@ check-firmware:
 build-firmware:
     cargo build -p xteink-firmware --release
 
+# Build firmware and enforce app-partition size gate.
+test-firmware-size:
+    cargo build -p xteink-firmware --release
+    just size-check
+
 # Flash firmware to device (incremental build)
 flash:
     cargo build -p xteink-firmware --release
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor 2>&1 | tee ../../flash.log
+    just size-check
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition app0 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
     cargo clean -p xteink-firmware
     cargo build -p xteink-firmware --release
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor 2>&1 | tee ../../flash.log
+    just size-check
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition app0 2>&1 | tee ../../flash.log
 
 # Clean flash (full rebuild with sdkconfig regeneration)
 flash-clean:
     cargo clean -p xteink-firmware
     rm -rf target/riscv32imc-esp-espidf/release/build/esp-idf-sys-*
     cargo build -p xteink-firmware --release
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor 2>&1 | tee ../../flash.log
+    just size-check
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition app0 2>&1 | tee ../../flash.log
 
 # Just monitor serial output
 monitor:
@@ -150,6 +159,10 @@ clean:
 # Clean firmware only
 clean-firmware:
     cargo clean -p xteink-firmware
+
+# Check firmware binary size against partition limits
+size-check:
+    python3 scripts/check_binary_size.py {{ partition_table }} target/riscv32imc-esp-espidf/release/xteink-firmware app0
 
 # Format code
 fmt:

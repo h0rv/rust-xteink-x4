@@ -177,6 +177,8 @@ pub struct LibraryActivity {
 impl LibraryActivity {
     /// Default books directory for auto-detection.
     pub const DEFAULT_BOOKS_ROOT: &'static str = "/books";
+    #[cfg(feature = "std")]
+    const MAX_EPUB_METADATA_BYTES: u64 = 64 * 1024;
 
     /// Toast display duration in frames
     const TOAST_DURATION: u32 = 120; // ~2 seconds at 60fps
@@ -259,7 +261,7 @@ impl LibraryActivity {
             .map(|(_, ext)| ext)
             .unwrap_or_default();
 
-        if extension.eq_ignore_ascii_case("epub") {
+        if extension.eq_ignore_ascii_case("epub") || extension.eq_ignore_ascii_case("epu") {
             if let Some((title, author, cover_thumbnail)) = Self::extract_epub_book_info(fs, path) {
                 let mut book = BookInfo::new(title, author, path, 0, None);
                 book.cover_thumbnail = cover_thumbnail;
@@ -268,7 +270,7 @@ impl LibraryActivity {
         }
 
         let mut book = BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None);
-        if !extension.eq_ignore_ascii_case("epub") {
+        if !extension.eq_ignore_ascii_case("epub") && !extension.eq_ignore_ascii_case("epu") {
             book.cover_thumbnail = Self::load_sidecar_cover_thumbnail(fs, path);
         }
         book
@@ -282,6 +284,12 @@ impl LibraryActivity {
         use mu_epub::metadata::{parse_container_xml, parse_opf};
         use mu_epub::zip::StreamingZip;
         use std::io::Cursor;
+
+        if let Ok(info) = fs.file_info(path) {
+            if info.size > Self::MAX_EPUB_METADATA_BYTES {
+                return None;
+            }
+        }
 
         let data = fs.read_file_bytes(path).ok()?;
         let mut zip = StreamingZip::new(Cursor::new(data)).ok()?;

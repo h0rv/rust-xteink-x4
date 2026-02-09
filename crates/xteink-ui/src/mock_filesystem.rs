@@ -194,6 +194,31 @@ impl FileSystem for MockFileSystem {
         }
     }
 
+    fn read_file_chunks(
+        &mut self,
+        path: &str,
+        chunk_size: usize,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        let path = self.normalize_path(path);
+        match self.files.get(&path) {
+            Some(MockEntry::File { content, .. }) => {
+                let step = chunk_size.max(1);
+                let mut offset = 0usize;
+                while offset < content.len() {
+                    let end = (offset + step).min(content.len());
+                    on_chunk(&content[offset..end])?;
+                    offset = end;
+                }
+                Ok(())
+            }
+            Some(MockEntry::Directory { .. }) => {
+                Err(FileSystemError::IoError("Is a directory".to_string()))
+            }
+            None => Err(FileSystemError::NotFound),
+        }
+    }
+
     fn exists(&mut self, path: &str) -> bool {
         let path = self.normalize_path(path);
         self.files.contains_key(&path)

@@ -18,7 +18,7 @@ use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer, FontFaceRegistration
 #[cfg(feature = "std")]
 use mu_epub_render::{RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(feature = "std")]
-use std::io::Cursor;
+use std::io::{Read, Seek, SeekFrom};
 
 #[cfg(all(feature = "std", feature = "fontdue"))]
 use crate::epub_font_backend::BookerlyFontBackend;
@@ -49,12 +49,108 @@ enum BrowserMode {
 
 #[cfg(feature = "std")]
 struct EpubReadingState {
-    book: EpubBook<Cursor<Vec<u8>>>,
+    book: EpubBook<ChunkedEpubReader>,
     engine: RenderEngine,
     eg_renderer: ReaderRenderer,
     pages: Vec<RenderPage>,
     chapter_idx: usize,
     page_idx: usize,
+}
+
+#[cfg(feature = "std")]
+#[derive(Debug, Default, Clone)]
+struct ChunkedEpubReader {
+    chunks: Vec<Vec<u8>>,
+    chunk_offsets: Vec<usize>,
+    total_len: usize,
+    pos: usize,
+}
+
+#[cfg(feature = "std")]
+impl ChunkedEpubReader {
+    fn from_chunks(chunks: Vec<Vec<u8>>) -> Self {
+        let mut chunk_offsets = Vec::with_capacity(chunks.len());
+        let mut total_len = 0usize;
+        for chunk in &chunks {
+            chunk_offsets.push(total_len);
+            total_len = total_len.saturating_add(chunk.len());
+        }
+        Self {
+            chunks,
+            chunk_offsets,
+            total_len,
+            pos: 0,
+        }
+    }
+
+    fn locate_chunk(&self, absolute_pos: usize) -> Option<(usize, usize)> {
+        if self.chunks.is_empty() || absolute_pos >= self.total_len {
+            return None;
+        }
+        match self.chunk_offsets.binary_search(&absolute_pos) {
+            Ok(idx) => Some((idx, 0)),
+            Err(insert_idx) => {
+                if insert_idx == 0 {
+                    None
+                } else {
+                    let chunk_idx = insert_idx - 1;
+                    let in_chunk = absolute_pos - self.chunk_offsets[chunk_idx];
+                    Some((chunk_idx, in_chunk))
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Read for ChunkedEpubReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() || self.pos >= self.total_len {
+            return Ok(0);
+        }
+
+        let mut written = 0usize;
+        while written < buf.len() && self.pos < self.total_len {
+            let Some((chunk_idx, in_chunk)) = self.locate_chunk(self.pos) else {
+                break;
+            };
+            let chunk = &self.chunks[chunk_idx];
+            let available = chunk.len().saturating_sub(in_chunk);
+            if available == 0 {
+                break;
+            }
+            let to_copy = available.min(buf.len() - written);
+            let src = &chunk[in_chunk..in_chunk + to_copy];
+            let dst = &mut buf[written..written + to_copy];
+            dst.copy_from_slice(src);
+            written += to_copy;
+            self.pos += to_copy;
+        }
+
+        Ok(written)
+    }
+}
+
+#[cfg(feature = "std")]
+impl Seek for ChunkedEpubReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let base = match pos {
+            SeekFrom::Start(offset) => offset as i128,
+            SeekFrom::End(offset) => self.total_len as i128 + offset as i128,
+            SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
+        };
+        if base < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid seek before start",
+            ));
+        }
+        let next = usize::try_from(base).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid seek position")
+        })?;
+        self.pos = next.min(self.total_len);
+        Ok(self.pos as u64)
+    }
 }
 
 #[cfg(all(feature = "std", feature = "fontdue"))]
@@ -65,9 +161,9 @@ type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
 
 #[cfg(feature = "std")]
 impl EpubReadingState {
-    fn from_bytes(data: Vec<u8>) -> Result<Self, String> {
-        let book = EpubBook::from_reader(Cursor::new(data))
-            .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+    fn from_chunked_reader(reader: ChunkedEpubReader) -> Result<Self, String> {
+        let book =
+            EpubBook::from_reader(reader).map_err(|e| format!("Unable to parse EPUB: {}", e))?;
         let mut state = Self {
             book,
             engine: RenderEngine::new(RenderEngineOptions::for_display(
@@ -214,6 +310,8 @@ pub struct FileBrowserActivity {
 
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
+    #[cfg(feature = "std")]
+    const EPUB_READ_CHUNK_BYTES: usize = 4096;
 
     pub fn new() -> Self {
         Self {
@@ -314,10 +412,10 @@ impl FileBrowserActivity {
     }
 
     #[inline(never)]
-    fn process_open_epub_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
+    fn process_open_epub_file_task(&mut self, _fs: &mut dyn FileSystem, path: &str) -> bool {
         #[cfg(feature = "std")]
         {
-            match Self::load_epub_renderer(fs, path) {
+            match Self::load_epub_renderer(_fs, path) {
                 Ok(renderer) => {
                     self.mode = BrowserMode::ReadingEpub {
                         renderer: Box::new(renderer),
@@ -379,7 +477,9 @@ impl FileBrowserActivity {
     }
 
     fn is_epub_file(path: &str) -> bool {
-        path.to_lowercase().ends_with(".epub")
+        let lower = path.to_lowercase();
+        // FAT 8.3 backends can expose EPUB as `.epu`.
+        lower.ends_with(".epub") || lower.ends_with(".epu")
     }
 
     fn open_path(&mut self, fs: &mut dyn FileSystem, path: &str) {
@@ -416,10 +516,19 @@ impl FileBrowserActivity {
     #[cfg(feature = "std")]
     #[inline(never)]
     fn load_epub_renderer(fs: &mut dyn FileSystem, path: &str) -> Result<EpubReadingState, String> {
-        let data = fs
-            .read_file_bytes(path)
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+        let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
+            chunks.push(chunk.to_vec());
+            Ok(())
+        };
+        fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
             .map_err(|e| format!("Unable to read EPUB: {}", e))?;
-        EpubReadingState::from_bytes(data)
+
+        if chunks.is_empty() {
+            return Err("Unable to read EPUB: empty file".to_string());
+        }
+
+        EpubReadingState::from_chunked_reader(ChunkedEpubReader::from_chunks(chunks))
     }
 
     fn handle_reader_input(&mut self, event: InputEvent) -> ActivityResult {
@@ -528,9 +637,7 @@ impl Activity for FileBrowserActivity {
     }
 
     fn refresh_mode(&self) -> crate::ui::ActivityRefreshMode {
-        // Diff-based fast updates can leave artifacts in list UIs on e-ink.
-        // Use partial full-screen updates for stable visuals.
-        crate::ui::ActivityRefreshMode::Partial
+        crate::ui::ActivityRefreshMode::Fast
     }
 }
 

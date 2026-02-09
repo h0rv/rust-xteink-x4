@@ -70,6 +70,27 @@ pub trait FileSystem {
     /// Returns FileSystemError if file not found or read fails
     fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError>;
 
+    /// Stream file contents in chunks.
+    ///
+    /// Default implementation falls back to `read_file_bytes`, but implementations
+    /// should override this for memory-efficient streaming.
+    fn read_file_chunks(
+        &mut self,
+        path: &str,
+        chunk_size: usize,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        let data = self.read_file_bytes(path)?;
+        let mut offset = 0usize;
+        let step = chunk_size.max(1);
+        while offset < data.len() {
+            let end = (offset + step).min(data.len());
+            on_chunk(&data[offset..end])?;
+            offset = end;
+        }
+        Ok(())
+    }
+
     /// Check if file exists
     fn exists(&mut self, path: &str) -> bool;
 
@@ -82,11 +103,11 @@ pub trait FileSystem {
     /// * `root` - Root directory to scan (e.g., "/books")
     ///
     /// # Returns
-    /// List of file paths for supported book formats (.epub, .txt, .md)
+    /// List of file paths for supported book formats (.epub/.epu, .txt, .md)
     fn scan_directory(&mut self, root: &str) -> Result<Vec<String>, FileSystemError> {
         let mut results = Vec::new();
         let mut dirs_to_scan = vec![root.to_string()];
-        const SUPPORTED_EXTENSIONS: &[&str] = &[".epub", ".txt", ".md"];
+        const SUPPORTED_EXTENSIONS: &[&str] = &[".epub", ".epu", ".txt", ".md"];
         const HIDDEN_PREFIXES: &[&str] = &[".", "System Volume Information"];
 
         while let Some(current_dir) = dirs_to_scan.pop() {

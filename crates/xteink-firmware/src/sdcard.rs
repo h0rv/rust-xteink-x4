@@ -1,118 +1,144 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::ptr;
-use std::fs;
-use std::io::Write;
-use std::path::Path;
 
-use esp_idf_svc::hal::gpio::Pin;
-use esp_idf_svc::hal::spi::SpiDriver;
-use esp_idf_svc::sys;
+use embedded_sdmmc::{
+    sdcard::DummyCsPin, Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+};
+use esp_idf_svc::hal::delay::FreeRtos;
 use xteink_ui::filesystem::{FileInfo, FileSystem, FileSystemError};
 
-const SD_MOUNT_POINT: &str = "/sd";
-const SD_MAX_FILES: i32 = 16;
+pub struct DummyTimeSource;
 
-pub struct SdCardFs {
-    base_path: String,
-    mounted: bool,
+impl TimeSource for DummyTimeSource {
+    fn get_timestamp(&self) -> Timestamp {
+        Timestamp {
+            year_since_1970: 56,
+            zero_indexed_month: 0,
+            zero_indexed_day: 0,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+        }
+    }
+}
+
+pub struct SdCardFs<SPI>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+{
+    volume_mgr: Option<VolumeManager<SdCard<SPI, DummyCsPin, FreeRtos>, DummyTimeSource, 4, 4, 1>>,
     mount_error: Option<String>,
 }
 
-impl SdCardFs {
-    pub fn new(spi: &SpiDriver, cs_pin: impl Pin) -> Result<Self, FileSystemError> {
-        let base_path = SD_MOUNT_POINT.to_string();
-        let c_base = std::ffi::CString::new(base_path.clone())
-            .map_err(|_| FileSystemError::IoError("Invalid mount path".into()))?;
-
-        let host = build_sdspi_host(spi.host());
-        let slot_config = sys::sdspi_device_config_t {
-            host_id: spi.host(),
-            gpio_cs: cs_pin.pin(),
-            gpio_cd: -1,
-            gpio_wp: -1,
-            gpio_int: -1,
-            gpio_wp_polarity: false,
-        };
-
-        let mount_config = sys::esp_vfs_fat_mount_config_t {
-            format_if_mount_failed: false,
-            max_files: SD_MAX_FILES,
-            allocation_unit_size: 0,
-            disk_status_check_enable: false,
-            use_one_fat: false,
-        };
-
-        let res = unsafe {
-            sys::esp_vfs_fat_sdspi_mount(
-                c_base.as_ptr(),
-                &host,
-                &slot_config,
-                &mount_config,
-                ptr::null_mut(),
-            )
-        };
-
-        if res != sys::ESP_OK {
-            return Err(FileSystemError::IoError(format!(
-                "SD mount failed: {}",
-                res
-            )));
+impl<SPI> SdCardFs<SPI>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+{
+    fn split_dir_file(path: &str) -> (&str, &str) {
+        match path.rfind('/') {
+            Some(0) => ("/", &path[1..]),
+            Some(i) => (&path[..i], &path[i + 1..]),
+            None => ("/", path),
         }
+    }
 
-        log::info!("SD card mounted at {}", base_path);
+    pub fn new(spi: SPI) -> Result<Self, FileSystemError> {
+        let sdcard = SdCard::new(spi, DummyCsPin, FreeRtos);
+        let size_bytes = sdcard
+            .num_bytes()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        log::info!("SD card size: {} bytes", size_bytes);
+
+        let mut volume_mgr = VolumeManager::new(sdcard, DummyTimeSource);
+        let _ = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
         Ok(Self {
-            base_path,
-            mounted: true,
+            volume_mgr: Some(volume_mgr),
             mount_error: None,
         })
     }
 
     pub fn unavailable(reason: impl Into<String>) -> Self {
         Self {
-            base_path: SD_MOUNT_POINT.to_string(),
-            mounted: false,
+            volume_mgr: None,
             mount_error: Some(reason.into()),
         }
     }
 
-    fn host_path(&self, path: &str) -> String {
-        if path == "/" {
-            self.base_path.clone()
-        } else {
-            format!("{}/{}", self.base_path, path.trim_start_matches('/'))
-        }
-    }
-
-    fn require_mounted(&self) -> Result<(), FileSystemError> {
-        if self.mounted {
-            Ok(())
-        } else {
-            Err(FileSystemError::IoError(format!(
+    fn volume_mgr(
+        &mut self,
+    ) -> Result<
+        &mut VolumeManager<SdCard<SPI, DummyCsPin, FreeRtos>, DummyTimeSource, 4, 4, 1>,
+        FileSystemError,
+    > {
+        self.volume_mgr.as_mut().ok_or_else(|| {
+            FileSystemError::IoError(format!(
                 "SD unavailable: {}",
                 self.mount_error.as_deref().unwrap_or("not mounted")
-            )))
+            ))
+        })
+    }
+
+    fn walk_to_dir(
+        dir: &mut embedded_sdmmc::Directory<
+            SdCard<SPI, DummyCsPin, FreeRtos>,
+            DummyTimeSource,
+            4,
+            4,
+            1,
+        >,
+        path: &str,
+    ) -> Result<(), FileSystemError> {
+        let clean = path.trim_matches('/');
+        for part in clean.split('/').filter(|part| !part.is_empty()) {
+            dir.change_dir(part)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
         }
+        Ok(())
     }
 
     pub fn delete_file(&mut self, path: &str) -> Result<(), FileSystemError> {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        fatfs_remove_entry(&self.base_path, &host_path)
-            .or_else(|_| fs::remove_file(host_path).map_err(to_fs_error))
+        let (dir_path, filename) = Self::split_dir_file(path);
+        if filename.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let volume_mgr = self.volume_mgr()?;
+        let mut volume = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Self::walk_to_dir(&mut dir, dir_path)?;
+        dir.delete_file_in_dir(filename)
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
     }
 
-    pub fn delete_dir(&mut self, path: &str) -> Result<(), FileSystemError> {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        remove_dir_recursive(&self.base_path, &host_path)
+    pub fn delete_dir(&mut self, _path: &str) -> Result<(), FileSystemError> {
+        Err(FileSystemError::IoError(
+            "Directory deletion unsupported by embedded-sdmmc backend".into(),
+        ))
     }
 
     pub fn make_dir(&mut self, path: &str) -> Result<(), FileSystemError> {
-        self.require_mounted()?;
-        fs::create_dir(self.host_path(path))
+        let (dir_path, name) = Self::split_dir_file(path);
+        if name.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let volume_mgr = self.volume_mgr()?;
+        let mut volume = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Self::walk_to_dir(&mut dir, dir_path)?;
+        dir.make_dir_in_dir(name)
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
     }
 
@@ -128,9 +154,21 @@ impl SdCardFs {
         F: FnMut(&mut [u8]) -> Result<usize, FileSystemError>,
         G: FnMut(usize) -> Result<(), FileSystemError>,
     {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        let mut file = fs::File::create(host_path)
+        let (dir_path, filename) = Self::split_dir_file(path);
+        if filename.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let volume_mgr = self.volume_mgr()?;
+        let mut volume = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Self::walk_to_dir(&mut dir, dir_path)?;
+        let mut file = dir
+            .open_file_in_dir(filename, Mode::ReadWriteCreateOrTruncate)
             .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
 
         let mut buffer = vec![0u8; chunk_size.max(1)];
@@ -142,7 +180,7 @@ impl SdCardFs {
             if read != to_read {
                 return Err(FileSystemError::IoError("Short read".into()));
             }
-            file.write_all(&buffer[..read])
+            file.write(&buffer[..read])
                 .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
             remaining = remaining.saturating_sub(read);
             written += read;
@@ -153,135 +191,146 @@ impl SdCardFs {
     }
 }
 
-fn remove_dir_recursive(base_path: &str, path: &str) -> Result<(), FileSystemError> {
-    for entry in fs::read_dir(path).map_err(to_fs_error)? {
-        let entry = entry.map_err(to_fs_error)?;
-        let entry_path = entry.path();
-        let entry_str = entry_path.to_string_lossy().to_string();
-        let meta = entry.metadata().map_err(to_fs_error)?;
-        if meta.is_dir() {
-            remove_dir_recursive(base_path, &entry_str)?;
-        } else {
-            let _ = fatfs_remove_entry(base_path, &entry_str);
-            let _ = fs::remove_file(&entry_str);
-        }
-    }
-
-    fatfs_remove_entry(base_path, path).or_else(|_| fs::remove_dir(path).map_err(to_fs_error))
-}
-
-fn fatfs_remove_entry(base_path: &str, host_path: &str) -> Result<(), FileSystemError> {
-    let fatfs_path = fatfs_path(base_path, host_path)?;
-    unsafe {
-        sys::f_chmod(fatfs_path.as_ptr(), 0, sys::AM_RDO as u8);
-        let res = sys::f_unlink(fatfs_path.as_ptr());
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(FileSystemError::IoError(format!("fatfs unlink: {}", res)))
-        }
-    }
-}
-
-fn fatfs_path(base_path: &str, host_path: &str) -> Result<std::ffi::CString, FileSystemError> {
-    let rel = host_path
-        .strip_prefix(base_path)
-        .unwrap_or(host_path)
-        .trim_start_matches('/');
-    let fat_path = format!("0:/{}", rel);
-    std::ffi::CString::new(fat_path)
-        .map_err(|_| FileSystemError::IoError("Invalid FATFS path".into()))
-}
-
-fn to_fs_error(err: std::io::Error) -> FileSystemError {
-    FileSystemError::IoError(format!("{:?}", err))
-}
-
-impl FileSystem for SdCardFs {
+impl<SPI> FileSystem for SdCardFs<SPI>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+{
     fn list_files(&mut self, path: &str) -> Result<Vec<FileInfo>, FileSystemError> {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        let mut entries = Vec::new();
+        let volume_mgr = self.volume_mgr()?;
+        let mut volume = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Self::walk_to_dir(&mut dir, path)?;
 
-        let read_dir =
-            fs::read_dir(&host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut files = Vec::new();
+        dir.iterate_dir(|entry| {
+            let base = core::str::from_utf8(entry.name.base_name())
+                .unwrap_or("")
+                .trim_end();
+            let ext = core::str::from_utf8(entry.name.extension())
+                .unwrap_or("")
+                .trim_end();
 
-        for entry in read_dir {
-            let entry = entry.map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-            let meta = entry
-                .metadata()
-                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            entries.push(FileInfo {
-                name,
-                size: if meta.is_file() { meta.len() } else { 0 },
-                is_directory: meta.is_dir(),
-            });
-        }
+            let full_name = if ext.is_empty() {
+                base.to_string()
+            } else {
+                format!("{}.{}", base, ext)
+            };
 
-        Ok(entries)
+            if !full_name.is_empty() {
+                files.push(FileInfo {
+                    name: full_name,
+                    size: if entry.attributes.is_directory() {
+                        0
+                    } else {
+                        entry.size as u64
+                    },
+                    is_directory: entry.attributes.is_directory(),
+                });
+            }
+        })
+        .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+
+        Ok(files)
     }
 
     fn read_file(&mut self, path: &str) -> Result<String, FileSystemError> {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        fs::read_to_string(host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
+        let bytes = self.read_file_bytes(path)?;
+        String::from_utf8(bytes).map_err(|_| FileSystemError::IoError("Invalid UTF-8".into()))
     }
 
     fn read_file_bytes(&mut self, path: &str) -> Result<Vec<u8>, FileSystemError> {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        fs::read(host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))
+        let (dir_path, filename) = Self::split_dir_file(path);
+        if filename.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let volume_mgr = self.volume_mgr()?;
+        let mut volume = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Self::walk_to_dir(&mut dir, dir_path)?;
+        let mut file = dir
+            .open_file_in_dir(filename, Mode::ReadOnly)
+            .map_err(|_| FileSystemError::NotFound)?;
+
+        let file_size = file.length() as usize;
+        let mut buffer = Vec::with_capacity(file_size);
+        let mut chunk = [0u8; 512];
+
+        loop {
+            let read = file
+                .read(&mut chunk)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+
+        Ok(buffer)
+    }
+
+    fn read_file_chunks(
+        &mut self,
+        path: &str,
+        chunk_size: usize,
+        on_chunk: &mut dyn FnMut(&[u8]) -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
+        let (dir_path, filename) = Self::split_dir_file(path);
+        if filename.is_empty() {
+            return Err(FileSystemError::IoError("Invalid path".into()));
+        }
+
+        let volume_mgr = self.volume_mgr()?;
+        let mut volume = volume_mgr
+            .open_volume(VolumeIdx(0))
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        let mut dir = volume
+            .open_root_dir()
+            .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+        Self::walk_to_dir(&mut dir, dir_path)?;
+        let mut file = dir
+            .open_file_in_dir(filename, Mode::ReadOnly)
+            .map_err(|_| FileSystemError::NotFound)?;
+
+        let mut chunk = vec![0u8; chunk_size.max(1)];
+        loop {
+            let read = file
+                .read(&mut chunk)
+                .map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
+            if read == 0 {
+                break;
+            }
+            on_chunk(&chunk[..read])?;
+        }
+        Ok(())
     }
 
     fn exists(&mut self, path: &str) -> bool {
-        self.mounted && Path::new(&self.host_path(path)).exists()
+        self.file_info(path).is_ok()
     }
 
     fn file_info(&mut self, path: &str) -> Result<FileInfo, FileSystemError> {
-        self.require_mounted()?;
-        let host_path = self.host_path(path);
-        let meta =
-            fs::metadata(&host_path).map_err(|e| FileSystemError::IoError(format!("{:?}", e)))?;
-        let name = Path::new(path)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
-        Ok(FileInfo {
-            name,
-            size: if meta.is_file() { meta.len() } else { 0 },
-            is_directory: meta.is_dir(),
-        })
-    }
-}
+        if path == "/" {
+            return Ok(FileInfo {
+                name: "/".to_string(),
+                size: 0,
+                is_directory: true,
+            });
+        }
 
-fn build_sdspi_host(host_id: sys::spi_host_device_t) -> sys::sdmmc_host_t {
-    const SDMMC_HOST_FLAG_SPI: u32 = 1 << 3;
-    const SDMMC_HOST_FLAG_DEINIT_ARG: u32 = 1 << 5;
-
-    sys::sdmmc_host_t {
-        flags: SDMMC_HOST_FLAG_SPI | SDMMC_HOST_FLAG_DEINIT_ARG,
-        slot: host_id as _,
-        max_freq_khz: 20_000,
-        io_voltage: 3.3,
-        init: Some(sys::sdspi_host_init),
-        set_bus_width: None,
-        get_bus_width: None,
-        set_bus_ddr_mode: None,
-        set_card_clk: Some(sys::sdspi_host_set_card_clk),
-        set_cclk_always_on: None,
-        do_transaction: Some(sys::sdspi_host_do_transaction),
-        __bindgen_anon_1: sys::sdmmc_host_t__bindgen_ty_1 {
-            deinit_p: Some(sys::sdspi_host_remove_device),
-        },
-        io_int_enable: Some(sys::sdspi_host_io_int_enable),
-        io_int_wait: Some(sys::sdspi_host_io_int_wait),
-        command_timeout_ms: 0,
-        get_real_freq: Some(sys::sdspi_host_get_real_freq),
-        input_delay_phase: sys::sdmmc_delay_phase_t_SDMMC_DELAY_PHASE_0,
-        set_input_delay: None,
-        dma_aligned_buffer: ptr::null_mut(),
-        pwr_ctrl_handle: ptr::null_mut(),
-        get_dma_info: Some(sys::sdspi_host_get_dma_info),
+        let (dir_path, filename) = Self::split_dir_file(path);
+        let entries = self.list_files(dir_path)?;
+        entries
+            .into_iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(filename))
+            .ok_or(FileSystemError::NotFound)
     }
 }

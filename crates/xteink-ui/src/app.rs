@@ -204,11 +204,10 @@ impl App {
         }
     }
 
-    /// Reset the refresh counter for an activity and force full refresh on next draw.
+    /// Reset the refresh counter for an activity.
     pub fn reset_refresh_counter_for(&mut self, screen: AppScreen) {
         let index = Self::screen_index(screen);
         self.refresh_counters[index] = 0;
-        self.needs_full_refresh_on_next_draw = true;
     }
 
     /// Get the current refresh frequency setting (pages between partial refreshes)

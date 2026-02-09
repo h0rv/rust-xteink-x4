@@ -8,7 +8,7 @@ use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{Input, PinDriver, Pull},
     peripherals::Peripherals,
-    spi::{config::Config, Dma, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+    spi::{config::Config, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
 };
 use esp_idf_svc::sys;
 
@@ -153,7 +153,7 @@ fn cli_redraw<I, D>(
 fn handle_cli_command<I, D>(
     line: &str,
     cli: &SerialCli,
-    fs: &mut SdCardFs,
+    fs: &mut impl FsCliOps,
     app: &mut App,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
@@ -379,6 +379,55 @@ fn handle_cli_command<I, D>(
         }
         "" => {}
         _ => cli.write_line("ERR unknown command"),
+    }
+}
+
+trait FsCliOps: FileSystem {
+    fn delete_file(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError>;
+    fn delete_dir(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError>;
+    fn make_dir(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError>;
+    fn write_file_streamed<F, G>(
+        &mut self,
+        path: &str,
+        total_size: usize,
+        chunk_size: usize,
+        read_chunk: F,
+        on_progress: G,
+    ) -> Result<(), xteink_ui::filesystem::FileSystemError>
+    where
+        F: FnMut(&mut [u8]) -> Result<usize, xteink_ui::filesystem::FileSystemError>,
+        G: FnMut(usize) -> Result<(), xteink_ui::filesystem::FileSystemError>;
+}
+
+impl<SPI> FsCliOps for SdCardFs<SPI>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+{
+    fn delete_file(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError> {
+        SdCardFs::delete_file(self, path)
+    }
+
+    fn delete_dir(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError> {
+        SdCardFs::delete_dir(self, path)
+    }
+
+    fn make_dir(&mut self, path: &str) -> Result<(), xteink_ui::filesystem::FileSystemError> {
+        SdCardFs::make_dir(self, path)
+    }
+
+    fn write_file_streamed<F, G>(
+        &mut self,
+        path: &str,
+        total_size: usize,
+        chunk_size: usize,
+        read_chunk: F,
+        on_progress: G,
+    ) -> Result<(), xteink_ui::filesystem::FileSystemError>
+    where
+        F: FnMut(&mut [u8]) -> Result<usize, xteink_ui::filesystem::FileSystemError>,
+        G: FnMut(usize) -> Result<(), xteink_ui::filesystem::FileSystemError>,
+    {
+        SdCardFs::write_file_streamed(self, path, total_size, chunk_size, read_chunk, on_progress)
     }
 }
 
@@ -642,7 +691,7 @@ fn main() {
         peripherals.pins.gpio8,
         peripherals.pins.gpio10,
         Some(peripherals.pins.gpio7),
-        &SpiDriverConfig::new().dma(Dma::Auto(4096)),
+        &SpiDriverConfig::default(),
     )
     .unwrap();
 
@@ -655,6 +704,13 @@ fn main() {
 
     let spi_device =
         SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio21), &spi_config).unwrap();
+    let sd_spi_config = Config::default()
+        .baudrate(esp_idf_svc::hal::units::Hertz(20_000_000))
+        .data_mode(embedded_hal::spi::Mode {
+            polarity: embedded_hal::spi::Polarity::IdleLow,
+            phase: embedded_hal::spi::Phase::CaptureOnFirstTransition,
+        });
+    let sd_spi = SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio12), &sd_spi_config).unwrap();
 
     let dc = PinDriver::output(peripherals.pins.gpio4).unwrap();
     let rst = PinDriver::output(peripherals.pins.gpio5).unwrap();
@@ -695,9 +751,9 @@ fn main() {
     let mut region_scratch: Vec<u8> = Vec::new();
     let mut region_scratch_prev: Vec<u8> = Vec::new();
 
-    // Initialize SD card filesystem via ESP-IDF FATFS.
+    // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
-    let mut fs = match SdCardFs::new(&spi, peripherals.pins.gpio12) {
+    let mut fs = match SdCardFs::new(sd_spi) {
         Ok(fs) => fs,
         Err(err) => {
             log::warn!("SD card mount failed: {}", err);

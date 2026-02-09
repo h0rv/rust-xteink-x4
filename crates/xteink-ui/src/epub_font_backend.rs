@@ -91,6 +91,13 @@ impl BackendState {
         }
     }
 
+    fn is_generic_family(family: &str) -> bool {
+        matches!(
+            family.trim().to_ascii_lowercase().as_str(),
+            "serif" | "sans-serif" | "sans" | "monospace" | "mono" | "fixed"
+        )
+    }
+
     fn ensure_slot_for(&mut self, key: FontSlotKey) -> FontId {
         if let Some(existing) = self.slots_by_key.get(&key) {
             return *existing;
@@ -157,13 +164,21 @@ impl FontBackend for BookerlyFontBackend {
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        let fallback_reason = font_id
-            .filter(|id| !state.embedded_font_names_by_resolved_id.contains_key(id))
-            .map(|_| FontFallbackReason::UnknownFontId);
-
-        let chosen_name = font_id
-            .and_then(|id| state.embedded_font_names_by_resolved_id.get(&id).cloned())
-            .unwrap_or_else(|| BackendState::default_font_name_for_style(style).to_string());
+        let use_embedded = !BackendState::is_generic_family(&style.family);
+        let chosen_name = if use_embedded {
+            font_id
+                .and_then(|id| state.embedded_font_names_by_resolved_id.get(&id).cloned())
+                .unwrap_or_else(|| BackendState::default_font_name_for_style(style).to_string())
+        } else {
+            BackendState::default_font_name_for_style(style).to_string()
+        };
+        let fallback_reason = if use_embedded {
+            font_id
+                .filter(|id| !state.embedded_font_names_by_resolved_id.contains_key(id))
+                .map(|_| FontFallbackReason::UnknownFontId)
+        } else {
+            None
+        };
 
         let slot_id = state.ensure_slot_for(FontSlotKey::new(chosen_name, style.size_px));
         FontSelection {

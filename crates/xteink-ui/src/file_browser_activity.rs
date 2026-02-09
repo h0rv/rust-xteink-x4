@@ -87,8 +87,9 @@ impl EpubReadingState {
     fn load_chapter(&mut self, chapter_idx: usize) -> Result<(), String> {
         self.pages = self
             .engine
-            .prepare_chapter(&mut self.book, chapter_idx)
-            .map_err(|e| format!("Unable to prepare EPUB chapter: {}", e))?;
+            .prepare_chapter_iter(&mut self.book, chapter_idx)
+            .map_err(|e| format!("Unable to prepare EPUB chapter: {}", e))?
+            .collect();
         if self.pages.is_empty() {
             self.pages.push(RenderPage::new(1));
         }
@@ -150,10 +151,7 @@ impl EpubReadingState {
     }
 
     fn create_renderer() -> ReaderRenderer {
-        let cfg = EgRenderConfig {
-            clear_first: true,
-            ..EgRenderConfig::default()
-        };
+        let cfg = EgRenderConfig::default();
         #[cfg(all(feature = "std", feature = "fontdue"))]
         {
             EgRenderer::with_backend(cfg, BookerlyFontBackend::default())

@@ -9,9 +9,9 @@ members = [
 ]
 
 [workspace.dependencies]
-epublet = { path = "../epublet", default-features = false }
-epublet-render = { path = "../epublet/crates/epublet-render" }
-epublet-embedded-graphics = { path = "../epublet/crates/epublet-embedded-graphics" }
+epublet = { package = "mu_epub", path = "../epublet", default-features = false }
+epublet-render = { package = "mu-epub-render", path = "../epublet/crates/mu-epub-render" }
+epublet-embedded-graphics = { package = "mu-epub-embedded-graphics", path = "../epublet/crates/mu-epub-embedded-graphics" }
 
 [profile.release]
 opt-level = "s"

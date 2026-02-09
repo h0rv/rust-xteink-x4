@@ -11,7 +11,7 @@ use esp_idf_svc::sys;
 use xteink_ui::filesystem::{resolve_mount_path, FileInfo, FileSystem, FileSystemError};
 
 const SD_MOUNT_POINT: &str = "/sd";
-const SD_MAX_FILES: i32 = 16;
+const SD_MAX_FILES: i32 = 4;
 
 pub struct SdCardFs {
     mounted: bool,
@@ -25,36 +25,8 @@ impl SdCardFs {
         let mount_path = CString::new(SD_MOUNT_POINT)
             .map_err(|_| FileSystemError::IoError("Invalid mount path".into()))?;
 
-        let mut card_ptr: *mut c_void = core::ptr::null_mut();
-        let host = sys::sdmmc_host_t {
-            // _SDMMC_HOST_FLAG_SPI (1 << 3) | _SDMMC_HOST_FLAG_DEINIT_ARG (1 << 5)
-            flags: (1u32 << 3) | (1u32 << 5),
-            slot: spi_host,
-            max_freq_khz: 20_000,
-            io_voltage: 3.3,
-            init: Some(sys::sdspi_host_init),
-            set_bus_width: None,
-            get_bus_width: None,
-            set_bus_ddr_mode: None,
-            set_card_clk: Some(sys::sdspi_host_set_card_clk),
-            set_cclk_always_on: None,
-            do_transaction: Some(sys::sdspi_host_do_transaction),
-            __bindgen_anon_1: sys::sdmmc_host_t__bindgen_ty_1 {
-                deinit_p: Some(sys::sdspi_host_remove_device),
-            },
-            io_int_enable: Some(sys::sdspi_host_io_int_enable),
-            io_int_wait: Some(sys::sdspi_host_io_int_wait),
-            command_timeout_ms: 0,
-            get_real_freq: Some(sys::sdspi_host_get_real_freq),
-            input_delay_phase: sys::sdmmc_delay_phase_t_SDMMC_DELAY_PHASE_0,
-            set_input_delay: None,
-            dma_aligned_buffer: core::ptr::null_mut(),
-            pwr_ctrl_handle: core::ptr::null_mut(),
-            get_dma_info: Some(sys::sdspi_host_get_dma_info),
-        };
-
         let slot_config = sys::sdspi_device_config_t {
-            host_id: spi_host,
+            host_id: spi_host as u32,
             gpio_cs: cs_gpio,
             gpio_cd: -1,
             gpio_wp: -1,
@@ -65,34 +37,84 @@ impl SdCardFs {
         let mount_config = sys::esp_vfs_fat_mount_config_t {
             format_if_mount_failed: false,
             max_files: SD_MAX_FILES,
-            allocation_unit_size: 0,
+            // 4 KiB AU is a good default for FAT32 on SD and avoids bigger transient buffers.
+            allocation_unit_size: 4096,
             disk_status_check_enable: false,
             use_one_fat: false,
         };
 
-        let err = unsafe {
-            sys::esp_vfs_fat_sdspi_mount(
-                mount_path.as_ptr(),
-                &host,
-                &slot_config,
-                &mount_config,
-                &mut card_ptr as *mut *mut c_void as *mut *mut sys::sdmmc_card_t,
-            )
-        };
+        log::info!(
+            "[SD] mount config: host={} cs={} mount_path={} max_files={} alloc_unit={}",
+            spi_host,
+            cs_gpio,
+            SD_MOUNT_POINT,
+            SD_MAX_FILES,
+            mount_config.allocation_unit_size
+        );
 
-        if err != sys::ESP_OK {
-            return Err(FileSystemError::IoError(format!(
-                "SD mount failed: {}",
-                err
-            )));
+        let mut mount_err = sys::ESP_FAIL;
+        for freq in [20_000, 10_000, 4_000] {
+            let host = build_sdspi_host(spi_host, freq);
+            let mut card_ptr: *mut c_void = core::ptr::null_mut();
+
+            log::info!("[SD] mount attempt: freq_khz={}", freq);
+            let err = unsafe {
+                sys::esp_vfs_fat_sdspi_mount(
+                    mount_path.as_ptr(),
+                    &host,
+                    &slot_config,
+                    &mount_config,
+                    &mut card_ptr as *mut *mut c_void as *mut *mut sys::sdmmc_card_t,
+                )
+            };
+
+            if err == sys::ESP_OK {
+                log::info!("[SD] mount success at {} kHz", freq);
+                let mut fs = Self {
+                    mounted: true,
+                    mount_error: None,
+                    mount_path,
+                    card_ptr,
+                };
+                // Extra sanity logs to help future SD issues.
+                match fs.list_files("/") {
+                    Ok(entries) => {
+                        log::info!("[SD] root probe: {} entries", entries.len());
+                        for entry in entries.iter().take(6) {
+                            log::info!(
+                                "[SD] root: {}{} ({} bytes)",
+                                entry.name,
+                                if entry.is_directory { "/" } else { "" },
+                                entry.size
+                            );
+                        }
+                    }
+                    Err(e) => log::warn!("[SD] root probe failed: {}", e),
+                }
+                return Ok(fs);
+            }
+
+            mount_err = err;
+            let err_name = unsafe {
+                let ptr = sys::esp_err_to_name(err);
+                if ptr.is_null() {
+                    "UNKNOWN"
+                } else {
+                    std::ffi::CStr::from_ptr(ptr).to_str().unwrap_or("UNKNOWN")
+                }
+            };
+            log::warn!(
+                "[SD] mount attempt failed: freq_khz={} err={} ({})",
+                freq,
+                err,
+                err_name
+            );
         }
 
-        Ok(Self {
-            mounted: true,
-            mount_error: None,
-            mount_path,
-            card_ptr,
-        })
+        Err(FileSystemError::IoError(format!(
+            "SD mount failed after retries: {}",
+            mount_err
+        )))
     }
 
     pub fn unavailable(reason: impl Into<String>) -> Self {
@@ -198,6 +220,35 @@ impl Drop for SdCardFs {
                 );
             }
         }
+    }
+}
+
+fn build_sdspi_host(spi_host: i32, max_freq_khz: i32) -> sys::sdmmc_host_t {
+    sys::sdmmc_host_t {
+        // _SDMMC_HOST_FLAG_SPI (1 << 3) | _SDMMC_HOST_FLAG_DEINIT_ARG (1 << 5)
+        flags: (1u32 << 3) | (1u32 << 5),
+        slot: spi_host,
+        max_freq_khz,
+        io_voltage: 3.3,
+        init: Some(sys::sdspi_host_init),
+        set_bus_width: None,
+        get_bus_width: None,
+        set_bus_ddr_mode: None,
+        set_card_clk: Some(sys::sdspi_host_set_card_clk),
+        set_cclk_always_on: None,
+        do_transaction: Some(sys::sdspi_host_do_transaction),
+        __bindgen_anon_1: sys::sdmmc_host_t__bindgen_ty_1 {
+            deinit_p: Some(sys::sdspi_host_remove_device),
+        },
+        io_int_enable: Some(sys::sdspi_host_io_int_enable),
+        io_int_wait: Some(sys::sdspi_host_io_int_wait),
+        command_timeout_ms: 0,
+        get_real_freq: Some(sys::sdspi_host_get_real_freq),
+        input_delay_phase: sys::sdmmc_delay_phase_t_SDMMC_DELAY_PHASE_0,
+        set_input_delay: None,
+        dma_aligned_buffer: core::ptr::null_mut(),
+        pwr_ctrl_handle: core::ptr::null_mut(),
+        get_dma_info: Some(sys::sdspi_host_get_dma_info),
     }
 }
 

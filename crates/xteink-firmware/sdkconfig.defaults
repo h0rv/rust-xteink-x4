@@ -2,7 +2,7 @@
 # ESP32-C3 has ~191KB total RAM, so we use 96KB for stack to keep
 # headroom for std-enabled UI/deferred task processing.
 # (display buffers: 48KB, filesystem, app state, etc.)
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=98304
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=122880
 
 # Temporary diagnostic: disable watchdogs to unblock startup reset loop
 # while we isolate the long blocking path in display init/update.
@@ -22,6 +22,11 @@ CONFIG_FATFS_LONG_FILENAMES=y
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_SECTOR_512=y
+CONFIG_FATFS_SECTOR_4096=n
+CONFIG_FATFS_VOLUME_COUNT=1
+# Keep FATFS RAM usage low on ESP32-C3.
+CONFIG_FATFS_PER_FILE_CACHE=n
 
 # Use custom partition table from this crate.
 CONFIG_PARTITION_TABLE_CUSTOM=y

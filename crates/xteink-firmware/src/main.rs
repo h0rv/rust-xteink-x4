@@ -8,7 +8,7 @@ use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{Input, PinDriver, Pull},
     peripherals::Peripherals,
-    spi::{config::Config, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+    spi::{config::Config, Dma, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
 };
 use esp_idf_svc::sys;
 
@@ -688,7 +688,7 @@ fn main() {
         peripherals.pins.gpio8,
         peripherals.pins.gpio10,
         Some(peripherals.pins.gpio7),
-        &SpiDriverConfig::default(),
+        &SpiDriverConfig::default().dma(Dma::Auto(4096)),
     )
     .unwrap();
 

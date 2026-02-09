@@ -293,21 +293,37 @@ impl LibraryActivity {
 
         let data = fs.read_file_bytes(path).ok()?;
         let mut zip = StreamingZip::new(Cursor::new(data)).ok()?;
+        let mut input_scratch = vec![0u8; 4096];
+        let mut output_scratch = vec![0u8; 4096];
 
         let container_entry = zip
             .get_entry("META-INF/container.xml")
             .or_else(|| zip.get_entry("meta-inf/container.xml"))?
             .clone();
-        let container_size = container_entry.uncompressed_size as usize;
-        let mut container_buf = vec![0u8; container_size];
-        let container_read = zip.read_file(&container_entry, &mut container_buf).ok()?;
+        let mut container_buf = Vec::new();
+        let container_read = Self::read_zip_entry_with_scratch(
+            &mut zip,
+            &container_entry,
+            &mut container_buf,
+            &mut input_scratch,
+            &mut output_scratch,
+            Self::MAX_EPUB_METADATA_BYTES as usize,
+        )
+        .ok()?;
 
         let opf_path = parse_container_xml(&container_buf[..container_read]).ok()?;
 
         let opf_entry = zip.get_entry(&opf_path)?.clone();
-        let opf_size = opf_entry.uncompressed_size as usize;
-        let mut opf_buf = vec![0u8; opf_size];
-        let opf_read = zip.read_file(&opf_entry, &mut opf_buf).ok()?;
+        let mut opf_buf = Vec::new();
+        let opf_read = Self::read_zip_entry_with_scratch(
+            &mut zip,
+            &opf_entry,
+            &mut opf_buf,
+            &mut input_scratch,
+            &mut output_scratch,
+            Self::MAX_EPUB_METADATA_BYTES as usize,
+        )
+        .ok()?;
 
         let metadata = parse_opf(&opf_buf[..opf_read]).ok()?;
         let title = if metadata.title.trim().is_empty() {
@@ -320,7 +336,13 @@ impl LibraryActivity {
         } else {
             metadata.author.clone()
         };
-        let cover_thumbnail = Self::extract_epub_cover_thumbnail(&mut zip, &opf_path, &metadata);
+        let cover_thumbnail = Self::extract_epub_cover_thumbnail(
+            &mut zip,
+            &opf_path,
+            &metadata,
+            &mut input_scratch,
+            &mut output_scratch,
+        );
         Some((title, author, cover_thumbnail))
     }
 
@@ -380,6 +402,8 @@ impl LibraryActivity {
         zip: &mut mu_epub::zip::StreamingZip<F>,
         opf_path: &str,
         metadata: &mu_epub::metadata::EpubMetadata,
+        input_scratch: &mut [u8],
+        output_scratch: &mut [u8],
     ) -> Option<CoverThumbnail> {
         let cover_item = metadata.get_cover_item()?;
         let is_bmp_media = cover_item
@@ -402,13 +426,40 @@ impl LibraryActivity {
             return None;
         }
 
-        let mut cover_buf = vec![0u8; cover_entry.uncompressed_size as usize];
-        let cover_read = zip.read_file(&cover_entry, &mut cover_buf).ok()?;
+        let mut cover_buf = Vec::new();
+        let cover_read = Self::read_zip_entry_with_scratch(
+            zip,
+            &cover_entry,
+            &mut cover_buf,
+            input_scratch,
+            output_scratch,
+            Self::MAX_BMP_BYTES,
+        )
+        .ok()?;
         Self::decode_bmp_thumbnail(
             &cover_buf[..cover_read],
             Self::COVER_WIDTH,
             Self::COVER_MAX_HEIGHT,
         )
+    }
+
+    #[cfg(feature = "std")]
+    fn read_zip_entry_with_scratch<F: std::io::Read + std::io::Seek>(
+        zip: &mut mu_epub::zip::StreamingZip<F>,
+        entry: &mu_epub::zip::CdEntry,
+        out: &mut Vec<u8>,
+        input_scratch: &mut [u8],
+        output_scratch: &mut [u8],
+        max_len: usize,
+    ) -> Result<usize, ()> {
+        let expected_len = entry.uncompressed_size as usize;
+        if expected_len > max_len {
+            return Err(());
+        }
+        out.clear();
+        out.try_reserve(expected_len).map_err(|_| ())?;
+        zip.read_file_to_writer_with_scratch(entry, out, input_scratch, output_scratch)
+            .map_err(|_| ())
     }
 
     fn resolve_epub_relative_path(base_file_path: &str, relative: &str) -> String {

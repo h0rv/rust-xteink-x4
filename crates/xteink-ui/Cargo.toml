@@ -31,7 +31,7 @@ mu_epub_embedded_graphics = { workspace = true, optional = true }
 
 # E-ink display driver (re-exported for firmware use)
 # Using local path during development - change to crates.io version when published
-ssd1677 = { path = "/home/h0rv/projects/ssd1677" }
+ssd1677 = { workspace = true }
 
 [build-dependencies]
 fontdue = "0.9.3"

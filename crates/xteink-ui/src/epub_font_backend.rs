@@ -1,6 +1,7 @@
-//! EPUB renderer font backend backed by Bookerly TTF faces.
+//! EPUB renderer font backend using embedded bitmap fonts.
 //!
-//! This is std-only and used by the desktop/simulator EPUB flow.
+//! Fonts are compiled into the firmware at build time (via build.rs),
+//! eliminating runtime TTF loading and SD card dependencies.
 
 extern crate alloc;
 
@@ -15,13 +16,7 @@ use mu_epub_embedded_graphics::{
 };
 use mu_epub_render::ResolvedTextStyle;
 
-use crate::font_render::FontCache;
-
-const BOOKERLY_REGULAR: &[u8] = include_bytes!("../assets/fonts/bookerly/Bookerly-Regular.ttf");
-const BOOKERLY_BOLD: &[u8] = include_bytes!("../assets/fonts/bookerly/Bookerly-Bold.ttf");
-const BOOKERLY_ITALIC: &[u8] = include_bytes!("../assets/fonts/bookerly/Bookerly-Italic.ttf");
-const BOOKERLY_BOLD_ITALIC: &[u8] =
-    include_bytes!("../assets/fonts/bookerly/Bookerly-BoldItalic.ttf");
+use crate::embedded_fonts::{EmbeddedFontCache, EmbeddedFontRegistry};
 
 const FONT_REGULAR: &str = "bookerly-regular";
 const FONT_BOLD: &str = "bookerly-bold";
@@ -52,7 +47,7 @@ impl FontSlotKey {
 }
 
 struct BackendState {
-    cache: FontCache,
+    cache: EmbeddedFontCache,
     next_slot_id: FontId,
     slots_by_key: BTreeMap<FontSlotKey, FontId>,
     slot_keys_by_id: BTreeMap<FontId, FontSlotKey>,
@@ -61,11 +56,7 @@ struct BackendState {
 
 impl BackendState {
     fn new() -> Self {
-        let mut cache = FontCache::new();
-        let _ = cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR);
-        let _ = cache.load_font(FONT_BOLD, BOOKERLY_BOLD);
-        let _ = cache.load_font(FONT_ITALIC, BOOKERLY_ITALIC);
-        let _ = cache.load_font(FONT_BOLD_ITALIC, BOOKERLY_BOLD_ITALIC);
+        let cache = EmbeddedFontCache::new();
 
         let default_key = FontSlotKey::new(FONT_REGULAR.to_string(), 16.0);
         let mut slots_by_key = BTreeMap::new();
@@ -118,8 +109,10 @@ impl BackendState {
     }
 }
 
-/// Font backend that renders with Bookerly by default and supports
-/// dynamic registration of EPUB embedded fonts.
+/// Font backend that renders with embedded Bookerly bitmap fonts.
+///
+/// Fonts are pre-compiled at build time and embedded in firmware flash.
+/// No SD card font files or runtime TTF parsing required.
 pub struct BookerlyFontBackend {
     state: std::sync::Mutex<BackendState>,
 }
@@ -148,12 +141,12 @@ impl FontBackend for BookerlyFontBackend {
                 face.weight,
                 if face.italic { "i" } else { "n" }
             );
-            if state.cache.load_font(&font_name, face.data).is_ok() {
-                state
-                    .embedded_font_names_by_resolved_id
-                    .insert((index as u32) + 1, font_name);
-                accepted += 1;
-            }
+            // Note: Embedded fonts can't load external TTF data at runtime
+            // We just track the name for fallback purposes
+            state
+                .embedded_font_names_by_resolved_id
+                .insert((index as u32) + 1, font_name);
+            accepted += 1;
         }
         accepted
     }
@@ -188,25 +181,27 @@ impl FontBackend for BookerlyFontBackend {
     }
 
     fn metrics(&self, font_id: FontId) -> FontMetrics {
-        let mut state = match self.state.lock() {
+        let state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         let slot = state.slot_key_for_id(font_id);
-        state.cache.set_font(&slot.font_name);
-        state.cache.set_font_size(slot.size_px());
-        let space_width = state
-            .cache
-            .metrics(&slot.font_name, ' ')
-            .map(|m| m.advance_width.round() as i32)
-            .unwrap_or(6)
-            .max(1);
-        let char_width = state
-            .cache
-            .metrics(&slot.font_name, 'n')
-            .map(|m| m.advance_width.round() as i32)
-            .unwrap_or(space_width)
-            .max(1);
+
+        // Get metrics from embedded font
+        let space_width =
+            EmbeddedFontRegistry::get_font_nearest(&slot.font_name, slot.size_px() as u32)
+                .and_then(|f| f.glyph(' '))
+                .map(|g| g.advance_width as i32)
+                .unwrap_or(6)
+                .max(1);
+
+        let char_width =
+            EmbeddedFontRegistry::get_font_nearest(&slot.font_name, slot.size_px() as u32)
+                .and_then(|f| f.glyph('n'))
+                .map(|g| g.advance_width as i32)
+                .unwrap_or(space_width)
+                .max(1);
+
         FontMetrics {
             char_width,
             space_width,
@@ -228,8 +223,10 @@ impl FontBackend for BookerlyFontBackend {
             Err(poisoned) => poisoned.into_inner(),
         };
         let slot = state.slot_key_for_id(font_id);
+
         state.cache.set_font(&slot.font_name);
         state.cache.set_font_size(slot.size_px());
+
         let width = state
             .cache
             .measure_text(text, &slot.font_name)

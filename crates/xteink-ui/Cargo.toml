@@ -33,6 +33,9 @@ mu_epub_embedded_graphics = { workspace = true, optional = true }
 # Using local path during development - change to crates.io version when published
 ssd1677 = { path = "/home/h0rv/projects/ssd1677" }
 
+[build-dependencies]
+fontdue = "0.9.3"
+
 [dev-dependencies]
 # For tests
 

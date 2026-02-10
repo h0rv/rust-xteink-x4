@@ -21,6 +21,7 @@ pub mod app;
 pub mod buffered_display;
 pub mod diff;
 pub mod eink;
+pub mod embedded_fonts;
 pub mod file_browser;
 pub mod file_browser_activity;
 pub mod filesystem;

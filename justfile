@@ -203,3 +203,8 @@ ui-loop:
 # Show CLI helpers
 cli-help:
     @just --list cli
+
+# Upload Bookerly fonts to SD card via serial CLI (device must be running and SD mounted)
+# Usage: just cli-load-fonts
+cli-load-fonts:
+    @just cli load-fonts

@@ -38,3 +38,77 @@ load-samples:
     if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/sample.txt | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/sample.txt)" ]; then echo "exists: /books/sample.txt"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/sample.txt /books/sample.txt; fi
     if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/war_and_peace_ch1.txt | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/war_and_peace_ch1.txt)" ]; then echo "exists: /books/war_and_peace_ch1.txt"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/war_and_peace_ch1.txt /books/war_and_peace_ch1.txt; fi
     if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub)" ]; then echo "exists: /books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub /books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub; fi
+
+# Check if Bookerly fonts exist on SD card
+@check-fonts:
+    @echo "Checking Bookerly fonts on device..."
+    @uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} ls /fonts/bookerly/ 2>/dev/null || echo "❌ /fonts/bookerly/ directory not found or empty"
+
+fonts_dir := root_dir / ".." / "crates" / "xteink-ui" / "assets" / "fonts" / "bookerly"
+
+# Load Bookerly fonts to SD card via serial (checks existence, idempotent)
+load-fonts:
+    #!/usr/bin/env bash
+    set -e
+    echo "📤 Uploading Bookerly fonts to device..."
+    echo "   Port: {{cli_port}}"
+    echo "   Baud: {{cli_baud}}"
+    echo ""
+    
+    # Function to check and upload font
+    upload_font() {
+        local local_path="$1"
+        local remote_path="$2"
+        local font_name=$(basename "$local_path")
+        local local_size=$(stat -c %s "$local_path" 2>/dev/null || echo "0")
+        
+        if [ "$local_size" -eq 0 ]; then
+            echo "❌ Cannot read local file: $local_path"
+            return 1
+        fi
+        
+        # Check remote file size
+        local remote_info=$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat "$remote_path" 2>/dev/null || echo "")
+        local remote_size=$(echo "$remote_info" | awk '{print $2}' || echo "0")
+        
+        if [ "$remote_size" = "$local_size" ]; then
+            echo "✅ $font_name already exists (${local_size} bytes)"
+            return 0
+        fi
+        
+        if [ "$remote_size" -gt 0 ]; then
+            echo "📝 $font_name size mismatch (local: $local_size, remote: $remote_size), re-uploading..."
+        else
+            echo "📤 Uploading $font_name (${local_size} bytes)..."
+        fi
+        
+        uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put "$local_path" "$remote_path"
+        echo "✅ $font_name uploaded"
+    }
+    
+    # Create directories
+    if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} exists /fonts 2>/dev/null || echo "0")" = "0" ]; then
+        echo "📁 Creating directory: /fonts"
+        uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir /fonts 2>/dev/null || echo "   (directory may already exist)"
+    else
+        echo "📁 Directory exists: /fonts"
+    fi
+    
+    if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} exists /fonts/bookerly 2>/dev/null || echo "0")" = "0" ]; then
+        echo "📁 Creating directory: /fonts/bookerly"
+        uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir /fonts/bookerly 2>/dev/null || echo "   (directory may already exist)"
+    else
+        echo "📁 Directory exists: /fonts/bookerly"
+    fi
+    
+    # Upload fonts
+    upload_font "{{fonts_dir}}/Bookerly-Regular.ttf" "/fonts/bookerly/Bookerly-Regular.ttf"
+    upload_font "{{fonts_dir}}/Bookerly-Bold.ttf" "/fonts/bookerly/Bookerly-Bold.ttf"
+    upload_font "{{fonts_dir}}/Bookerly-Italic.ttf" "/fonts/bookerly/Bookerly-Italic.ttf"
+    upload_font "{{fonts_dir}}/Bookerly-BoldItalic.ttf" "/fonts/bookerly/Bookerly-BoldItalic.ttf"
+    
+    echo ""
+    echo "✅ Font setup complete!"
+    echo ""
+    echo "Fonts on device:"
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} ls /fonts/bookerly/

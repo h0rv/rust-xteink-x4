@@ -195,6 +195,7 @@ impl EpubReadingState {
     const MAX_CHAPTER_EVENTS: usize = 65_536;
     const CHAPTER_BUF_CAPACITY_BYTES: usize = 64 * 1024;
     #[cfg(target_os = "espidf")]
+    #[allow(dead_code)]
     const PAGE_CACHE_LIMIT: usize = 0;
     #[cfg(not(target_os = "espidf"))]
     const PAGE_CACHE_LIMIT: usize = 8;
@@ -298,14 +299,8 @@ impl EpubReadingState {
         // maximize contiguous heap on constrained devices.
         self.current_page = None;
         let known_total = self.chapter_page_counts.get(&self.chapter_idx).copied();
-        if known_total.is_none() {
-            let next_idx = self.page_idx + 1;
-            if let Ok(page) = self.load_page(self.chapter_idx, next_idx) {
-                self.page_idx = next_idx;
-                self.current_page = Some(page);
-                return true;
-            }
-        } else if self.page_idx + 1 < known_total.unwrap_or(0) {
+        let can_advance = known_total.is_none() || self.page_idx + 1 < known_total.unwrap_or(0);
+        if can_advance {
             let next_idx = self.page_idx + 1;
             if let Ok(page) = self.load_page(self.chapter_idx, next_idx) {
                 self.page_idx = next_idx;
@@ -450,7 +445,8 @@ impl EpubReadingState {
             self.chapter_page_counts.insert(chapter_idx, count);
         }
 
-        if Self::PAGE_CACHE_LIMIT > 0 {
+        #[cfg(not(target_os = "espidf"))]
+        {
             self.page_cache
                 .insert((chapter_idx, page_idx), page.clone());
             self.trim_page_cache();
@@ -458,6 +454,7 @@ impl EpubReadingState {
         Ok(page)
     }
 
+    #[allow(dead_code)]
     fn trim_page_cache(&mut self) {
         while self.page_cache.len() > Self::PAGE_CACHE_LIMIT {
             let Some((&key, _)) = self.page_cache.iter().next() else {
@@ -487,7 +484,6 @@ impl EpubReadingState {
         {
             // On-device we default to bundled font families (e.g. Bookerly) and
             // avoid eager runtime TTF parsing to keep EPUB open deterministic.
-            return;
         }
 
         #[cfg(not(target_os = "espidf"))]

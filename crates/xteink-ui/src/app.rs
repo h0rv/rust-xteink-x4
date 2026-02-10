@@ -21,6 +21,12 @@ use crate::ui::theme::set_device_font_profile;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::{BookInfo, FileSystem};
 
+struct PendingLibraryScan {
+    paths: Vec<String>,
+    next_index: usize,
+    books: Vec<BookInfo>,
+}
+
 /// Identifies which screen is currently active
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppScreen {
@@ -71,11 +77,14 @@ pub struct App {
     library_cache_invalidated: bool,
     /// Pending library file path to open without intermediate UI redraw.
     pending_library_open_path: Option<String>,
+    /// Incremental library scan state to avoid blocking the UI loop.
+    pending_library_scan: Option<PendingLibraryScan>,
 }
 
 impl App {
     const SCREEN_COUNT: usize = 6;
     const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
+    const MAX_LIBRARY_BOOKS_PER_TICK: usize = 2;
     /// Default number of pages between full refreshes
     const DEFAULT_REFRESH_FREQUENCY: u32 = 10;
 
@@ -101,6 +110,7 @@ impl App {
             library_scan_pending: false,
             library_cache_invalidated: true,
             pending_library_open_path: None,
+            pending_library_scan: None,
         }
     }
 
@@ -231,6 +241,7 @@ impl App {
     pub fn invalidate_library_cache(&mut self) {
         self.library_cache_invalidated = true;
         self.library_scan_pending = true;
+        self.pending_library_scan = None;
 
         if self.current_screen() == AppScreen::Library {
             self.library.begin_loading_scan();
@@ -241,17 +252,55 @@ impl App {
     ///
     /// Returns `true` when UI changed and should be redrawn.
     pub fn process_library_scan(&mut self, fs: &mut dyn FileSystem) -> bool {
-        if self.current_screen() != AppScreen::Library || !self.library_scan_pending {
+        if !self.library_scan_pending && self.pending_library_scan.is_none() {
             return false;
         }
 
-        let books = LibraryActivity::discover_books(fs, &self.library_root);
+        if self.pending_library_scan.is_none() {
+            let paths = fs.scan_directory(&self.library_root).unwrap_or_default();
+            let estimated = paths.len();
+            self.pending_library_scan = Some(PendingLibraryScan {
+                paths,
+                next_index: 0,
+                books: Vec::with_capacity(estimated),
+            });
+        }
+
+        let mut completed_books: Option<Vec<BookInfo>> = None;
+        if let Some(scan) = self.pending_library_scan.as_mut() {
+            let mut processed = 0usize;
+            while processed < Self::MAX_LIBRARY_BOOKS_PER_TICK && scan.next_index < scan.paths.len()
+            {
+                let path = scan.paths[scan.next_index].clone();
+                scan.next_index += 1;
+                scan.books
+                    .push(LibraryActivity::extract_book_info_for_path(fs, &path));
+                processed += 1;
+            }
+
+            if scan.next_index >= scan.paths.len() {
+                let mut books = core::mem::take(&mut scan.books);
+                books.sort_by(|a, b| a.title.cmp(&b.title));
+                completed_books = Some(books);
+            }
+        }
+
+        let Some(books) = completed_books else {
+            return false;
+        };
+
+        self.pending_library_scan = None;
         self.library_cache = Some(books.clone());
         self.library_cache_invalidated = false;
         self.library_scan_pending = false;
-        self.library.set_books(books);
-        self.library.finish_loading_scan();
-        true
+
+        if self.current_screen() == AppScreen::Library {
+            self.library.set_books(books);
+            self.library.finish_loading_scan();
+            true
+        } else {
+            false
+        }
     }
 
     /// Run deferred file browser work.

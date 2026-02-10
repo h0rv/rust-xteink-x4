@@ -9,6 +9,7 @@ use esp_idf_svc::hal::{
     gpio::{Input, PinDriver, Pull},
     peripherals::Peripherals,
     spi::{config::Config, Dma, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
+    task::thread::ThreadSpawnConfiguration,
 };
 use esp_idf_svc::sys;
 
@@ -43,6 +44,7 @@ const ADC_RANGES_2: [i32; 3] = [3800, 1120, i32::MIN];
 const ADC_WIDTH_BIT_12: u32 = 3;
 const ADC_ATTEN_DB_11: u32 = 3;
 const POWER_LONG_PRESS_MS: u32 = 2000;
+const EPUB_WORKER_THREAD_STACK_BYTES: usize = 48 * 1024;
 
 fn init_adc() {
     unsafe {
@@ -138,6 +140,23 @@ fn log_heap(label: &str) {
         largest_8bit,
         stack_hwm_bytes
     );
+}
+
+fn configure_pthread_defaults() {
+    let mut config = ThreadSpawnConfiguration::default();
+    config.stack_size = EPUB_WORKER_THREAD_STACK_BYTES;
+    config.priority = 1;
+    config.inherit = false;
+
+    if let Err(err) = config.set() {
+        log::warn!("Failed to configure pthread defaults: {}", err);
+    } else {
+        log::info!(
+            "Configured pthread defaults: stack_size={} priority={}",
+            config.stack_size,
+            config.priority
+        );
+    }
 }
 
 fn cli_redraw<I, D>(
@@ -671,6 +690,7 @@ fn enter_deep_sleep(power_btn_pin: i32) {
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    configure_pthread_defaults();
     log_heap("startup");
 
     // Stack size verification (runtime log)

@@ -75,6 +75,12 @@ struct PendingEpubOpen {
 }
 
 #[cfg(feature = "std")]
+enum EpubOpenSource {
+    HostPath(String),
+    Chunks(Vec<Vec<u8>>),
+}
+
+#[cfg(feature = "std")]
 struct EpubReadingState {
     book: EpubBook<Box<dyn ReadSeek>>,
     engine: RenderEngine,
@@ -203,7 +209,13 @@ impl EpubReadingState {
     const MAX_MIMETYPE_BYTES: usize = 1024;
     const MAX_NAV_BYTES: usize = 256 * 1024;
     const MAX_EOCD_SCAN_BYTES: usize = 8 * 1024;
+    #[cfg(target_os = "espidf")]
+    const MAX_CHAPTER_EVENTS: usize = 16_384;
+    #[cfg(not(target_os = "espidf"))]
     const MAX_CHAPTER_EVENTS: usize = 65_536;
+    #[cfg(target_os = "espidf")]
+    const CHAPTER_BUF_CAPACITY_BYTES: usize = 16 * 1024;
+    #[cfg(not(target_os = "espidf"))]
     const CHAPTER_BUF_CAPACITY_BYTES: usize = 64 * 1024;
     #[cfg(target_os = "espidf")]
     #[allow(dead_code)]
@@ -306,6 +318,8 @@ impl EpubReadingState {
     }
 
     fn next_page(&mut self) -> bool {
+        let previous_chapter = self.chapter_idx;
+        let previous_page = self.page_idx;
         // Free the currently rendered page before loading the next one to
         // maximize contiguous heap on constrained devices.
         self.current_page = None;
@@ -324,10 +338,22 @@ impl EpubReadingState {
         {
             return true;
         }
+        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+            self.chapter_idx = previous_chapter;
+            self.page_idx = previous_page;
+            self.current_page = Some(page);
+        }
+        log::warn!(
+            "[EPUB] next_page failed at chapter={} page={}",
+            previous_chapter,
+            previous_page
+        );
         false
     }
 
     fn prev_page(&mut self) -> bool {
+        let previous_chapter = self.chapter_idx;
+        let previous_page = self.page_idx;
         // Free the currently rendered page before loading the previous one to
         // maximize contiguous heap on constrained devices.
         self.current_page = None;
@@ -354,6 +380,16 @@ impl EpubReadingState {
                 }
             }
         }
+        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+            self.chapter_idx = previous_chapter;
+            self.page_idx = previous_page;
+            self.current_page = Some(page);
+        }
+        log::warn!(
+            "[EPUB] prev_page failed at chapter={} page={}",
+            previous_chapter,
+            previous_page
+        );
         false
     }
 
@@ -546,7 +582,7 @@ impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
     #[cfg(feature = "std")]
     const EPUB_READ_CHUNK_BYTES: usize = 4096;
-    #[cfg(feature = "std")]
+    #[cfg(not(target_os = "espidf"))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
 
     pub fn new() -> Self {
@@ -804,37 +840,43 @@ impl FileBrowserActivity {
     }
 
     #[cfg(feature = "std")]
+    fn prepare_epub_open_source(
+        fs: &mut dyn FileSystem,
+        path: &str,
+    ) -> Result<EpubOpenSource, String> {
+        if let Some(host_path) = Self::resolve_host_backed_epub_path(path) {
+            return Ok(EpubOpenSource::HostPath(host_path));
+        }
+
+        let mut chunks: Vec<Vec<u8>> = Vec::new();
+        let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
+            chunks.push(chunk.to_vec());
+            Ok(())
+        };
+        fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
+            .map_err(|e| format!("Unable to read EPUB: {}", e))?;
+
+        if chunks.is_empty() {
+            return Err("Unable to read EPUB: empty file".to_string());
+        }
+
+        Ok(EpubOpenSource::Chunks(chunks))
+    }
+
     #[inline(never)]
     fn spawn_epub_open_worker(
         fs: &mut dyn FileSystem,
         path: &str,
     ) -> Result<Receiver<Result<EpubReadingState, String>>, String> {
-        enum EpubOpenSource {
-            HostPath(String),
-            Chunks(Vec<Vec<u8>>),
-        }
-
-        let source = if let Some(host_path) = Self::resolve_host_backed_epub_path(path) {
-            EpubOpenSource::HostPath(host_path)
-        } else {
-            let mut chunks: Vec<Vec<u8>> = Vec::new();
-            let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
-                chunks.push(chunk.to_vec());
-                Ok(())
-            };
-            fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
-                .map_err(|e| format!("Unable to read EPUB: {}", e))?;
-
-            if chunks.is_empty() {
-                return Err("Unable to read EPUB: empty file".to_string());
-            }
-            EpubOpenSource::Chunks(chunks)
-        };
-
+        let source = Self::prepare_epub_open_source(fs, path)?;
         let (tx, rx) = mpsc::channel();
-        thread::Builder::new()
+        #[cfg(target_os = "espidf")]
+        let builder = thread::Builder::new().name("epub-open-worker".to_string());
+        #[cfg(not(target_os = "espidf"))]
+        let builder = thread::Builder::new()
             .name("epub-open-worker".to_string())
-            .stack_size(Self::EPUB_OPEN_WORKER_STACK_BYTES)
+            .stack_size(Self::EPUB_OPEN_WORKER_STACK_BYTES);
+        builder
             .spawn(move || {
                 let result = match source {
                     EpubOpenSource::HostPath(path) => match File::open(&path) {
@@ -852,6 +894,7 @@ impl FileBrowserActivity {
     }
 
     #[cfg(feature = "std")]
+    #[inline(never)]
     fn resolve_host_backed_epub_path(path: &str) -> Option<String> {
         let mut candidates: Vec<String> = Vec::new();
         candidates.push(path.to_string());

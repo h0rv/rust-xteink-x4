@@ -246,11 +246,16 @@ impl LibraryActivity {
 
         let mut books = Vec::new();
         for path in book_paths {
-            books.push(Self::extract_book_info(fs, &path));
+            books.push(Self::extract_book_info_for_path(fs, &path));
         }
 
         books.sort_by(|a, b| a.title.cmp(&b.title));
         books
+    }
+
+    /// Extract book info for a single filesystem path.
+    pub fn extract_book_info_for_path(fs: &mut dyn FileSystem, path: &str) -> BookInfo {
+        Self::extract_book_info(fs, path)
     }
 
     /// Extract book info from file path

@@ -56,6 +56,13 @@ Inference from sources:
 3. For firmware-only RTOS specialization, implement a small safe adapter in `xteink-firmware`, not in shared UI code.
 4. For EPUB: prefer one long-lived background worker + queue over repeated thread creation attempts.
 
+## Current implementation notes (this repo)
+
+- Firmware sets global pthread defaults with `ThreadSpawnConfiguration` (`stack_size=56KiB`, low priority) so `std::thread` tasks have a sane floor on ESP-IDF.
+- EPUB open and page-turn work run in background worker threads; the UI loop now polls completion and redraws when work completes.
+- `xteink-ui` keeps `#![forbid(unsafe_code)]` and does not call raw FreeRTOS APIs directly.
+- `mu-epub-render` cache hooks are enabled for non-ESP targets, where full-session chapter caching is safe; ESP-IDF keeps conservative memory behavior to avoid page-cache OOM spikes.
+
 ## Source links (checked 2026-02-10)
 
 - ESP-IDF POSIX/pthread support (ESP32-C3, stable): https://docs.espressif.com/projects/esp-idf/en/stable/esp32c3/api-reference/system/pthread.html

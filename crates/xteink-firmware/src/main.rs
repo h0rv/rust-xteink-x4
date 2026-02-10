@@ -44,7 +44,7 @@ const ADC_RANGES_2: [i32; 3] = [3800, 1120, i32::MIN];
 const ADC_WIDTH_BIT_12: u32 = 3;
 const ADC_ATTEN_DB_11: u32 = 3;
 const POWER_LONG_PRESS_MS: u32 = 2000;
-const EPUB_WORKER_THREAD_STACK_BYTES: usize = 48 * 1024;
+const EPUB_WORKER_THREAD_STACK_BYTES: usize = 56 * 1024;
 
 fn init_adc() {
     unsafe {

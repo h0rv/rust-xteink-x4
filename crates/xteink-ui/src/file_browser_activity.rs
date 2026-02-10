@@ -11,10 +11,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 #[cfg(feature = "std")]
 use std::collections::BTreeMap;
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use std::collections::HashMap;
 #[cfg(feature = "std")]
 use std::fs::File;
 #[cfg(feature = "std")]
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(feature = "std")]
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "std")]
 use std::thread;
 
@@ -29,6 +33,8 @@ use mu_epub::{EpubBook, ScratchBuffers, ZipLimits};
 use mu_epub_embedded_graphics::FontFaceRegistration;
 #[cfg(feature = "std")]
 use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use mu_epub_render::{PaginationProfileId, RenderCacheStore};
 #[cfg(feature = "std")]
 use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(feature = "std")]
@@ -59,7 +65,7 @@ enum BrowserMode {
     },
     #[cfg(feature = "std")]
     ReadingEpub {
-        renderer: Box<EpubReadingState>,
+        renderer: Arc<Mutex<EpubReadingState>>,
     },
 }
 
@@ -75,9 +81,92 @@ struct PendingEpubOpen {
 }
 
 #[cfg(feature = "std")]
+struct PendingEpubNavigation {
+    receiver: Receiver<Result<bool, String>>,
+    direction: EpubNavigationDirection,
+}
+
+#[cfg(feature = "std")]
 enum EpubOpenSource {
     HostPath(String),
     Chunks(Vec<Vec<u8>>),
+}
+
+#[cfg(feature = "std")]
+#[derive(Clone, Copy, Debug)]
+enum EpubNavigationDirection {
+    Next,
+    Prev,
+}
+
+#[cfg(feature = "std")]
+impl EpubNavigationDirection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Prev => "previous",
+        }
+    }
+}
+
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[derive(Debug, Default)]
+struct InMemoryRenderCache {
+    inner: Mutex<InMemoryRenderCacheState>,
+}
+
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[derive(Debug, Default)]
+struct InMemoryRenderCacheState {
+    entries: HashMap<(PaginationProfileId, usize), Vec<RenderPage>>,
+    order: Vec<(PaginationProfileId, usize)>,
+}
+
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+impl InMemoryRenderCache {
+    const CHAPTER_LIMIT: usize = 4;
+
+    fn touch(order: &mut Vec<(PaginationProfileId, usize)>, key: (PaginationProfileId, usize)) {
+        order.retain(|entry| *entry != key);
+        order.push(key);
+    }
+}
+
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+impl RenderCacheStore for InMemoryRenderCache {
+    fn load_chapter_pages(
+        &self,
+        profile: PaginationProfileId,
+        chapter_index: usize,
+    ) -> Option<Vec<RenderPage>> {
+        let mut inner = self.inner.lock().ok()?;
+        let key = (profile, chapter_index);
+        let pages = inner.entries.get(&key)?.clone();
+        Self::touch(&mut inner.order, key);
+        Some(pages)
+    }
+
+    fn store_chapter_pages(
+        &self,
+        profile: PaginationProfileId,
+        chapter_index: usize,
+        pages: &[RenderPage],
+    ) {
+        if pages.is_empty() {
+            return;
+        }
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        let key = (profile, chapter_index);
+        inner.entries.insert(key, pages.to_vec());
+        Self::touch(&mut inner.order, key);
+        while inner.order.len() > Self::CHAPTER_LIMIT {
+            let oldest = inner.order.remove(0);
+            inner.entries.remove(&oldest);
+        }
+    }
 }
 
 #[cfg(feature = "std")]
@@ -89,6 +178,8 @@ struct EpubReadingState {
     chapter_scratch: ScratchBuffers,
     current_page: Option<RenderPage>,
     page_cache: BTreeMap<(usize, usize), RenderPage>,
+    #[cfg(not(target_os = "espidf"))]
+    render_cache: InMemoryRenderCache,
     chapter_page_counts: BTreeMap<usize, usize>,
     chapter_idx: usize,
     page_idx: usize,
@@ -250,6 +341,8 @@ impl EpubReadingState {
             chapter_scratch: ScratchBuffers::embedded(),
             current_page: None,
             page_cache: BTreeMap::new(),
+            #[cfg(not(target_os = "espidf"))]
+            render_cache: InMemoryRenderCache::default(),
             chapter_page_counts: BTreeMap::new(),
             chapter_idx: 0,
             page_idx: 0,
@@ -424,10 +517,13 @@ impl EpubReadingState {
         );
 
         let mut target_page: Option<RenderPage> = None;
-        let mut session = self.engine.begin(
-            chapter_idx,
-            RenderConfig::default().with_page_range(page_idx..page_idx + 1),
-        );
+        #[cfg(target_os = "espidf")]
+        let config = RenderConfig::default().with_page_range(page_idx..page_idx + 1);
+        #[cfg(not(target_os = "espidf"))]
+        let config = RenderConfig::default()
+            .with_page_range(page_idx..page_idx + 1)
+            .with_cache(&self.render_cache);
+        let mut session = self.engine.begin(chapter_idx, config);
         let mut layout_error: Option<String> = None;
         let chapter_opts = ChapterEventsOptions {
             max_items: Self::MAX_CHAPTER_EVENTS,
@@ -466,10 +562,25 @@ impl EpubReadingState {
             return Err(format!("Unable to layout EPUB chapter: {}", err));
         }
 
-        // If the target page was already found, avoid finalizing this session:
-        // `mu_epub_render` currently retains rendered page clones internally
-        // during session finish, which can spike memory on constrained devices.
-        if target_page.is_none() {
+        #[cfg(target_os = "espidf")]
+        {
+            // If the target page was already found, avoid finalizing this session:
+            // `mu_epub_render` currently retains rendered page clones internally
+            // during session finish, which can spike memory on constrained devices.
+            if target_page.is_none() {
+                session
+                    .finish()
+                    .map_err(|e| format!("Unable to finalize EPUB chapter layout: {}", e))?;
+                session.drain_pages(|page| {
+                    if target_page.is_none() {
+                        target_page = Some(page);
+                    }
+                });
+            }
+        }
+
+        #[cfg(not(target_os = "espidf"))]
+        {
             session
                 .finish()
                 .map_err(|e| format!("Unable to finalize EPUB chapter layout: {}", e))?;
@@ -576,14 +687,18 @@ pub struct FileBrowserActivity {
     return_to_previous_on_back: bool,
     #[cfg(feature = "std")]
     epub_open_pending: Option<PendingEpubOpen>,
+    #[cfg(feature = "std")]
+    epub_navigation_pending: Option<PendingEpubNavigation>,
 }
 
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
     #[cfg(feature = "std")]
     const EPUB_READ_CHUNK_BYTES: usize = 4096;
-    #[cfg(not(target_os = "espidf"))]
-    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    const EPUB_WORKER_STACK_BYTES: usize = 56 * 1024;
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    const EPUB_WORKER_STACK_BYTES: usize = 64 * 1024;
 
     pub fn new() -> Self {
         Self {
@@ -593,6 +708,8 @@ impl FileBrowserActivity {
             return_to_previous_on_back: false,
             #[cfg(feature = "std")]
             epub_open_pending: None,
+            #[cfg(feature = "std")]
+            epub_navigation_pending: None,
         }
     }
 
@@ -634,6 +751,10 @@ impl FileBrowserActivity {
         #[cfg(feature = "std")]
         {
             if let BrowserMode::ReadingEpub { renderer } = &self.mode {
+                let renderer = match renderer.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
                 return Some((
                     renderer.current_chapter(),
                     renderer.total_chapters(),
@@ -650,6 +771,10 @@ impl FileBrowserActivity {
     pub fn process_pending_task(&mut self, fs: &mut dyn FileSystem) -> bool {
         #[cfg(feature = "std")]
         let mut updated = self.poll_epub_open_result();
+        #[cfg(feature = "std")]
+        {
+            updated |= self.poll_epub_navigation_result();
+        }
         #[cfg(not(feature = "std"))]
         let mut updated = false;
 
@@ -742,8 +867,9 @@ impl FileBrowserActivity {
         match recv_result {
             Ok(Ok(renderer)) => {
                 self.epub_open_pending = None;
+                self.epub_navigation_pending = None;
                 self.mode = BrowserMode::ReadingEpub {
-                    renderer: Box::new(renderer),
+                    renderer: Arc::new(Mutex::new(renderer)),
                 };
                 true
             }
@@ -760,6 +886,43 @@ impl FileBrowserActivity {
                 self.browser
                     .set_status_message("Unable to open EPUB: worker disconnected".to_string());
                 true
+            }
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn poll_epub_navigation_result(&mut self) -> bool {
+        let recv_result = match self.epub_navigation_pending.as_mut() {
+            Some(pending) => pending.receiver.try_recv(),
+            None => return false,
+        };
+
+        match recv_result {
+            Ok(Ok(advanced)) => {
+                let direction = self
+                    .epub_navigation_pending
+                    .as_ref()
+                    .map(|pending| pending.direction.label())
+                    .unwrap_or("page");
+                self.epub_navigation_pending = None;
+                if !advanced {
+                    log::warn!("[EPUB] unable to advance {} page", direction);
+                }
+                advanced
+            }
+            Ok(Err(error)) => {
+                log::warn!("[EPUB] page turn worker failed: {}", error);
+                self.epub_navigation_pending = None;
+                self.browser.set_status_message(error);
+                false
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.epub_navigation_pending = None;
+                self.browser.set_status_message(
+                    "Unable to change EPUB page: worker disconnected".to_string(),
+                );
+                false
             }
         }
     }
@@ -863,6 +1026,7 @@ impl FileBrowserActivity {
         Ok(EpubOpenSource::Chunks(chunks))
     }
 
+    #[cfg(feature = "std")]
     #[inline(never)]
     fn spawn_epub_open_worker(
         fs: &mut dyn FileSystem,
@@ -870,12 +1034,9 @@ impl FileBrowserActivity {
     ) -> Result<Receiver<Result<EpubReadingState, String>>, String> {
         let source = Self::prepare_epub_open_source(fs, path)?;
         let (tx, rx) = mpsc::channel();
-        #[cfg(target_os = "espidf")]
-        let builder = thread::Builder::new().name("epub-open-worker".to_string());
-        #[cfg(not(target_os = "espidf"))]
         let builder = thread::Builder::new()
             .name("epub-open-worker".to_string())
-            .stack_size(Self::EPUB_OPEN_WORKER_STACK_BYTES);
+            .stack_size(Self::EPUB_WORKER_STACK_BYTES);
         builder
             .spawn(move || {
                 let result = match source {
@@ -890,6 +1051,35 @@ impl FileBrowserActivity {
                 let _ = tx.send(result);
             })
             .map_err(|e| format!("Unable to start EPUB worker: {}", e))?;
+        Ok(rx)
+    }
+
+    #[cfg(feature = "std")]
+    fn spawn_epub_navigation_worker(
+        renderer: Arc<Mutex<EpubReadingState>>,
+        direction: EpubNavigationDirection,
+    ) -> Result<Receiver<Result<bool, String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        let builder = thread::Builder::new()
+            .name("epub-nav-worker".to_string())
+            .stack_size(Self::EPUB_WORKER_STACK_BYTES);
+        builder
+            .spawn(move || {
+                let advanced = match renderer.lock() {
+                    Ok(mut renderer) => match direction {
+                        EpubNavigationDirection::Next => renderer.next_page(),
+                        EpubNavigationDirection::Prev => renderer.prev_page(),
+                    },
+                    Err(_) => {
+                        let _ = tx.send(Err(
+                            "Unable to change EPUB page: worker poisoned".to_string()
+                        ));
+                        return;
+                    }
+                };
+                let _ = tx.send(Ok(advanced));
+            })
+            .map_err(|e| format!("Unable to start EPUB navigation worker: {}", e))?;
         Ok(rx)
     }
 
@@ -918,6 +1108,7 @@ impl FileBrowserActivity {
             #[cfg(feature = "std")]
             {
                 self.epub_open_pending = None;
+                self.epub_navigation_pending = None;
             }
             self.mode = BrowserMode::Browsing;
             if self.return_to_previous_on_back {
@@ -936,22 +1127,39 @@ impl FileBrowserActivity {
                 }
             }
             #[cfg(feature = "std")]
-            BrowserMode::ReadingEpub { renderer } => match event {
-                InputEvent::Press(Button::Right)
-                | InputEvent::Press(Button::Down)
-                | InputEvent::Press(Button::VolumeDown)
-                | InputEvent::Press(Button::Confirm) => {
-                    renderer.next_page();
-                    ActivityResult::Consumed
+            BrowserMode::ReadingEpub { renderer } => {
+                let nav = match event {
+                    InputEvent::Press(Button::Right)
+                    | InputEvent::Press(Button::Down)
+                    | InputEvent::Press(Button::VolumeDown)
+                    | InputEvent::Press(Button::Confirm) => Some(EpubNavigationDirection::Next),
+                    InputEvent::Press(Button::Left)
+                    | InputEvent::Press(Button::Up)
+                    | InputEvent::Press(Button::VolumeUp) => Some(EpubNavigationDirection::Prev),
+                    _ => None,
+                };
+                if let Some(direction) = nav {
+                    if self.epub_navigation_pending.is_some() {
+                        return ActivityResult::Consumed;
+                    }
+                    let renderer = Arc::clone(renderer);
+                    match Self::spawn_epub_navigation_worker(renderer, direction) {
+                        Ok(receiver) => {
+                            self.epub_navigation_pending = Some(PendingEpubNavigation {
+                                receiver,
+                                direction,
+                            });
+                            ActivityResult::Ignored
+                        }
+                        Err(error) => {
+                            self.browser.set_status_message(error);
+                            ActivityResult::Consumed
+                        }
+                    }
+                } else {
+                    ActivityResult::Ignored
                 }
-                InputEvent::Press(Button::Left)
-                | InputEvent::Press(Button::Up)
-                | InputEvent::Press(Button::VolumeUp) => {
-                    renderer.prev_page();
-                    ActivityResult::Consumed
-                }
-                _ => ActivityResult::Ignored,
-            },
+            }
             #[cfg(feature = "std")]
             BrowserMode::OpeningEpub => ActivityResult::Consumed,
             BrowserMode::Browsing => ActivityResult::Ignored,
@@ -965,6 +1173,7 @@ impl Activity for FileBrowserActivity {
         #[cfg(feature = "std")]
         {
             self.epub_open_pending = None;
+            self.epub_navigation_pending = None;
         }
         if self.pending_task.is_none() {
             self.queue_load_current_directory();
@@ -978,6 +1187,7 @@ impl Activity for FileBrowserActivity {
         #[cfg(feature = "std")]
         {
             self.epub_open_pending = None;
+            self.epub_navigation_pending = None;
         }
     }
 
@@ -1030,7 +1240,13 @@ impl Activity for FileBrowserActivity {
             BrowserMode::OpeningEpub => self.browser.render(display),
             BrowserMode::ReadingText { title, viewer } => viewer.render(display, title),
             #[cfg(feature = "std")]
-            BrowserMode::ReadingEpub { renderer } => renderer.render(display),
+            BrowserMode::ReadingEpub { renderer } => {
+                let renderer = match renderer.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                renderer.render(display)
+            }
         }
     }
 

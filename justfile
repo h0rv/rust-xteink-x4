@@ -1,6 +1,22 @@
-# Default port (override with: just --set port /dev/ttyUSB0 <command>)
-
-port := "/dev/ttyACM0"
+# Auto-detect serial port (override with: just --set port /dev/ttyUSB0 <command>)
+# Detection order:
+# 1) ESPFLASH_PORT env var, if set
+# 2) First port that responds to `espflash board-info`
+# 3) Linux fallback `/dev/ttyACM0`
+port := `if [ -n "${ESPFLASH_PORT:-}" ]; then \
+    echo "$ESPFLASH_PORT"; \
+elif command -v espflash >/dev/null 2>&1; then \
+    for p in /dev/cu.usbmodem* /dev/cu.usbserial* /dev/ttyUSB* /dev/ttyACM*; do \
+        [ -e "$p" ] || continue; \
+        if espflash board-info --non-interactive --port "$p" >/dev/null 2>&1; then \
+            echo "$p"; \
+            exit 0; \
+        fi; \
+    done; \
+    echo "/dev/ttyACM0"; \
+else \
+    echo "/dev/ttyACM0"; \
+fi`
 backup_file := "firmware_backup.bin"
 partition_table := "crates/xteink-firmware/partitions.csv"
 
@@ -104,14 +120,14 @@ test-firmware-size:
 flash:
     cargo build -p xteink-firmware --release
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
     cargo clean -p xteink-firmware
     cargo build -p xteink-firmware --release
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Clean flash (full rebuild with sdkconfig regeneration)
 flash-clean:
@@ -119,7 +135,7 @@ flash-clean:
     rm -rf target/riscv32imc-esp-espidf/release/build/esp-idf-sys-*
     cargo build -p xteink-firmware --release
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Just monitor serial output
 monitor:

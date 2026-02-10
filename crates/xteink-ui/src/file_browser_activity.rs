@@ -13,6 +13,10 @@ use alloc::vec::Vec;
 use std::collections::BTreeMap;
 #[cfg(feature = "std")]
 use std::fs::File;
+#[cfg(feature = "std")]
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+#[cfg(feature = "std")]
+use std::thread;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
@@ -47,6 +51,8 @@ enum FileBrowserTask {
 
 enum BrowserMode {
     Browsing,
+    #[cfg(feature = "std")]
+    OpeningEpub,
     ReadingText {
         title: String,
         viewer: TextViewer,
@@ -58,10 +64,15 @@ enum BrowserMode {
 }
 
 #[cfg(feature = "std")]
-trait ReadSeek: Read + Seek {}
+trait ReadSeek: Read + Seek + Send {}
 
 #[cfg(feature = "std")]
-impl<T: Read + Seek> ReadSeek for T {}
+impl<T: Read + Seek + Send> ReadSeek for T {}
+
+#[cfg(feature = "std")]
+struct PendingEpubOpen {
+    receiver: Receiver<Result<EpubReadingState, String>>,
+}
 
 #[cfg(feature = "std")]
 struct EpubReadingState {
@@ -527,12 +538,16 @@ pub struct FileBrowserActivity {
     mode: BrowserMode,
     pending_task: Option<FileBrowserTask>,
     return_to_previous_on_back: bool,
+    #[cfg(feature = "std")]
+    epub_open_pending: Option<PendingEpubOpen>,
 }
 
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
     #[cfg(feature = "std")]
     const EPUB_READ_CHUNK_BYTES: usize = 4096;
+    #[cfg(feature = "std")]
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
 
     pub fn new() -> Self {
         Self {
@@ -540,6 +555,8 @@ impl FileBrowserActivity {
             mode: BrowserMode::Browsing,
             pending_task: None,
             return_to_previous_on_back: false,
+            #[cfg(feature = "std")]
+            epub_open_pending: None,
         }
     }
 
@@ -555,6 +572,18 @@ impl FileBrowserActivity {
         #[cfg(feature = "std")]
         {
             matches!(self.mode, BrowserMode::ReadingEpub { .. })
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            false
+        }
+    }
+
+    fn is_opening_epub(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            matches!(self.mode, BrowserMode::OpeningEpub)
         }
 
         #[cfg(not(feature = "std"))]
@@ -583,16 +612,23 @@ impl FileBrowserActivity {
 
     #[inline(never)]
     pub fn process_pending_task(&mut self, fs: &mut dyn FileSystem) -> bool {
+        #[cfg(feature = "std")]
+        let mut updated = self.poll_epub_open_result();
+        #[cfg(not(feature = "std"))]
+        let mut updated = false;
+
         let Some(task) = self.pending_task.take() else {
-            return false;
+            return updated;
         };
 
-        match task {
+        let task_updated = match task {
             FileBrowserTask::LoadCurrentDirectory => self.process_load_current_directory_task(fs),
             FileBrowserTask::OpenPath { path } => self.process_open_path_task(fs, &path),
             FileBrowserTask::OpenTextFile { path } => self.process_open_text_file_task(fs, &path),
             FileBrowserTask::OpenEpubFile { path } => self.process_open_epub_file_task(fs, &path),
-        }
+        };
+        updated |= task_updated;
+        updated
     }
 
     #[inline(never)]
@@ -636,11 +672,12 @@ impl FileBrowserActivity {
     fn process_open_epub_file_task(&mut self, _fs: &mut dyn FileSystem, path: &str) -> bool {
         #[cfg(feature = "std")]
         {
-            match Self::load_epub_renderer(_fs, path) {
-                Ok(renderer) => {
-                    self.mode = BrowserMode::ReadingEpub {
-                        renderer: Box::new(renderer),
-                    };
+            match Self::spawn_epub_open_worker(_fs, path) {
+                Ok(receiver) => {
+                    self.epub_open_pending = Some(PendingEpubOpen { receiver });
+                    self.mode = BrowserMode::OpeningEpub;
+                    self.browser
+                        .set_status_message(format!("Opening EPUB: {}", basename(path)));
                 }
                 Err(error) => {
                     self.mode = BrowserMode::Browsing;
@@ -657,6 +694,38 @@ impl FileBrowserActivity {
                 .set_status_message("Unsupported file type: .epub".to_string());
         }
         true
+    }
+
+    #[cfg(feature = "std")]
+    fn poll_epub_open_result(&mut self) -> bool {
+        let recv_result = match self.epub_open_pending.as_mut() {
+            Some(pending) => pending.receiver.try_recv(),
+            None => return false,
+        };
+
+        match recv_result {
+            Ok(Ok(renderer)) => {
+                self.epub_open_pending = None;
+                self.mode = BrowserMode::ReadingEpub {
+                    renderer: Box::new(renderer),
+                };
+                true
+            }
+            Ok(Err(error)) => {
+                self.epub_open_pending = None;
+                self.mode = BrowserMode::Browsing;
+                self.browser.set_status_message(error);
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.epub_open_pending = None;
+                self.mode = BrowserMode::Browsing;
+                self.browser
+                    .set_status_message("Unable to open EPUB: worker disconnected".to_string());
+                true
+            }
+        }
     }
 
     fn queue_task(&mut self, task: FileBrowserTask) {
@@ -736,28 +805,54 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     #[inline(never)]
-    fn load_epub_renderer(fs: &mut dyn FileSystem, path: &str) -> Result<EpubReadingState, String> {
-        if let Some(reader) = Self::open_host_backed_epub_reader(path) {
-            return EpubReadingState::from_reader(reader);
+    fn spawn_epub_open_worker(
+        fs: &mut dyn FileSystem,
+        path: &str,
+    ) -> Result<Receiver<Result<EpubReadingState, String>>, String> {
+        enum EpubOpenSource {
+            HostPath(String),
+            Chunks(Vec<Vec<u8>>),
         }
 
-        let mut chunks: Vec<Vec<u8>> = Vec::new();
-        let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
-            chunks.push(chunk.to_vec());
-            Ok(())
+        let source = if let Some(host_path) = Self::resolve_host_backed_epub_path(path) {
+            EpubOpenSource::HostPath(host_path)
+        } else {
+            let mut chunks: Vec<Vec<u8>> = Vec::new();
+            let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
+                chunks.push(chunk.to_vec());
+                Ok(())
+            };
+            fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
+                .map_err(|e| format!("Unable to read EPUB: {}", e))?;
+
+            if chunks.is_empty() {
+                return Err("Unable to read EPUB: empty file".to_string());
+            }
+            EpubOpenSource::Chunks(chunks)
         };
-        fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
-            .map_err(|e| format!("Unable to read EPUB: {}", e))?;
 
-        if chunks.is_empty() {
-            return Err("Unable to read EPUB: empty file".to_string());
-        }
-
-        EpubReadingState::from_reader(Box::new(ChunkedEpubReader::from_chunks(chunks)))
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("epub-open-worker".to_string())
+            .stack_size(Self::EPUB_OPEN_WORKER_STACK_BYTES)
+            .spawn(move || {
+                let result = match source {
+                    EpubOpenSource::HostPath(path) => match File::open(&path) {
+                        Ok(file) => EpubReadingState::from_reader(Box::new(file)),
+                        Err(err) => Err(format!("Unable to read EPUB: {}", err)),
+                    },
+                    EpubOpenSource::Chunks(chunks) => EpubReadingState::from_reader(Box::new(
+                        ChunkedEpubReader::from_chunks(chunks),
+                    )),
+                };
+                let _ = tx.send(result);
+            })
+            .map_err(|e| format!("Unable to start EPUB worker: {}", e))?;
+        Ok(rx)
     }
 
     #[cfg(feature = "std")]
-    fn open_host_backed_epub_reader(path: &str) -> Option<Box<dyn ReadSeek>> {
+    fn resolve_host_backed_epub_path(path: &str) -> Option<String> {
         let mut candidates: Vec<String> = Vec::new();
         candidates.push(path.to_string());
 
@@ -768,8 +863,8 @@ impl FileBrowserActivity {
         }
 
         for candidate in candidates {
-            if let Ok(file) = File::open(&candidate) {
-                return Some(Box::new(file));
+            if File::open(&candidate).is_ok() {
+                return Some(candidate);
             }
         }
         None
@@ -777,6 +872,10 @@ impl FileBrowserActivity {
 
     fn handle_reader_input(&mut self, event: InputEvent) -> ActivityResult {
         if matches!(event, InputEvent::Press(Button::Back)) {
+            #[cfg(feature = "std")]
+            {
+                self.epub_open_pending = None;
+            }
             self.mode = BrowserMode::Browsing;
             if self.return_to_previous_on_back {
                 self.return_to_previous_on_back = false;
@@ -810,6 +909,8 @@ impl FileBrowserActivity {
                 }
                 _ => ActivityResult::Ignored,
             },
+            #[cfg(feature = "std")]
+            BrowserMode::OpeningEpub => ActivityResult::Consumed,
             BrowserMode::Browsing => ActivityResult::Ignored,
         }
     }
@@ -818,6 +919,10 @@ impl FileBrowserActivity {
 impl Activity for FileBrowserActivity {
     fn on_enter(&mut self) {
         self.mode = BrowserMode::Browsing;
+        #[cfg(feature = "std")]
+        {
+            self.epub_open_pending = None;
+        }
         if self.pending_task.is_none() {
             self.queue_load_current_directory();
         }
@@ -827,10 +932,14 @@ impl Activity for FileBrowserActivity {
         self.mode = BrowserMode::Browsing;
         self.pending_task = None;
         self.return_to_previous_on_back = false;
+        #[cfg(feature = "std")]
+        {
+            self.epub_open_pending = None;
+        }
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
-        if self.is_viewing_text() || self.is_viewing_epub() {
+        if self.is_viewing_text() || self.is_viewing_epub() || self.is_opening_epub() {
             return self.handle_reader_input(event);
         }
 
@@ -874,6 +983,8 @@ impl Activity for FileBrowserActivity {
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
         match &self.mode {
             BrowserMode::Browsing => self.browser.render(display),
+            #[cfg(feature = "std")]
+            BrowserMode::OpeningEpub => self.browser.render(display),
             BrowserMode::ReadingText { title, viewer } => viewer.render(display, title),
             #[cfg(feature = "std")]
             BrowserMode::ReadingEpub { renderer } => renderer.render(display),

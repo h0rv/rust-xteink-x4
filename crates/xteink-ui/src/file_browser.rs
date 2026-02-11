@@ -256,6 +256,10 @@ impl FileBrowser {
         self.status_message = Some(message);
     }
 
+    pub fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
+    }
+
     /// Render file browser
     pub fn render<D: DrawTarget<Color = BinaryColor>>(
         &self,

@@ -35,7 +35,12 @@ fn library_open_fundamental_epub_and_scroll_to_end() {
     assert!(!harness.press(Button::Confirm));
     assert!(harness.pump_deferred_until_idle() > 0);
     assert_eq!(harness.app().current_screen(), AppScreen::FileBrowser);
-    assert!(harness.app().file_browser_is_reading_epub());
+    assert!(
+        harness.app().file_browser_is_reading_epub(),
+        "epub open did not reach reading mode: opening={} status={:?}",
+        harness.app().file_browser_is_opening_epub(),
+        harness.app().file_browser_status_message()
+    );
     assert!(harness.press(Button::Right));
     maybe_capture(&harness, "fundamental_page2");
 

@@ -45,7 +45,12 @@ fn run_library_open_epub_render_back_flow(enable_capture: bool, turn_page: bool)
         "open flow should produce deferred updates"
     );
     assert_eq!(harness.app().current_screen(), AppScreen::FileBrowser);
-    assert!(harness.app().file_browser_is_reading_epub());
+    assert!(
+        harness.app().file_browser_is_reading_epub(),
+        "epub open did not reach reading mode: opening={} status={:?}",
+        harness.app().file_browser_is_opening_epub(),
+        harness.app().file_browser_status_message()
+    );
 
     harness.render();
     assert!(harness.display().black_pixel_count() > 0);

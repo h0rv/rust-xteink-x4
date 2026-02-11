@@ -148,6 +148,16 @@ impl App {
         self.file_browser.is_viewing_epub()
     }
 
+    /// Returns true when file-browser activity is currently opening an EPUB.
+    pub fn file_browser_is_opening_epub(&self) -> bool {
+        self.file_browser.is_opening_epub()
+    }
+
+    /// Returns the latest file-browser status message, if any.
+    pub fn file_browser_status_message(&self) -> Option<&str> {
+        self.file_browser.status_message()
+    }
+
     /// Returns current EPUB reading position while EPUB mode is active.
     pub fn file_browser_epub_position(&self) -> Option<(usize, usize, usize, usize)> {
         self.file_browser.epub_position()

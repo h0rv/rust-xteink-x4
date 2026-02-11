@@ -25,12 +25,8 @@ use std::thread;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use mu_epub::book::{ChapterEventsOptions, OpenConfig};
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-use mu_epub::{EmbeddedFontStyle, FontLimits};
 #[cfg(feature = "std")]
 use mu_epub::{EpubBook, ScratchBuffers, ZipLimits};
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-use mu_epub_embedded_graphics::FontFaceRegistration;
 #[cfg(feature = "std")]
 use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -38,7 +34,7 @@ use mu_epub_render::{PaginationProfileId, RenderCacheStore};
 #[cfg(feature = "std")]
 use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
-use std::io::SeekFrom;
+use std::io::Cursor;
 #[cfg(feature = "std")]
 use std::io::{Read, Seek};
 
@@ -95,7 +91,7 @@ struct PendingEpubNavigation {
 enum EpubOpenSource {
     HostPath(String),
     #[cfg(not(target_os = "espidf"))]
-    Chunks(Vec<Vec<u8>>),
+    Bytes(Vec<u8>),
 }
 
 #[cfg(feature = "std")]
@@ -191,102 +187,6 @@ struct EpubReadingState {
     page_idx: usize,
 }
 
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-#[derive(Debug, Default, Clone)]
-struct ChunkedEpubReader {
-    chunks: Vec<Vec<u8>>,
-    chunk_offsets: Vec<usize>,
-    total_len: usize,
-    pos: usize,
-}
-
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-impl ChunkedEpubReader {
-    fn from_chunks(chunks: Vec<Vec<u8>>) -> Self {
-        let mut chunk_offsets = Vec::with_capacity(chunks.len());
-        let mut total_len = 0usize;
-        for chunk in &chunks {
-            chunk_offsets.push(total_len);
-            total_len = total_len.saturating_add(chunk.len());
-        }
-        Self {
-            chunks,
-            chunk_offsets,
-            total_len,
-            pos: 0,
-        }
-    }
-
-    fn locate_chunk(&self, absolute_pos: usize) -> Option<(usize, usize)> {
-        if self.chunks.is_empty() || absolute_pos >= self.total_len {
-            return None;
-        }
-        match self.chunk_offsets.binary_search(&absolute_pos) {
-            Ok(idx) => Some((idx, 0)),
-            Err(insert_idx) => {
-                if insert_idx == 0 {
-                    None
-                } else {
-                    let chunk_idx = insert_idx - 1;
-                    let in_chunk = absolute_pos - self.chunk_offsets[chunk_idx];
-                    Some((chunk_idx, in_chunk))
-                }
-            }
-        }
-    }
-}
-
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-impl Read for ChunkedEpubReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if buf.is_empty() || self.pos >= self.total_len {
-            return Ok(0);
-        }
-
-        let mut written = 0usize;
-        while written < buf.len() && self.pos < self.total_len {
-            let Some((chunk_idx, in_chunk)) = self.locate_chunk(self.pos) else {
-                break;
-            };
-            let chunk = &self.chunks[chunk_idx];
-            let available = chunk.len().saturating_sub(in_chunk);
-            if available == 0 {
-                break;
-            }
-            let to_copy = available.min(buf.len() - written);
-            let src = &chunk[in_chunk..in_chunk + to_copy];
-            let dst = &mut buf[written..written + to_copy];
-            dst.copy_from_slice(src);
-            written += to_copy;
-            self.pos += to_copy;
-        }
-
-        Ok(written)
-    }
-}
-
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-impl Seek for ChunkedEpubReader {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        let base = match pos {
-            SeekFrom::Start(offset) => offset as i128,
-            SeekFrom::End(offset) => self.total_len as i128 + offset as i128,
-            SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
-        };
-        if base < 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "invalid seek before start",
-            ));
-        }
-        let next = usize::try_from(base).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid seek position")
-        })?;
-        self.pos = next.min(self.total_len);
-        Ok(self.pos as u64)
-    }
-}
-
 #[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
 type ReaderRenderer = EgRenderer<BookerlyFontBackend>;
 
@@ -310,16 +210,14 @@ pub struct FileBrowserActivity {
 
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    const EPUB_READ_CHUNK_BYTES: usize = 4096;
     #[cfg(all(feature = "std", target_os = "espidf"))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 88 * 1024;
     #[cfg(all(feature = "std", target_os = "espidf"))]
     const EPUB_NAV_WORKER_STACK_BYTES: usize = 72 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    const EPUB_NAV_WORKER_STACK_BYTES: usize = 64 * 1024;
+    const EPUB_NAV_WORKER_STACK_BYTES: usize = 512 * 1024;
 
     pub fn new() -> Self {
         Self {
@@ -354,7 +252,7 @@ impl FileBrowserActivity {
         }
     }
 
-    fn is_opening_epub(&self) -> bool {
+    pub(crate) fn is_opening_epub(&self) -> bool {
         #[cfg(feature = "std")]
         {
             matches!(self.mode, BrowserMode::OpeningEpub)
@@ -364,6 +262,10 @@ impl FileBrowserActivity {
         {
             false
         }
+    }
+
+    pub(crate) fn status_message(&self) -> Option<&str> {
+        self.browser.status_message()
     }
 
     /// Returns current EPUB reading position as:
@@ -571,7 +473,7 @@ impl FileBrowserActivity {
                                 receiver,
                                 direction,
                             });
-                            ActivityResult::Ignored
+                            ActivityResult::Consumed
                         }
                         Err(error) => {
                             self.browser.set_status_message(error);
@@ -687,6 +589,9 @@ impl Default for FileBrowserActivity {
 mod tests {
     use super::*;
     use crate::MockFileSystem;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
 
     fn create_fs() -> MockFileSystem {
         let mut fs = MockFileSystem::empty();
@@ -784,5 +689,81 @@ mod tests {
         );
         assert!(activity.process_pending_task(&mut fs));
         assert_eq!(activity.current_path(), "/");
+    }
+
+    #[test]
+    fn epub_open_worker_completes_for_sample_epub() {
+        let mut activity = FileBrowserActivity::new();
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/books");
+        fs.add_file(
+            "/books/sample.epub",
+            include_bytes!("../../../sample_books/sample.epub"),
+        );
+
+        activity.on_enter();
+        assert!(activity.process_pending_task(&mut fs));
+
+        activity.request_open_path("/books/sample.epub");
+        assert!(
+            activity.process_pending_task(&mut fs),
+            "epub open task should start"
+        );
+        assert!(activity.is_opening_epub());
+
+        let start = Instant::now();
+        while activity.is_opening_epub() && start.elapsed() < Duration::from_secs(20) {
+            let _ = activity.process_pending_task(&mut fs);
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(
+            activity.is_viewing_epub(),
+            "epub open did not complete: opening={} status={:?}",
+            activity.is_opening_epub(),
+            activity.status_message()
+        );
+    }
+
+    #[test]
+    fn sample_epub_parses_with_reasonable_spine_count() {
+        let bytes = include_bytes!("../../../sample_books/sample.epub").to_vec();
+        let reader = Cursor::new(bytes);
+        let zip_limits = ZipLimits::new(8 * 1024 * 1024, 1024).with_max_eocd_scan(8 * 1024);
+        let open_cfg = OpenConfig {
+            options: mu_epub::book::EpubBookOptions {
+                zip_limits: Some(zip_limits),
+                validation_mode: mu_epub::book::ValidationMode::Lenient,
+                max_nav_bytes: Some(256 * 1024),
+            },
+            lazy_navigation: true,
+        };
+        let book =
+            EpubBook::from_reader_with_config(reader, open_cfg).expect("sample epub should parse");
+        assert!(
+            book.chapter_count() > 0 && book.chapter_count() < 4096,
+            "unexpected chapter count: {}",
+            book.chapter_count()
+        );
+    }
+
+    #[test]
+    fn epub_reading_state_from_reader_completes_for_sample_epub() {
+        let bytes = include_bytes!("../../../sample_books/sample.epub").to_vec();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = EpubReadingState::from_reader(Box::new(Cursor::new(bytes)));
+            let _ = tx.send(result.map(|_| ()));
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("epub reading-state build timed out");
+        assert!(
+            result.is_ok(),
+            "epub reading-state build failed: {:?}",
+            result
+        );
     }
 }

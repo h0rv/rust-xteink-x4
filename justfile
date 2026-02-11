@@ -17,6 +17,14 @@ elif command -v espflash >/dev/null 2>&1; then \
 else \
     echo "/dev/ttyACM0"; \
 fi`
+
+# Host target used for desktop tests/simulators.
+# Override with HOST_TEST_TARGET when cross-testing.
+host_target := `if [ -n "${HOST_TEST_TARGET:-}" ]; then \
+    echo "$HOST_TEST_TARGET"; \
+else \
+    rustc -vV | awk '/^host: /{print $2}'; \
+fi`
 backup_file := "firmware_backup.bin"
 partition_table := "crates/xteink-firmware/partitions.csv"
 
@@ -101,7 +109,7 @@ sim-web:
 
 # Run desktop simulator
 sim-desktop:
-    cargo run -p xteink-sim-desktop --target x86_64-unknown-linux-gnu
+    cargo run -p xteink-sim-desktop --target {{ host_target }}
 
 # Build web simulator
 build-web:
@@ -198,31 +206,31 @@ lint:
 
 # Run tests for UI logic (std feature enabled, host target)
 test-ui:
-    cargo test -p xteink-ui --features std --target x86_64-unknown-linux-gnu
+    cargo test -p xteink-ui --features std --target {{ host_target }}
 
 # Run only diff tests (fast, host target)
 test-diff:
-    cargo test -p xteink-ui --features std --target x86_64-unknown-linux-gnu diff
+    cargo test -p xteink-ui --features std --target {{ host_target }} diff
 
 # Run all tests (host target)
 test:
-    cargo test --workspace --features std --target x86_64-unknown-linux-gnu
+    cargo test --workspace --features std --target {{ host_target }}
 
 # Run scripted scenario harness tests (host target)
 sim-scenarios:
-    cargo test -p xteink-scenario-harness --target x86_64-unknown-linux-gnu
+    cargo test -p xteink-scenario-harness --target {{ host_target }}
 
 # Build stack-size report for scenario harness host builds
 stack-report:
-    ./scripts/stack_sizes_report.sh xteink-scenario-harness x86_64-unknown-linux-gnu
+    ./scripts/stack_sizes_report.sh xteink-scenario-harness {{ host_target }}
 
 # Enforce a max per-function stack threshold for project symbols (host scenario build)
 stack-gate max_bytes="100000":
-    STACK_MAX_BYTES={{ max_bytes }} ./scripts/stack_sizes_report.sh xteink-scenario-harness x86_64-unknown-linux-gnu
+    STACK_MAX_BYTES={{ max_bytes }} ./scripts/stack_sizes_report.sh xteink-scenario-harness {{ host_target }}
 
 # Tight host-side UI reliability loop: fmt + lint + scenarios + stack report
 ui-loop:
-    ./scripts/ui_loop.sh
+    HOST_TEST_TARGET={{ host_target }} ./scripts/ui_loop.sh
 
 # Show CLI helpers
 cli-help:

@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use embedded_graphics::pixelcolor::BinaryColor;
@@ -34,14 +35,34 @@ impl ScenarioHarness {
 
     /// Pump deferred tasks until idle or a safety cap is reached.
     pub fn pump_deferred_until_idle(&mut self) -> usize {
-        const MAX_PUMPS: usize = 32;
+        const MAX_PUMPS: usize = 30_000;
+        const IDLE_STREAK_TARGET: usize = 8;
+        const EPUB_OPEN_WAIT_BUDGET_MS: u64 = 20_000;
         let mut updates = 0;
+        let mut idle_streak = 0;
+        let start = Instant::now();
 
         for _ in 0..MAX_PUMPS {
-            if !self.app.process_deferred_tasks(&mut self.fs) {
-                break;
+            if self.app.process_deferred_tasks(&mut self.fs) {
+                updates += 1;
+                idle_streak = 0;
+            } else {
+                if self.app.file_browser_is_opening_epub()
+                    && start.elapsed() < Duration::from_millis(EPUB_OPEN_WAIT_BUDGET_MS)
+                {
+                    thread::yield_now();
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                idle_streak += 1;
+                if idle_streak >= IDLE_STREAK_TARGET {
+                    break;
+                }
+                // Allow background worker threads (EPUB open/nav) to make
+                // progress between polling iterations.
+                thread::yield_now();
+                thread::sleep(Duration::from_millis(1));
             }
-            updates += 1;
         }
 
         updates

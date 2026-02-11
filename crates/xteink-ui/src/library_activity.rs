@@ -427,7 +427,7 @@ impl LibraryActivity {
             .or_else(|| zip.get_entry(cover_path.trim_start_matches('/')))?
             .clone();
 
-        if u64::from(cover_entry.uncompressed_size) > Self::MAX_BMP_BYTES as u64 {
+        if cover_entry.uncompressed_size > Self::MAX_BMP_BYTES as u64 {
             return None;
         }
 

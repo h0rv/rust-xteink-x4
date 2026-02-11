@@ -12,6 +12,9 @@ This workflow maximizes host-side coverage before flashing hardware.
 ## Commands
 
 ```bash
+# Optional override when cross-testing from host:
+# export HOST_TEST_TARGET=aarch64-apple-darwin
+
 # Run the full host-side loop
 just ui-loop
 
@@ -30,6 +33,8 @@ just stack-gate 4096
 
 ## Notes
 
+- Host target is auto-detected from `rustc -vV` (`host:`) for `ui-loop`, `sim-scenarios`, and stack-report recipes.
+- Override with `HOST_TEST_TARGET` when needed.
 - The report includes both:
   - object-level `.stack_sizes` bytes (coarse signal)
   - function-level stack sizes via `llvm-readobj --stack-sizes`

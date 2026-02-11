@@ -31,9 +31,15 @@ fn library_open_frankenstein_scroll_and_capture() {
     assert!(!harness.press(Button::Confirm));
     assert!(harness.pump_deferred_until_idle() > 0);
     assert_eq!(harness.app().current_screen(), AppScreen::FileBrowser);
-    assert!(harness.app().file_browser_is_reading_epub());
+    assert!(
+        harness.app().file_browser_is_reading_epub(),
+        "epub open did not reach reading mode: opening={} status={:?}",
+        harness.app().file_browser_is_opening_epub(),
+        harness.app().file_browser_status_message()
+    );
 
     assert!(harness.press(Button::Right));
+    let _ = harness.pump_deferred_until_idle();
     maybe_capture(&harness, "frankenstein_page2");
 
     let mut visited = BTreeSet::new();
@@ -51,6 +57,7 @@ fn library_open_frankenstein_scroll_and_capture() {
         );
 
         assert!(harness.press(Button::Right));
+        let _ = harness.pump_deferred_until_idle();
         turns += 1;
         let after = harness
             .app()
@@ -83,6 +90,7 @@ fn library_open_frankenstein_scroll_and_capture() {
         .file_browser_epub_position()
         .expect("epub position should exist at end");
     assert!(harness.press(Button::Left));
+    let _ = harness.pump_deferred_until_idle();
     let back_pos = harness
         .app()
         .file_browser_epub_position()

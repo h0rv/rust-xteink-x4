@@ -2,8 +2,12 @@
 set -euo pipefail
 
 crate="${1:-xteink-scenario-harness}"
-target="${2:-x86_64-unknown-linux-gnu}"
+target="${2:-${HOST_TEST_TARGET:-}}"
 profile_flag="${3:-}"
+
+if [[ -z "${target}" ]]; then
+  target="$(rustc -vV | awk '/^host: / { print $2 }')"
+fi
 
 # Regex used to focus function-level reports on project code.
 stack_filter="${STACK_FILTER:-xteink_ui|xteink_scenario_harness|xteink_firmware}"
@@ -11,13 +15,16 @@ stack_filter="${STACK_FILTER:-xteink_ui|xteink_scenario_harness|xteink_firmware}
 stack_max_bytes="${STACK_MAX_BYTES:-}"
 
 if ! command -v llvm-readobj >/dev/null 2>&1; then
-  echo "llvm-readobj is required" >&2
-  exit 1
+  echo "[stack] llvm-readobj not found; skipping stack-size report." >&2
+  echo "[stack] install LLVM tools to enable this gate." >&2
+  exit 0
 fi
 
-if ! command -v readelf >/dev/null 2>&1; then
-  echo "readelf is required" >&2
-  exit 1
+readelf_cmd=""
+if command -v readelf >/dev/null 2>&1; then
+  readelf_cmd="readelf"
+elif command -v llvm-readelf >/dev/null 2>&1; then
+  readelf_cmd="llvm-readelf"
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -44,32 +51,35 @@ if [[ ${#objects[@]} -eq 0 ]]; then
   exit 2
 fi
 
-echo "[stack] object-level .stack_sizes section bytes (coarse signal)"
-
 tmp_obj_report="$(mktemp)"
-for obj in "${objects[@]}"; do
-  readelf -W -S "${obj}" | awk -v obj="${obj}" '
-    /\.stack_sizes/ {
-      size_hex = $7
-      size = strtonum("0x" size_hex)
-      total += size
-    }
-    END {
-      if (total > 0) {
-        printf "%10d\t%s\n", total, obj
+if [[ -n "${readelf_cmd}" ]]; then
+  echo "[stack] object-level .stack_sizes section bytes (coarse signal)"
+  for obj in "${objects[@]}"; do
+    "${readelf_cmd}" -W -S "${obj}" | awk -v obj="${obj}" '
+      /\.stack_sizes/ {
+        size_hex = $7
+        size = strtonum("0x" size_hex)
+        total += size
       }
-    }
-  ' >> "${tmp_obj_report}"
-done
+      END {
+        if (total > 0) {
+          printf "%10d\t%s\n", total, obj
+        }
+      }
+    ' >> "${tmp_obj_report}"
+  done
 
-if [[ -s "${tmp_obj_report}" ]]; then
-  set +o pipefail
-  sort -nr "${tmp_obj_report}" | head -n 20
-  set -o pipefail
-  total_bytes="$(awk -F'\t' '{sum += $1} END {print sum+0}' "${tmp_obj_report}")"
-  echo "[stack] aggregate .stack_sizes bytes across objects: ${total_bytes}"
+  if [[ -s "${tmp_obj_report}" ]]; then
+    set +o pipefail
+    sort -nr "${tmp_obj_report}" | head -n 20
+    set -o pipefail
+    total_bytes="$(awk -F'\t' '{sum += $1} END {print sum+0}' "${tmp_obj_report}")"
+    echo "[stack] aggregate .stack_sizes bytes across objects: ${total_bytes}"
+  else
+    echo "[stack] no .stack_sizes sections found (toolchain may not emit them here)."
+  fi
 else
-  echo "[stack] no .stack_sizes sections found (toolchain may not emit them here)."
+  echo "[stack] readelf/llvm-readelf not found; skipping object-level section summary."
 fi
 
 echo "[stack] function-level entries from llvm-readobj --stack-sizes"

@@ -37,8 +37,10 @@ use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
 use mu_epub_render::{PaginationProfileId, RenderCacheStore};
 #[cfg(feature = "std")]
 use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use std::io::SeekFrom;
 #[cfg(feature = "std")]
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 
 #[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
 use crate::epub_font_backend::BookerlyFontBackend;
@@ -92,6 +94,7 @@ struct PendingEpubNavigation {
 #[cfg(feature = "std")]
 enum EpubOpenSource {
     HostPath(String),
+    #[cfg(not(target_os = "espidf"))]
     Chunks(Vec<Vec<u8>>),
 }
 
@@ -188,7 +191,7 @@ struct EpubReadingState {
     page_idx: usize,
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 #[derive(Debug, Default, Clone)]
 struct ChunkedEpubReader {
     chunks: Vec<Vec<u8>>,
@@ -197,7 +200,7 @@ struct ChunkedEpubReader {
     pos: usize,
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 impl ChunkedEpubReader {
     fn from_chunks(chunks: Vec<Vec<u8>>) -> Self {
         let mut chunk_offsets = Vec::with_capacity(chunks.len());
@@ -233,7 +236,7 @@ impl ChunkedEpubReader {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 impl Read for ChunkedEpubReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if buf.is_empty() || self.pos >= self.total_len {
@@ -262,7 +265,7 @@ impl Read for ChunkedEpubReader {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 impl Seek for ChunkedEpubReader {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let base = match pos {
@@ -307,12 +310,16 @@ pub struct FileBrowserActivity {
 
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_READ_CHUNK_BYTES: usize = 4096;
     #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_WORKER_STACK_BYTES: usize = 56 * 1024;
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 88 * 1024;
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    const EPUB_NAV_WORKER_STACK_BYTES: usize = 72 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    const EPUB_WORKER_STACK_BYTES: usize = 64 * 1024;
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    const EPUB_NAV_WORKER_STACK_BYTES: usize = 64 * 1024;
 
     pub fn new() -> Self {
         Self {

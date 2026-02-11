@@ -1,7 +1,7 @@
 use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::sys;
 
-const EPUB_WORKER_THREAD_STACK_BYTES: usize = 56 * 1024;
+const EPUB_WORKER_THREAD_STACK_BYTES: usize = 72 * 1024;
 
 /// Log heap usage statistics and current task stack headroom.
 pub fn log_heap(label: &str) {

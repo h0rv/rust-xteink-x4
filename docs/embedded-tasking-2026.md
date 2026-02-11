@@ -58,8 +58,10 @@ Inference from sources:
 
 ## Current implementation notes (this repo)
 
-- Firmware sets global pthread defaults with `ThreadSpawnConfiguration` (`stack_size=56KiB`, low priority) so `std::thread` tasks have a sane floor on ESP-IDF.
-- EPUB open and page-turn work run in background worker threads; the UI loop now polls completion and redraws when work completes.
+- Firmware sets global pthread defaults with `ThreadSpawnConfiguration` (`stack_size=72KiB`, low priority) so unspecified `std::thread` tasks have a safer baseline on ESP-IDF.
+- EPUB work uses explicit worker stacks in UI: open worker `88KiB`, page-turn worker `72KiB` on ESP-IDF.
+- EPUB open on ESP-IDF only uses VFS-backed file paths (no full-file chunk buffering fallback) to avoid avoidable heap spikes.
+- EPUB open and page-turn work run in background worker threads; the UI loop polls completion and redraws when work completes.
 - `xteink-ui` keeps `#![forbid(unsafe_code)]` and does not call raw FreeRTOS APIs directly.
 - `mu-epub-render` cache hooks are enabled for non-ESP targets, where full-session chapter caching is safe; ESP-IDF keeps conservative memory behavior to avoid page-cache OOM spikes.
 

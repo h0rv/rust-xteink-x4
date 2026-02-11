@@ -500,23 +500,37 @@ impl FileBrowserActivity {
         fs: &mut dyn FileSystem,
         path: &str,
     ) -> Result<EpubOpenSource, String> {
+        #[cfg(target_os = "espidf")]
+        let _ = fs;
+
         if let Some(host_path) = Self::resolve_host_backed_epub_path(path) {
             return Ok(EpubOpenSource::HostPath(host_path));
         }
 
-        let mut chunks: Vec<Vec<u8>> = Vec::new();
-        let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
-            chunks.push(chunk.to_vec());
-            Ok(())
-        };
-        fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
-            .map_err(|e| format!("Unable to read EPUB: {}", e))?;
-
-        if chunks.is_empty() {
-            return Err("Unable to read EPUB: empty file".to_string());
+        #[cfg(target_os = "espidf")]
+        {
+            return Err(format!(
+                "Unable to open EPUB: file not reachable via VFS path ({})",
+                path
+            ));
         }
 
-        Ok(EpubOpenSource::Chunks(chunks))
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let mut chunks: Vec<Vec<u8>> = Vec::new();
+            let mut on_chunk = |chunk: &[u8]| -> Result<(), crate::filesystem::FileSystemError> {
+                chunks.push(chunk.to_vec());
+                Ok(())
+            };
+            fs.read_file_chunks(path, Self::EPUB_READ_CHUNK_BYTES, &mut on_chunk)
+                .map_err(|e| format!("Unable to read EPUB: {}", e))?;
+
+            if chunks.is_empty() {
+                return Err("Unable to read EPUB: empty file".to_string());
+            }
+
+            Ok(EpubOpenSource::Chunks(chunks))
+        }
     }
 
     #[cfg(feature = "std")]
@@ -526,10 +540,15 @@ impl FileBrowserActivity {
         path: &str,
     ) -> Result<Receiver<Result<EpubReadingState, String>>, String> {
         let source = Self::prepare_epub_open_source(fs, path)?;
+        log::info!(
+            "[EPUB] spawn open worker stack={}B path={}",
+            Self::EPUB_OPEN_WORKER_STACK_BYTES,
+            path
+        );
         let (tx, rx) = mpsc::channel();
         let builder = thread::Builder::new()
             .name("epub-open-worker".to_string())
-            .stack_size(Self::EPUB_WORKER_STACK_BYTES);
+            .stack_size(Self::EPUB_OPEN_WORKER_STACK_BYTES);
         builder
             .spawn(move || {
                 let result = match source {
@@ -537,6 +556,7 @@ impl FileBrowserActivity {
                         Ok(file) => EpubReadingState::from_reader(Box::new(file)),
                         Err(err) => Err(format!("Unable to read EPUB: {}", err)),
                     },
+                    #[cfg(not(target_os = "espidf"))]
                     EpubOpenSource::Chunks(chunks) => EpubReadingState::from_reader(Box::new(
                         ChunkedEpubReader::from_chunks(chunks),
                     )),
@@ -552,10 +572,15 @@ impl FileBrowserActivity {
         renderer: Arc<Mutex<EpubReadingState>>,
         direction: EpubNavigationDirection,
     ) -> Result<Receiver<Result<bool, String>>, String> {
+        log::info!(
+            "[EPUB] spawn nav worker stack={}B direction={}",
+            Self::EPUB_NAV_WORKER_STACK_BYTES,
+            direction.label()
+        );
         let (tx, rx) = mpsc::channel();
         let builder = thread::Builder::new()
             .name("epub-nav-worker".to_string())
-            .stack_size(Self::EPUB_WORKER_STACK_BYTES);
+            .stack_size(Self::EPUB_NAV_WORKER_STACK_BYTES);
         builder
             .spawn(move || {
                 let advanced = match renderer.lock() {

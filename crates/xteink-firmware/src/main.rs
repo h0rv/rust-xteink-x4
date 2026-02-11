@@ -1,6 +1,7 @@
 extern crate alloc;
 
 mod cli;
+mod runtime_diagnostics;
 mod sdcard;
 
 use alloc::vec::Vec;
@@ -9,7 +10,6 @@ use esp_idf_svc::hal::{
     gpio::{Input, PinDriver, Pull},
     peripherals::Peripherals,
     spi::{config::Config, Dma, SpiDeviceDriver, SpiDriver, SpiDriverConfig},
-    task::thread::ThreadSpawnConfiguration,
 };
 use esp_idf_svc::sys;
 
@@ -22,6 +22,7 @@ use xteink_ui::{
 };
 
 use cli::SerialCli;
+use runtime_diagnostics::{configure_pthread_defaults, log_heap};
 use sdcard::SdCardFs;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,7 +45,6 @@ const ADC_RANGES_2: [i32; 3] = [3800, 1120, i32::MIN];
 const ADC_WIDTH_BIT_12: u32 = 3;
 const ADC_ATTEN_DB_11: u32 = 3;
 const POWER_LONG_PRESS_MS: u32 = 2000;
-const EPUB_WORKER_THREAD_STACK_BYTES: usize = 56 * 1024;
 
 fn init_adc() {
     unsafe {
@@ -121,44 +121,6 @@ fn format_size(size: u64) -> String {
         format!("{}B", size)
     }
 }
-/// Log heap usage statistics
-fn log_heap(label: &str) {
-    let free_heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
-    let min_free = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
-    let free_8bit = unsafe { esp_idf_svc::sys::heap_caps_get_free_size(sys::MALLOC_CAP_8BIT) };
-    let largest_8bit =
-        unsafe { esp_idf_svc::sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) };
-    let stack_hwm_words =
-        unsafe { esp_idf_svc::sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
-    let stack_hwm_bytes = (stack_hwm_words as usize) * core::mem::size_of::<sys::StackType_t>();
-    log::info!(
-        "[MEM] {}: free={} min_free={} free_8bit={} largest_8bit={} stack_hwm={}B",
-        label,
-        free_heap,
-        min_free,
-        free_8bit,
-        largest_8bit,
-        stack_hwm_bytes
-    );
-}
-
-fn configure_pthread_defaults() {
-    let mut config = ThreadSpawnConfiguration::default();
-    config.stack_size = EPUB_WORKER_THREAD_STACK_BYTES;
-    config.priority = 1;
-    config.inherit = false;
-
-    if let Err(err) = config.set() {
-        log::warn!("Failed to configure pthread defaults: {}", err);
-    } else {
-        log::info!(
-            "Configured pthread defaults: stack_size={} priority={}",
-            config.stack_size,
-            config.priority
-        );
-    }
-}
-
 fn cli_redraw<I, D>(
     app: &mut App,
     display: &mut EinkDisplay<I>,

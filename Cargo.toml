@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["mu-epub"]
 members = [
     "crates/xteink-ui",
     "crates/xteink-scenario-harness",
@@ -9,10 +10,10 @@ members = [
 ]
 
 [workspace.dependencies]
-mu_epub = { package = "mu_epub", path = "../mu-epub", default-features = false }
-mu_epub_render = { package = "mu-epub-render", path = "../mu-epub/crates/mu-epub-render" }
-mu_epub_embedded_graphics = { package = "mu-epub-embedded-graphics", path = "../mu-epub/crates/mu-epub-embedded-graphics" }
-ssd1677 = { path = "../ssd1677" }
+mu_epub = { package = "mu_epub", path = "mu-epub", default-features = false }
+mu_epub_render = { package = "mu-epub-render", path = "mu-epub/crates/mu-epub-render" }
+mu_epub_embedded_graphics = { package = "mu-epub-embedded-graphics", path = "mu-epub/crates/mu-epub-embedded-graphics" }
+ssd1677 = { path = "ssd1677" }
 
 [profile.release]
 opt-level = "s"

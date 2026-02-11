@@ -36,6 +36,14 @@ setup:
     @echo "🔨 Installing ESP-IDF toolchain..."
     espup install
     @echo ""
+    @echo "📚 Initializing git submodules..."
+    @if [ -d .git ] && [ -f .gitmodules ]; then \
+        git submodule update --init --recursive; \
+        echo "✅ Submodules initialized"; \
+    else \
+        echo "ℹ️  No submodules configured, skipping"; \
+    fi
+    @echo ""
     @echo "🎨 Setting up Git hooks (optional)..."
     @if [ -d .git ]; then \
         echo "#!/bin/sh" > .git/hooks/pre-commit; \

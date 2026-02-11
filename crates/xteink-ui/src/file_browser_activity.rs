@@ -666,14 +666,6 @@ impl Activity for FileBrowserActivity {
     }
 
     fn refresh_mode(&self) -> crate::ui::ActivityRefreshMode {
-        #[cfg(feature = "std")]
-        if self.is_viewing_epub() {
-            // Avoid diff-based updates for EPUB pages on-device: diff mode keeps
-            // large scratch buffers alive and can starve chapter parsing of
-            // contiguous heap during page turns.
-            return crate::ui::ActivityRefreshMode::Partial;
-        }
-
         crate::ui::ActivityRefreshMode::Fast
     }
 }

@@ -1310,8 +1310,6 @@ impl Activity for LibraryActivity {
         self.show_context_menu = false;
         self.show_toast = false;
         self.pending_open_path = None;
-        // Request full refresh on enter for a clean baseline
-        self.needs_full_refresh = true;
     }
 
     fn on_exit(&mut self) {
@@ -1394,9 +1392,7 @@ impl Activity for LibraryActivity {
         if self.needs_full_refresh {
             ActivityRefreshMode::Full
         } else {
-            // Library list redraws are large and fast diff updates can leave
-            // visible artifacts on e-ink headers/items.
-            ActivityRefreshMode::Partial
+            ActivityRefreshMode::Fast
         }
     }
 }

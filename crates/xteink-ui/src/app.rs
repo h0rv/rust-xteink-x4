@@ -162,7 +162,7 @@ impl App {
     /// Get the refresh mode for the current activity.
     ///
     /// Implements a counter-based strategy:
-    /// - Returns Full refresh when entering a new activity or on manual trigger
+    /// - Returns Full refresh when explicitly requested
     /// - Returns Partial refresh after N fast updates (for ghost cleanup)
     /// - Returns Fast refresh for most interactions
     pub fn get_refresh_mode(&mut self) -> ActivityRefreshMode {
@@ -694,16 +694,16 @@ mod tests {
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
 
-        // Enter and leave Library: each enter should force full refresh.
+        // Enter Library once: initial render still gets a full refresh baseline.
         app.handle_input(InputEvent::Press(Button::Confirm));
         assert_eq!(app.current_screen(), AppScreen::Library);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
         app.handle_input(InputEvent::Press(Button::Back));
         assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
+        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
 
-        // SystemMenu counter restarts after re-enter and still reaches periodic partial.
-        for _ in 0..9 {
+        // SystemMenu counter continues and still reaches periodic partial.
+        for _ in 0..8 {
             assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
         }
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Partial);

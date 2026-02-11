@@ -4,7 +4,6 @@ mod cli;
 mod runtime_diagnostics;
 mod sdcard;
 
-use alloc::vec::Vec;
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{Input, PinDriver, Pull},
@@ -16,9 +15,8 @@ use esp_idf_svc::sys;
 use xteink_ui::ui::ActivityRefreshMode;
 use xteink_ui::FileSystem;
 use xteink_ui::{
-    compute_diff_region, extract_region, App, BufferedDisplay, Builder, Button, Dimensions,
-    DisplayInterface, EinkDisplay, EinkInterface, InputEvent, RamXAddressing, RefreshMode, Region,
-    Rotation, UpdateRegion,
+    App, BufferedDisplay, Builder, Button, Dimensions, DisplayInterface, EinkDisplay,
+    EinkInterface, InputEvent, RamXAddressing, RefreshMode, Rotation,
 };
 
 use cli::SerialCli;
@@ -31,7 +29,6 @@ enum UpdateStrategy {
     Full,
     PartialFull,
     FastFull,
-    DiffFast,
 }
 
 #[allow(dead_code)]
@@ -126,7 +123,6 @@ fn cli_redraw<I, D>(
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
-    last_buffer: &mut Vec<u8>,
     mode: RefreshMode,
 ) where
     I: DisplayInterface,
@@ -137,7 +133,6 @@ fn cli_redraw<I, D>(
     display
         .update_with_mode_no_lut(buffered_display.buffer(), &[], mode, delay)
         .ok();
-    last_buffer.copy_from_slice(buffered_display.buffer());
 }
 
 fn handle_cli_command<I, D>(
@@ -148,7 +143,6 @@ fn handle_cli_command<I, D>(
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
-    last_buffer: &mut Vec<u8>,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
@@ -360,7 +354,7 @@ fn handle_cli_command<I, D>(
                 "partial" => RefreshMode::Partial,
                 _ => RefreshMode::Fast,
             };
-            cli_redraw(app, display, delay, buffered_display, last_buffer, mode);
+            cli_redraw(app, display, delay, buffered_display, mode);
             cli.write_line("OK");
         }
         "sleep" => {
@@ -418,110 +412,11 @@ impl FsCliOps for SdCardFs {
     }
 }
 
-fn update_display_diff<I, D>(
-    display: &mut EinkDisplay<I>,
-    delay: &mut D,
-    current: &[u8],
-    last: &mut Vec<u8>,
-    scratch: &mut Vec<u8>,
-    scratch_prev: &mut Vec<u8>,
-    width_bytes: usize,
-    height: usize,
-) where
-    I: DisplayInterface,
-    D: embedded_hal::delay::DelayNs,
-{
-    let expected_len = width_bytes * height;
-    if current.len() != expected_len {
-        log::warn!(
-            "Buffer size mismatch: got {}, expected {} ({}x{} bytes)",
-            current.len(),
-            expected_len,
-            width_bytes,
-            height
-        );
-    }
-
-    if last.len() != current.len() {
-        last.resize(current.len(), 0xFF);
-    }
-
-    let region = match compute_diff_region(current, last, width_bytes, height) {
-        Some(region) => region,
-        None => {
-            log::info!("UI: no pixel changes detected");
-            return;
-        }
-    };
-
-    let total_bytes = current.len();
-    let region_bytes = region.byte_count();
-    let free_heap = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() as usize };
-
-    // Diff updates need two scratch buffers (current + previous) and can fail
-    // under heap pressure due to large temporary allocations.
-    let estimated_scratch_need = region_bytes.saturating_mul(2);
-
-    if region_bytes > total_bytes / 3
-        || estimated_scratch_need > free_heap.saturating_sub(16 * 1024)
-    {
-        log::info!(
-            "UI: using partial full-screen refresh (region={} free_heap={} need={})",
-            region_bytes,
-            free_heap,
-            estimated_scratch_need
-        );
-        if display
-            .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
-            .is_err()
-        {
-            log::warn!("UI: full-screen partial refresh failed");
-        }
-        last.copy_from_slice(current);
-        return;
-    }
-
-    extract_region(current, width_bytes, region, scratch);
-    extract_region(last, width_bytes, region, scratch_prev);
-
-    let update = UpdateRegion {
-        region: Region::new(region.x_px(), region.y_px(), region.w_px(), region.h_px()),
-        black_buffer: scratch,
-        red_buffer: scratch_prev,
-        mode: RefreshMode::Fast,
-    };
-
-    log::info!(
-        "UI: region update x={} y={} w={} h={} bytes={}",
-        region.x_px(),
-        region.y_px(),
-        region.w_px(),
-        region.h_px(),
-        region_bytes
-    );
-
-    if display.update_region_no_lut(update, delay).is_err() {
-        log::warn!("UI: region update failed - falling back to partial");
-        if display
-            .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
-            .is_err()
-        {
-            log::warn!("UI: fallback partial refresh failed");
-        }
-    }
-    last.copy_from_slice(current);
-}
-
 fn apply_update<I, D>(
     strategy: UpdateStrategy,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     current: &[u8],
-    last: &mut Vec<u8>,
-    scratch: &mut Vec<u8>,
-    scratch_prev: &mut Vec<u8>,
-    width_bytes: usize,
-    height: usize,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
@@ -535,7 +430,6 @@ fn apply_update<I, D>(
             {
                 log::warn!("UI: full refresh failed");
             }
-            last.copy_from_slice(current);
         }
         UpdateStrategy::PartialFull => {
             log::info!("UI: applying partial full-screen refresh");
@@ -545,7 +439,6 @@ fn apply_update<I, D>(
             {
                 log::warn!("UI: partial full-screen refresh failed");
             }
-            last.copy_from_slice(current);
         }
         UpdateStrategy::FastFull => {
             log::info!("UI: applying fast full-screen refresh");
@@ -555,19 +448,6 @@ fn apply_update<I, D>(
             {
                 log::warn!("UI: fast full-screen refresh failed");
             }
-            last.copy_from_slice(current);
-        }
-        UpdateStrategy::DiffFast => {
-            update_display_diff(
-                display,
-                delay,
-                current,
-                last,
-                scratch,
-                scratch_prev,
-                width_bytes,
-                height,
-            );
         }
     }
 }
@@ -577,17 +457,12 @@ fn apply_update<I, D>(
 /// Maps ActivityRefreshMode to the appropriate update strategy:
 /// - Full: Full screen full refresh (highest quality, slowest)
 /// - Partial: Full screen partial refresh (for ghost cleanup)
-/// - Fast: Diff-based fast refresh (most efficient for small changes)
+/// - Fast: Full screen fast refresh (single-buffer differential handled in driver)
 fn apply_update_with_mode<I, D>(
     mode: ActivityRefreshMode,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     current: &[u8],
-    last: &mut Vec<u8>,
-    scratch: &mut Vec<u8>,
-    scratch_prev: &mut Vec<u8>,
-    width_bytes: usize,
-    height: usize,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
@@ -595,45 +470,15 @@ fn apply_update_with_mode<I, D>(
     match mode {
         ActivityRefreshMode::Full => {
             log::info!("UI: Activity requested full refresh");
-            apply_update(
-                UpdateStrategy::Full,
-                display,
-                delay,
-                current,
-                last,
-                scratch,
-                scratch_prev,
-                width_bytes,
-                height,
-            );
+            apply_update(UpdateStrategy::Full, display, delay, current);
         }
         ActivityRefreshMode::Partial => {
             log::info!("UI: Periodic partial refresh for ghost cleanup");
-            apply_update(
-                UpdateStrategy::PartialFull,
-                display,
-                delay,
-                current,
-                last,
-                scratch,
-                scratch_prev,
-                width_bytes,
-                height,
-            );
+            apply_update(UpdateStrategy::PartialFull, display, delay, current);
         }
         ActivityRefreshMode::Fast => {
-            // Use diff-based fast refresh for most efficient updates
-            apply_update(
-                UpdateStrategy::DiffFast,
-                display,
-                delay,
-                current,
-                last,
-                scratch,
-                scratch_prev,
-                width_bytes,
-                height,
-            );
+            // Driver handles single-buffer differential fast refresh.
+            apply_update(UpdateStrategy::FastFull, display, delay, current);
         }
     }
 }
@@ -727,9 +572,6 @@ fn main() {
 
     // Create buffered display for UI rendering (avoids stack overflow from iterator chains)
     let mut buffered_display = BufferedDisplay::new();
-    let mut last_buffer: Vec<u8> = vec![0xFF; buffered_display.buffer().len()];
-    let mut region_scratch: Vec<u8> = Vec::new();
-    let mut region_scratch_prev: Vec<u8> = Vec::new();
 
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
@@ -752,7 +594,6 @@ fn main() {
         .update(buffered_display.buffer(), &[], &mut delay)
         .ok();
     log_heap("after_first_render");
-    last_buffer.copy_from_slice(buffered_display.buffer());
 
     log::info!("Starting event loop with adaptive refresh strategy");
 
@@ -786,7 +627,6 @@ fn main() {
                     &mut display,
                     &mut delay,
                     &mut buffered_display,
-                    &mut last_buffer,
                 );
             }
         }
@@ -861,11 +701,6 @@ fn main() {
                             &mut display,
                             &mut delay,
                             buffered_display.buffer(),
-                            &mut last_buffer,
-                            &mut region_scratch,
-                            &mut region_scratch_prev,
-                            buffered_display.width_bytes(),
-                            buffered_display.height_pixels() as usize,
                         );
                     } else {
                         log::info!("UI: no redraw after power short press");
@@ -894,11 +729,6 @@ fn main() {
                         &mut display,
                         &mut delay,
                         buffered_display.buffer(),
-                        &mut last_buffer,
-                        &mut region_scratch,
-                        &mut region_scratch_prev,
-                        buffered_display.width_bytes(),
-                        buffered_display.height_pixels() as usize,
                     );
                     log_heap("after_render");
                     if app.file_browser_is_reading_epub() {
@@ -936,11 +766,6 @@ fn main() {
                 &mut display,
                 &mut delay,
                 buffered_display.buffer(),
-                &mut last_buffer,
-                &mut region_scratch,
-                &mut region_scratch_prev,
-                buffered_display.width_bytes(),
-                buffered_display.height_pixels() as usize,
             );
             log_heap("after_deferred_render");
             if app.file_browser_is_reading_epub() {

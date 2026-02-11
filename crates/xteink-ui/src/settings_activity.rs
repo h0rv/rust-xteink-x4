@@ -581,9 +581,7 @@ impl Activity for SettingsActivity {
     }
 
     fn refresh_mode(&self) -> crate::ui::ActivityRefreshMode {
-        // Settings redraws can touch large areas; avoid diff buffer allocations
-        // on constrained firmware builds.
-        crate::ui::ActivityRefreshMode::Partial
+        crate::ui::ActivityRefreshMode::Fast
     }
 }
 

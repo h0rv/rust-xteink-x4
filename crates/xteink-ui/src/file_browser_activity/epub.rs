@@ -544,10 +544,10 @@ impl FileBrowserActivity {
 
         #[cfg(target_os = "espidf")]
         {
-            return Err(format!(
+            Err(format!(
                 "Unable to open EPUB: file not reachable via VFS path ({})",
                 path
-            ));
+            ))
         }
 
         #[cfg(not(target_os = "espidf"))]

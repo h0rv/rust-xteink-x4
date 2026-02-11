@@ -352,6 +352,15 @@ impl FileBrowserActivity {
         true
     }
 
+    #[cfg(not(feature = "std"))]
+    #[inline(never)]
+    fn process_open_epub_file_task(&mut self, _fs: &mut dyn FileSystem, path: &str) -> bool {
+        self.mode = BrowserMode::Browsing;
+        self.browser
+            .set_status_message(format!("Unsupported file type: {}", basename(path)));
+        true
+    }
+
     fn queue_task(&mut self, task: FileBrowserTask) {
         self.pending_task = Some(task);
     }

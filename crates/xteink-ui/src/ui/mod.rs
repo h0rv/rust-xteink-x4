@@ -3,6 +3,7 @@
 
 pub mod activity;
 pub mod components;
+pub(crate) mod helpers;
 pub mod theme;
 
 pub use activity::{Activity, ActivityRefreshMode, ActivityResult};

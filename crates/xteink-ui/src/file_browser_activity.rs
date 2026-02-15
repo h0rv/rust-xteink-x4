@@ -47,6 +47,8 @@ use std::io::Cursor;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::{Read, Seek};
 
+#[cfg(feature = "std")]
+use crate::app::AppScreen;
 #[cfg(all(feature = "std", feature = "fontdue"))]
 use crate::epub_font_backend::BookerlyFontBackend;
 use crate::file_browser::{FileBrowser, TextViewer};
@@ -407,7 +409,7 @@ impl FileBrowserActivity {
 
         if navigate_settings {
             self.epub_overlay = None;
-            return ActivityResult::NavigateTo("reader_settings");
+            return ActivityResult::NavigateTo(AppScreen::ReaderSettings);
         }
         if put_back {
             self.epub_overlay = Some(overlay);

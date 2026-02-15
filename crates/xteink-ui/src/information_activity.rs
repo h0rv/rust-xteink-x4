@@ -18,7 +18,8 @@ use embedded_graphics::{
 
 use crate::input::{Button, InputEvent};
 use crate::system_menu_activity::DeviceStatus;
-use crate::ui::{Activity, ActivityResult, Theme, ThemeMetrics, FONT_CHAR_WIDTH};
+use crate::ui::helpers::enum_from_index;
+use crate::ui::{Activity, ActivityResult, Theme, FONT_CHAR_WIDTH};
 
 /// Information row label/value pairs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,15 +75,7 @@ impl InfoField {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::DeviceName),
-            1 => Some(Self::FirmwareVersion),
-            2 => Some(Self::Battery),
-            3 => Some(Self::Storage),
-            4 => Some(Self::Display),
-            5 => Some(Self::About),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 }
 

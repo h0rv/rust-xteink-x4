@@ -5,6 +5,7 @@
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
+use crate::app::AppScreen;
 use crate::input::InputEvent;
 
 /// Result of handling an input event
@@ -15,7 +16,7 @@ pub enum ActivityResult {
     /// Event consumed, request navigation back
     NavigateBack,
     /// Event consumed, request navigation to new activity
-    NavigateTo(&'static str),
+    NavigateTo(AppScreen),
     /// Event not handled, propagate to parent
     Ignored,
 }
@@ -98,61 +99,5 @@ pub trait Activity {
     /// to request full or partial refreshes when needed.
     fn refresh_mode(&self) -> ActivityRefreshMode {
         ActivityRefreshMode::default()
-    }
-}
-
-/// Stack-based activity manager for navigation
-pub struct ActivityStack<A: Activity> {
-    stack: alloc::vec::Vec<A>,
-}
-
-impl<A: Activity> ActivityStack<A> {
-    /// Create a new empty activity stack
-    pub fn new() -> Self {
-        Self {
-            stack: alloc::vec::Vec::new(),
-        }
-    }
-
-    /// Push a new activity onto the stack
-    pub fn push(&mut self, mut activity: A) {
-        if let Some(current) = self.stack.last_mut() {
-            current.on_exit();
-        }
-        activity.on_enter();
-        self.stack.push(activity);
-    }
-
-    /// Pop the current activity from the stack
-    pub fn pop(&mut self) -> Option<A> {
-        if let Some(mut current) = self.stack.pop() {
-            current.on_exit();
-            if let Some(next) = self.stack.last_mut() {
-                next.on_enter();
-            }
-            return Some(current);
-        }
-        None
-    }
-
-    /// Get the current activity (top of stack)
-    pub fn current(&mut self) -> Option<&mut A> {
-        self.stack.last_mut()
-    }
-
-    /// Check if stack is empty
-    pub fn is_empty(&self) -> bool {
-        self.stack.is_empty()
-    }
-
-    /// Get stack depth
-    pub fn len(&self) -> usize {
-        self.stack.len()
-    }
-}
-
-impl<A: Activity> Default for ActivityStack<A> {
-    fn default() -> Self {
-        Self::new()
     }
 }

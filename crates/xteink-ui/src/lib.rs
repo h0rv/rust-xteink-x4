@@ -62,7 +62,7 @@ pub use reader_settings_activity::{
     TapZoneConfig, TextAlignment, VolumeButtonAction,
 };
 pub use settings_activity::{FontFamily, FontSize, SettingRow, Settings, SettingsActivity};
-pub use system_menu_activity::{DeviceStatus, MenuItem, NavigationCallbacks, SystemMenuActivity};
+pub use system_menu_activity::{DeviceStatus, MenuItem, SystemMenuActivity};
 
 #[cfg(feature = "std")]
 pub use mu_epub::layout::{Line as EpubLine, Page as EpubPage, TextStyle as EpubTextStyle};

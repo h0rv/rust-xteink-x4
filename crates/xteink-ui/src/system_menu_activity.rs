@@ -9,16 +9,20 @@ extern crate alloc;
 use alloc::format;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
 
+use crate::app::AppScreen;
 use crate::input::{Button, InputEvent};
-use crate::ui::theme::{ui_font, ui_font_bold};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics};
+use crate::ui::helpers::{
+    enum_from_index, handle_two_button_modal_input, TwoButtonModalInputResult,
+};
+use crate::ui::theme::ui_font;
+use crate::ui::{Activity, ActivityResult, Modal, Theme};
 
 /// Menu item types for the system menu
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,16 +89,7 @@ impl MenuItem {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Library),
-            1 => Some(Self::Files),
-            2 => Some(Self::ReaderSettings),
-            3 => Some(Self::DeviceSettings),
-            4 => Some(Self::Information),
-            5 => Some(Self::Sleep),
-            6 => Some(Self::PowerOff),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     /// Check if this item requires confirmation
@@ -136,39 +131,6 @@ impl Default for DeviceStatus {
     }
 }
 
-/// Navigation callbacks for activity results
-#[derive(Debug, Clone, Copy)]
-pub struct NavigationCallbacks {
-    /// Called when user selects Library
-    pub on_library: fn(),
-    /// Called when user selects Reader Settings
-    pub on_reader_settings: fn(),
-    /// Called when user selects Files
-    pub on_files: fn(),
-    /// Called when user selects Device Settings
-    pub on_device_settings: fn(),
-    /// Called when user selects Information
-    pub on_information: fn(),
-    /// Called when user confirms Sleep
-    pub on_sleep: fn(),
-    /// Called when user confirms Power Off
-    pub on_power_off: fn(),
-}
-
-impl Default for NavigationCallbacks {
-    fn default() -> Self {
-        Self {
-            on_library: || {},
-            on_files: || {},
-            on_reader_settings: || {},
-            on_device_settings: || {},
-            on_information: || {},
-            on_sleep: || {},
-            on_power_off: || {},
-        }
-    }
-}
-
 /// Modal dialog types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModalType {
@@ -184,8 +146,6 @@ pub struct SystemMenuActivity {
     selected_index: usize,
     /// Device status information
     device_status: DeviceStatus,
-    /// Navigation callbacks
-    callbacks: NavigationCallbacks,
     /// Current modal dialog state
     modal_type: ModalType,
     /// Selected button within the modal (0 = Cancel, 1 = Confirm)
@@ -200,7 +160,6 @@ impl SystemMenuActivity {
         Self {
             selected_index: 0,
             device_status: DeviceStatus::default(),
-            callbacks: NavigationCallbacks::default(),
             modal_type: ModalType::None,
             modal_button: 0,
             theme: Theme::default(),
@@ -210,12 +169,6 @@ impl SystemMenuActivity {
     /// Create with custom device status
     pub fn with_device_status(mut self, status: DeviceStatus) -> Self {
         self.device_status = status;
-        self
-    }
-
-    /// Create with navigation callbacks
-    pub fn with_callbacks(mut self, callbacks: NavigationCallbacks) -> Self {
-        self.callbacks = callbacks;
         self
     }
 
@@ -255,7 +208,7 @@ impl SystemMenuActivity {
                 self.show_confirmation_modal(item);
                 ActivityResult::Consumed
             } else {
-                self.execute_callback(item)
+                self.execute_action(item)
             }
         } else {
             ActivityResult::Ignored
@@ -278,45 +231,24 @@ impl SystemMenuActivity {
         self.modal_button = 0;
     }
 
-    /// Execute the callback for a menu item
-    fn execute_callback(&self, item: MenuItem) -> ActivityResult {
+    /// Execute action for a menu item
+    fn execute_action(&self, item: MenuItem) -> ActivityResult {
         match item {
-            MenuItem::Library => {
-                (self.callbacks.on_library)();
-                ActivityResult::NavigateTo("library")
-            }
-            MenuItem::Files => {
-                (self.callbacks.on_files)();
-                ActivityResult::NavigateTo("files")
-            }
-            MenuItem::ReaderSettings => {
-                (self.callbacks.on_reader_settings)();
-                ActivityResult::NavigateTo("reader_settings")
-            }
-            MenuItem::DeviceSettings => {
-                (self.callbacks.on_device_settings)();
-                ActivityResult::NavigateTo("device_settings")
-            }
-            MenuItem::Information => {
-                (self.callbacks.on_information)();
-                ActivityResult::NavigateTo("information")
-            }
-            MenuItem::Sleep => {
-                (self.callbacks.on_sleep)();
-                ActivityResult::Consumed
-            }
-            MenuItem::PowerOff => {
-                (self.callbacks.on_power_off)();
-                ActivityResult::Consumed
-            }
+            MenuItem::Library => ActivityResult::NavigateTo(AppScreen::Library),
+            MenuItem::Files => ActivityResult::NavigateTo(AppScreen::FileBrowser),
+            MenuItem::ReaderSettings => ActivityResult::NavigateTo(AppScreen::ReaderSettings),
+            MenuItem::DeviceSettings => ActivityResult::NavigateTo(AppScreen::Settings),
+            MenuItem::Information => ActivityResult::NavigateTo(AppScreen::Information),
+            MenuItem::Sleep => ActivityResult::Consumed,
+            MenuItem::PowerOff => ActivityResult::Consumed,
         }
     }
 
     /// Confirm the current modal action
     fn confirm_modal(&mut self) -> ActivityResult {
         let result = match self.modal_type {
-            ModalType::ConfirmSleep => self.execute_callback(MenuItem::Sleep),
-            ModalType::ConfirmPowerOff => self.execute_callback(MenuItem::PowerOff),
+            ModalType::ConfirmSleep => self.execute_action(MenuItem::Sleep),
+            ModalType::ConfirmPowerOff => self.execute_action(MenuItem::PowerOff),
             ModalType::None => ActivityResult::Consumed,
         };
         self.close_modal();
@@ -326,33 +258,14 @@ impl SystemMenuActivity {
     /// Handle input when modal is shown.
     /// Left/Right cycle buttons, Confirm executes selected, Back cancels.
     fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
-        match event {
-            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
-                if self.modal_button > 0 {
-                    self.modal_button -= 1;
-                } else {
-                    self.modal_button = 1;
-                }
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
-                self.modal_button = (self.modal_button + 1) % 2;
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::Confirm) => {
-                // Button 0 = Cancel, Button 1 = Confirm
-                if self.modal_button == 1 {
-                    self.confirm_modal()
-                } else {
-                    self.close_modal();
-                    ActivityResult::Consumed
-                }
-            }
-            InputEvent::Press(Button::Back) => {
+        match handle_two_button_modal_input(event, &mut self.modal_button) {
+            TwoButtonModalInputResult::Consumed => ActivityResult::Consumed,
+            TwoButtonModalInputResult::Confirmed => self.confirm_modal(),
+            TwoButtonModalInputResult::Cancelled => {
                 self.close_modal();
                 ActivityResult::Consumed
             }
-            _ => ActivityResult::Ignored,
+            TwoButtonModalInputResult::Ignored => ActivityResult::Ignored,
         }
     }
 
@@ -616,19 +529,6 @@ mod tests {
     }
 
     #[test]
-    fn navigation_callbacks_default() {
-        let callbacks = NavigationCallbacks::default();
-        // Should not panic when called
-        (callbacks.on_library)();
-        (callbacks.on_files)();
-        (callbacks.on_reader_settings)();
-        (callbacks.on_device_settings)();
-        (callbacks.on_information)();
-        (callbacks.on_sleep)();
-        (callbacks.on_power_off)();
-    }
-
-    #[test]
     fn system_menu_activity_new() {
         let activity = SystemMenuActivity::new();
         assert_eq!(activity.selected_index, 0);
@@ -649,25 +549,6 @@ mod tests {
         assert!(activity.device_status().is_charging);
         assert_eq!(activity.device_status().firmware_version, "2.0.0");
         assert_eq!(activity.device_status().storage_used_percent, 75);
-    }
-
-    #[test]
-    fn system_menu_activity_with_callbacks() {
-        let callbacks = NavigationCallbacks {
-            on_library: || {},
-            on_files: || {},
-            on_reader_settings: || {},
-            on_device_settings: || {},
-            on_information: || {},
-            on_sleep: || {},
-            on_power_off: || {},
-        };
-
-        let activity = SystemMenuActivity::new().with_callbacks(callbacks);
-
-        // Verify callbacks are stored and callable without panic
-        (activity.callbacks.on_library)();
-        (activity.callbacks.on_reader_settings)();
     }
 
     #[test]
@@ -764,17 +645,20 @@ mod tests {
 
         // Select library should navigate
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(result, ActivityResult::NavigateTo("library"));
+        assert_eq!(result, ActivityResult::NavigateTo(AppScreen::Library));
 
         // Move to files
         activity.select_next();
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(result, ActivityResult::NavigateTo("files"));
+        assert_eq!(result, ActivityResult::NavigateTo(AppScreen::FileBrowser));
 
         // Move to reader settings
         activity.select_next();
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(result, ActivityResult::NavigateTo("reader_settings"));
+        assert_eq!(
+            result,
+            ActivityResult::NavigateTo(AppScreen::ReaderSettings)
+        );
     }
 
     #[test]

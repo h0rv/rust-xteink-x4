@@ -10,7 +10,7 @@ use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -19,6 +19,9 @@ use embedded_graphics::{
 
 use crate::input::{Button, InputEvent};
 use crate::settings_activity::{FontFamily, FontSize};
+use crate::ui::helpers::{
+    enum_from_index, handle_two_button_modal_input, TwoButtonModalInputResult,
+};
 use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
 
 /// Line spacing options
@@ -54,12 +57,7 @@ impl LineSpacing {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Compact),
-            1 => Some(Self::Normal),
-            2 => Some(Self::Relaxed),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -121,12 +119,7 @@ impl MarginSize {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Small),
-            1 => Some(Self::Medium),
-            2 => Some(Self::Large),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -185,11 +178,7 @@ impl TextAlignment {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Left),
-            1 => Some(Self::Justified),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -249,14 +238,7 @@ impl RefreshFrequency {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Every1),
-            1 => Some(Self::Every5),
-            2 => Some(Self::Every10),
-            3 => Some(Self::Every15),
-            4 => Some(Self::Every30),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -321,11 +303,7 @@ impl TapZoneConfig {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::LeftNext),
-            1 => Some(Self::RightNext),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -370,11 +348,7 @@ impl VolumeButtonAction {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::PageTurn),
-            1 => Some(Self::Scroll),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -1001,35 +975,17 @@ impl ReaderSettingsActivity {
     /// Handle input when modal is shown.
     /// Left/Right cycle buttons, Confirm executes selected, Back cancels.
     fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
-        match event {
-            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
-                if self.modal_button > 0 {
-                    self.modal_button -= 1;
-                } else {
-                    self.modal_button = 1;
-                }
-                ActivityResult::Consumed
+        match handle_two_button_modal_input(event, &mut self.modal_button) {
+            TwoButtonModalInputResult::Consumed => ActivityResult::Consumed,
+            TwoButtonModalInputResult::Confirmed => {
+                self.confirm_cancel();
+                ActivityResult::NavigateBack
             }
-            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
-                self.modal_button = (self.modal_button + 1) % 2;
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::Confirm) => {
-                if self.modal_button == 1 {
-                    // Discard
-                    self.confirm_cancel();
-                    ActivityResult::NavigateBack
-                } else {
-                    // Keep
-                    self.dismiss_cancel();
-                    ActivityResult::Consumed
-                }
-            }
-            InputEvent::Press(Button::Back) => {
+            TwoButtonModalInputResult::Cancelled => {
                 self.dismiss_cancel();
                 ActivityResult::Consumed
             }
-            _ => ActivityResult::Ignored,
+            TwoButtonModalInputResult::Ignored => ActivityResult::Ignored,
         }
     }
 

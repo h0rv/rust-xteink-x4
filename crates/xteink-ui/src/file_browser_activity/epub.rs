@@ -1,8 +1,6 @@
 use super::*;
 use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
-#[cfg(feature = "fontdue")]
-use mu_epub_embedded_graphics::FontFaceRegistration;
 
 #[cfg(feature = "std")]
 impl EpubReadingState {
@@ -795,6 +793,7 @@ impl EpubReadingState {
         Ok(page)
     }
 
+    #[cfg(not(target_os = "espidf"))]
     fn compute_chapter_page_count(&mut self, chapter_idx: usize) -> Result<usize, String> {
         let chapter_opts = ChapterEventsOptions {
             max_items: Self::MAX_CHAPTER_EVENTS,

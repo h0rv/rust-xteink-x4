@@ -9,7 +9,7 @@ use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -17,6 +17,9 @@ use embedded_graphics::{
 };
 
 use crate::input::{Button, InputEvent};
+use crate::ui::helpers::{
+    enum_from_index, handle_two_button_modal_input, TwoButtonModalInputResult,
+};
 use crate::ui::theme::{ui_font, ui_font_bold};
 use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
 
@@ -130,15 +133,7 @@ impl FontSize {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Small),
-            1 => Some(Self::Medium),
-            2 => Some(Self::Large),
-            3 => Some(Self::ExtraLarge),
-            4 => Some(Self::Huge),
-            5 => Some(Self::Max),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 }
 
@@ -217,16 +212,7 @@ impl AutoSleepDuration {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::OneMinute),
-            1 => Some(Self::ThreeMinutes),
-            2 => Some(Self::FiveMinutes),
-            3 => Some(Self::TenMinutes),
-            4 => Some(Self::FifteenMinutes),
-            5 => Some(Self::ThirtyMinutes),
-            6 => Some(Self::Never),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -278,12 +264,7 @@ impl FontFamily {
 
     /// Create from index
     pub const fn from_index(index: usize) -> Option<Self> {
-        match index {
-            0 => Some(Self::Monospace),
-            1 => Some(Self::Serif),
-            2 => Some(Self::SansSerif),
-            _ => None,
-        }
+        enum_from_index(&Self::ALL, index)
     }
 
     pub const fn next_wrapped(self) -> Self {
@@ -711,32 +692,17 @@ impl SettingsActivity {
     /// Handle input when modal is shown.
     /// Left/Right cycle buttons, Confirm executes selected, Back cancels.
     fn handle_modal_input(&mut self, event: InputEvent) -> ActivityResult {
-        match event {
-            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
-                if self.modal_button > 0 {
-                    self.modal_button -= 1;
-                } else {
-                    self.modal_button = 1;
-                }
+        match handle_two_button_modal_input(event, &mut self.modal_button) {
+            TwoButtonModalInputResult::Consumed => ActivityResult::Consumed,
+            TwoButtonModalInputResult::Confirmed => {
+                self.confirm_reset();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
-                self.modal_button = (self.modal_button + 1) % 2;
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::Confirm) => {
-                if self.modal_button == 1 {
-                    self.confirm_reset();
-                } else {
-                    self.cancel_reset();
-                }
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::Back) => {
+            TwoButtonModalInputResult::Cancelled => {
                 self.cancel_reset();
                 ActivityResult::Consumed
             }
-            _ => ActivityResult::Ignored,
+            TwoButtonModalInputResult::Ignored => ActivityResult::Ignored,
         }
     }
 

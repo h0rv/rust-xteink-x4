@@ -44,6 +44,68 @@ pub enum AppScreen {
     Information,
 }
 
+macro_rules! dispatch_current_activity_mut {
+    ($app:expr, |$activity:ident| $expr:expr) => {
+        match $app.current_screen() {
+            AppScreen::SystemMenu => {
+                let $activity = &mut $app.system_menu;
+                $expr
+            }
+            AppScreen::Library => {
+                let $activity = &mut $app.library;
+                $expr
+            }
+            AppScreen::FileBrowser => {
+                let $activity = &mut $app.file_browser;
+                $expr
+            }
+            AppScreen::Settings => {
+                let $activity = &mut $app.settings;
+                $expr
+            }
+            AppScreen::ReaderSettings => {
+                let $activity = &mut $app.reader_settings;
+                $expr
+            }
+            AppScreen::Information => {
+                let $activity = &mut $app.information;
+                $expr
+            }
+        }
+    };
+}
+
+macro_rules! dispatch_current_activity {
+    ($app:expr, |$activity:ident| $expr:expr) => {
+        match $app.current_screen() {
+            AppScreen::SystemMenu => {
+                let $activity = &$app.system_menu;
+                $expr
+            }
+            AppScreen::Library => {
+                let $activity = &$app.library;
+                $expr
+            }
+            AppScreen::FileBrowser => {
+                let $activity = &$app.file_browser;
+                $expr
+            }
+            AppScreen::Settings => {
+                let $activity = &$app.settings;
+                $expr
+            }
+            AppScreen::ReaderSettings => {
+                let $activity = &$app.reader_settings;
+                $expr
+            }
+            AppScreen::Information => {
+                let $activity = &$app.information;
+                $expr
+            }
+        }
+    };
+}
+
 /// Application state managing activity-based navigation.
 ///
 /// Holds all activity instances and a navigation stack. The top of
@@ -201,14 +263,7 @@ impl App {
         }
 
         // Check if activity explicitly requests a specific mode
-        let activity_mode = match screen {
-            AppScreen::SystemMenu => self.system_menu.refresh_mode(),
-            AppScreen::Library => self.library.refresh_mode(),
-            AppScreen::FileBrowser => self.file_browser.refresh_mode(),
-            AppScreen::Settings => self.settings.refresh_mode(),
-            AppScreen::ReaderSettings => self.reader_settings.refresh_mode(),
-            AppScreen::Information => self.information.refresh_mode(),
-        };
+        let activity_mode = dispatch_current_activity!(self, |activity| activity.refresh_mode());
 
         // If activity requests Full, use Full and mark as consumed
         if activity_mode == ActivityRefreshMode::Full {
@@ -360,14 +415,7 @@ impl App {
 
     /// Handle input event. Returns true if a redraw is needed.
     pub fn handle_input(&mut self, event: InputEvent) -> bool {
-        let result = match self.current_screen() {
-            AppScreen::SystemMenu => self.system_menu.handle_input(event),
-            AppScreen::Library => self.library.handle_input(event),
-            AppScreen::FileBrowser => self.file_browser.handle_input(event),
-            AppScreen::Settings => self.settings.handle_input(event),
-            AppScreen::ReaderSettings => self.reader_settings.handle_input(event),
-            AppScreen::Information => self.information.handle_input(event),
-        };
+        let result = dispatch_current_activity_mut!(self, |activity| activity.handle_input(event));
 
         let mut redraw = self.process_result(result);
         self.capture_library_refresh_request();
@@ -383,14 +431,7 @@ impl App {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        match self.current_screen() {
-            AppScreen::SystemMenu => self.system_menu.render(display),
-            AppScreen::Library => self.library.render(display),
-            AppScreen::FileBrowser => self.file_browser.render(display),
-            AppScreen::Settings => self.settings.render(display),
-            AppScreen::ReaderSettings => self.reader_settings.render(display),
-            AppScreen::Information => self.information.render(display),
-        }
+        dispatch_current_activity!(self, |activity| activity.render(display))
     }
 
     /// Process an ActivityResult, handling navigation.
@@ -405,16 +446,8 @@ impl App {
     }
 
     /// Push a new screen onto the navigation stack.
-    fn navigate_to(&mut self, target: &str) -> bool {
+    fn navigate_to(&mut self, screen: AppScreen) -> bool {
         let current = self.current_screen();
-        let screen = match target {
-            "library" => AppScreen::Library,
-            "files" => AppScreen::FileBrowser,
-            "device_settings" => AppScreen::Settings,
-            "reader_settings" => AppScreen::ReaderSettings,
-            "information" => AppScreen::Information,
-            _ => return false, // Unknown target
-        };
         if screen == AppScreen::FileBrowser {
             self.file_browser
                 .set_reader_settings(*self.reader_settings.settings());
@@ -527,7 +560,7 @@ impl App {
         };
 
         self.file_browser.request_open_path(path);
-        let navigated = self.navigate_to("files");
+        let navigated = self.navigate_to(AppScreen::FileBrowser);
         let task_updated = self.process_file_browser_tasks(fs);
         // Redraw after navigation even if deferred open does not update immediately.
         navigated || task_updated

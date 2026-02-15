@@ -234,6 +234,7 @@ struct EpubReadingState {
     #[cfg(not(target_os = "espidf"))]
     render_cache: InMemoryRenderCache,
     chapter_page_counts: BTreeMap<usize, usize>,
+    chapter_page_counts_exact: BTreeSet<usize>,
     non_renderable_chapters: BTreeSet<usize>,
     chapter_idx: usize,
     page_idx: usize,
@@ -954,7 +955,7 @@ impl FileBrowserActivity {
         let width = size.width.min(size.height);
         let height = size.width.max(size.height);
         let footer_h: u32 = 36;
-        let y = (height as i32 - footer_h as i32 - 6).max(0);
+        let y = (height as i32 - footer_h as i32 - 12).max(0);
 
         Rectangle::new(Point::new(0, y), Size::new(width, footer_h))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
@@ -969,19 +970,16 @@ impl FileBrowserActivity {
 
         let info = if self.reader_settings.show_page_numbers {
             format!(
-                "{}/{} · {}% · {}/{}",
-                renderer.current_page_number(),
-                renderer.total_pages(),
+                "{} · {} · {}%",
+                renderer.page_progress_label(),
+                renderer.chapter_progress_label(),
                 renderer.book_progress_percent(),
-                renderer.current_chapter(),
-                renderer.total_chapters()
             )
         } else {
             format!(
-                "{}% · {}/{}",
+                "{} · {}%",
+                renderer.chapter_progress_label(),
                 renderer.book_progress_percent(),
-                renderer.current_chapter(),
-                renderer.total_chapters()
             )
         };
         Text::new(&info, Point::new(6, y + 27), metrics_style).draw(display)?;

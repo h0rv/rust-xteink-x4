@@ -36,15 +36,32 @@ impl EpubReadingState {
             crate::DISPLAY_HEIGHT as i32,
         );
         let mut layout = opts.layout;
-        let side_margin = settings.margin_size.pixels() as i32;
+        let side_margin = match settings.margin_size {
+            crate::reader_settings_activity::MarginSize::Small => 8,
+            crate::reader_settings_activity::MarginSize::Medium => 16,
+            crate::reader_settings_activity::MarginSize::Large => 24,
+        };
         layout.margin_left = side_margin;
         layout.margin_right = side_margin;
-        layout.margin_bottom = 56;
+        layout.margin_top = 18;
+        layout.margin_bottom = 50;
+        layout.first_line_indent_px = 10;
+        layout.paragraph_gap_px = match settings.line_spacing {
+            crate::reader_settings_activity::LineSpacing::Compact => 5,
+            crate::reader_settings_activity::LineSpacing::Normal => 7,
+            crate::reader_settings_activity::LineSpacing::Relaxed => 10,
+        };
         layout.line_gap_px = match settings.line_spacing {
             crate::reader_settings_activity::LineSpacing::Compact => 0,
-            crate::reader_settings_activity::LineSpacing::Normal => 2,
-            crate::reader_settings_activity::LineSpacing::Relaxed => 5,
+            crate::reader_settings_activity::LineSpacing::Normal => 1,
+            crate::reader_settings_activity::LineSpacing::Relaxed => 3,
         };
+        layout.typography.justification.enabled = matches!(
+            settings.text_alignment,
+            crate::reader_settings_activity::TextAlignment::Justified
+        );
+        layout.typography.justification.min_words = 5;
+        layout.typography.justification.min_fill_ratio = 0.62;
         opts.layout = layout;
 
         let base_font = settings.font_size.epub_base_px();
@@ -109,6 +126,7 @@ impl EpubReadingState {
             #[cfg(not(target_os = "espidf"))]
             render_cache: InMemoryRenderCache::default(),
             chapter_page_counts: BTreeMap::new(),
+            chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
             chapter_idx: 0,
             page_idx: 0,
@@ -142,24 +160,35 @@ impl EpubReadingState {
         let book = EpubBook::open_with_temp_storage(path, Self::EPUB_TEMP_DIR, open_cfg)
             .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
         log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
+        log::info!("[EPUB] creating render engine");
         let (engine, chapter_events_opts) = Self::create_engine(settings);
+        log::info!("[EPUB] render engine ready");
         let mut state = Self {
             book,
             engine,
             chapter_events_opts,
             eg_renderer: Self::create_renderer(),
-            chapter_buf: Vec::with_capacity(Self::CHAPTER_BUF_CAPACITY_BYTES),
-            chapter_scratch: ScratchBuffers::embedded(),
+            // Keep EPUB open deterministic on constrained heaps: defer large
+            // working buffer allocations until first page load.
+            chapter_buf: Vec::new(),
+            chapter_scratch: ScratchBuffers {
+                read_buf: Vec::new(),
+                xml_buf: Vec::new(),
+                text_buf: String::new(),
+            },
             current_page: None,
             page_cache: BTreeMap::new(),
             #[cfg(not(target_os = "espidf"))]
             render_cache: InMemoryRenderCache::default(),
             chapter_page_counts: BTreeMap::new(),
+            chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
             chapter_idx: 0,
             page_idx: 0,
         };
+        log::info!("[EPUB] reader state allocated (lazy buffers)");
         state.register_embedded_fonts();
+        log::info!("[EPUB] reader state ready");
         Ok(state)
     }
 
@@ -279,7 +308,21 @@ impl EpubReadingState {
         self.chapter_page_counts
             .get(&self.chapter_idx)
             .copied()
-            .unwrap_or(1)
+            .unwrap_or_else(|| self.current_page_number().max(1))
+    }
+
+    pub(super) fn page_progress_label(&self) -> String {
+        let current = self.current_page_number();
+        let total = self.total_pages().max(current);
+        if self.chapter_page_counts_exact.contains(&self.chapter_idx) && total > current {
+            format!("p{}/{}", current, total)
+        } else {
+            format!("p{}", current)
+        }
+    }
+
+    pub(super) fn chapter_progress_label(&self) -> String {
+        format!("c{}/{}", self.current_chapter(), self.total_chapters())
     }
 
     pub(super) fn position_indices(&self) -> (usize, usize) {
@@ -287,14 +330,25 @@ impl EpubReadingState {
     }
 
     pub(super) fn book_progress_percent(&self) -> u8 {
-        let total_chapters = self.book.chapter_count().max(1);
-        let chapter_portion = self.chapter_idx as f32 / total_chapters as f32;
-        let page_portion = if self.total_pages() > 0 {
-            (self.page_idx as f32 / self.total_pages() as f32) / total_chapters as f32
+        let total_chapters = self.total_chapters().max(1);
+        let chapter_zero_based = self.current_chapter().saturating_sub(1).min(total_chapters - 1);
+        let is_last_chapter = chapter_zero_based + 1 >= total_chapters;
+        let total_pages = self.total_pages().max(1);
+        let at_last_page = self.chapter_page_counts_exact.contains(&self.chapter_idx)
+            && self.current_page_number() >= total_pages;
+        if is_last_chapter && at_last_page {
+            return 100;
+        }
+
+        let page_portion = if self.chapter_page_counts_exact.contains(&self.chapter_idx) {
+            (self.page_idx as f32 / total_pages as f32) / total_chapters as f32
         } else {
-            0.0
+            // Unknown chapter total: make progress monotonic while avoiding
+            // overconfident percentages from temporary 1/1 placeholders.
+            (self.page_idx as f32 / (self.page_idx + 2) as f32) / total_chapters as f32
         };
-        ((chapter_portion + page_portion) * 100.0).clamp(0.0, 100.0) as u8
+        let chapter_portion = chapter_zero_based as f32 / total_chapters as f32;
+        ((chapter_portion + page_portion) * 100.0).clamp(0.0, 99.0) as u8
     }
 
     pub(super) fn current_chapter_title(&self, max_chars: usize) -> String {
@@ -457,6 +511,7 @@ impl EpubReadingState {
         self.current_page = None;
         self.page_cache.clear();
         self.chapter_page_counts.clear();
+        self.chapter_page_counts_exact.clear();
 
         if let Ok(page) = self.load_page(current_chapter, current_page) {
             self.chapter_idx = current_chapter;
@@ -489,6 +544,7 @@ impl EpubReadingState {
                 .entry(previous_chapter)
                 .and_modify(|count| *count = (*count).max(previous_page + 1))
                 .or_insert(previous_page + 1);
+            self.chapter_page_counts_exact.insert(previous_chapter);
             return true;
         }
         if let Ok(page) = self.load_page(previous_chapter, previous_page) {
@@ -764,6 +820,7 @@ impl EpubReadingState {
 
         if let Some(count) = page.metrics.chapter_page_count {
             self.chapter_page_counts.insert(chapter_idx, count.max(1));
+            self.chapter_page_counts_exact.insert(chapter_idx);
         } else {
             // Keep chapter page totals monotonic from observed pages without forcing
             // a full chapter reflow on constrained devices.
@@ -780,6 +837,7 @@ impl EpubReadingState {
                 if let Ok(count) = self.compute_chapter_page_count(chapter_idx) {
                     self.chapter_page_counts
                         .insert(chapter_idx, count.max(observed_min));
+                    self.chapter_page_counts_exact.insert(chapter_idx);
                 }
             }
         }

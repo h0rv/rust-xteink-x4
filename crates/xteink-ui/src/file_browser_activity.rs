@@ -35,7 +35,7 @@ use mu_epub_render::{PaginationProfileId, RenderCacheStore};
 use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::Cursor;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::{Read, Seek};
 
 #[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
@@ -70,10 +70,10 @@ enum BrowserMode {
     },
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 trait ReadSeek: Read + Seek + Send {}
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
 #[cfg(feature = "std")]
@@ -218,9 +218,9 @@ pub struct FileBrowserActivity {
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
     #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 96 * 1024;
     #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_NAV_WORKER_STACK_BYTES: usize = 48 * 1024;
+    const EPUB_NAV_WORKER_STACK_BYTES: usize = 64 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]

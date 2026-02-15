@@ -28,6 +28,7 @@ impl EpubReadingState {
     const PAGE_CACHE_LIMIT: usize = 8;
     const OUT_OF_RANGE_ERR: &'static str = "Requested EPUB page is out of range";
 
+    #[cfg(not(target_os = "espidf"))]
     pub(super) fn from_reader(reader: Box<dyn ReadSeek>) -> Result<Self, String> {
         log::info!("[EPUB] opening reader");
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)

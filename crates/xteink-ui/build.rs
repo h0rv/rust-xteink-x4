@@ -263,6 +263,7 @@ fn pack_bitmap_2bpp(bitmap: &[u8], width: usize, height: usize) -> Vec<u8> {
     packed
 }
 
+#[allow(dead_code)]
 fn pack_bitmap_1bpp(bitmap: &[u8], width: usize, height: usize) -> Vec<u8> {
     let row_bytes = width.div_ceil(8); // Bytes per row, rounded up
     let mut packed = vec![0u8; row_bytes * height];

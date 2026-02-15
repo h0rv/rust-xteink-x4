@@ -114,7 +114,7 @@ impl EmbeddedBitmapFont {
                         }
                         error_buffer[idx + width] += error * 5 / 16;
                         if col + 1 < width {
-                            error_buffer[idx + width + 1] += error * 1 / 16;
+                            error_buffer[idx + width + 1] += error / 16;
                         }
                     }
 
@@ -266,6 +266,24 @@ impl EmbeddedFontCache {
         } else {
             0.0
         }
+    }
+
+    /// Baseline offset (px) when the caller provides a top-aligned Y origin.
+    pub fn baseline_offset(&self, font_name: &str) -> i32 {
+        if let Some(font) =
+            EmbeddedFontRegistry::get_font_nearest(font_name, self.current_size as u32)
+        {
+            if let Some(glyph) = font
+                .glyph('M')
+                .or_else(|| font.glyph('H'))
+                .or_else(|| font.glyph('n'))
+                .or_else(|| font.glyph('a'))
+            {
+                return (glyph.y_offset as i32 + glyph.height as i32).max(1);
+            }
+            return ((font.line_height as i32) * 4 / 5).max(1);
+        }
+        12
     }
 
     pub fn render_text<D: DrawTarget<Color = BinaryColor>>(

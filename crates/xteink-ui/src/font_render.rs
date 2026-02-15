@@ -254,6 +254,31 @@ impl FontCache {
             .unwrap_or(self.font_size * 1.2)
     }
 
+    /// Baseline offset (px) when the caller provides a top-aligned Y origin.
+    pub fn baseline_offset(&self, font_name: &str) -> i32 {
+        if let Some(font) = self.fonts.get(font_name) {
+            if let Some(lines) = font.horizontal_line_metrics(self.font_size) {
+                let ascent = lines.ascent;
+                let rounded = if ascent >= 0.0 {
+                    (ascent + 0.5) as i32
+                } else {
+                    (ascent - 0.5) as i32
+                };
+                return rounded.max(1);
+            }
+            if let Some(metrics) = self.metrics(font_name, 'M') {
+                return (metrics.height as i32 + metrics.ymin).max(1);
+            }
+        }
+        let fallback = self.font_size * 0.8;
+        let rounded = if fallback >= 0.0 {
+            (fallback + 0.5) as i32
+        } else {
+            (fallback - 0.5) as i32
+        };
+        rounded.max(1)
+    }
+
     /// Measure text width
     pub fn measure_text(&self, text: &str, font_name: &str) -> f32 {
         if let Some(font) = self.fonts.get(font_name) {
@@ -592,6 +617,10 @@ impl FontCache {
     }
 
     pub fn set_font_size(&mut self, _size: f32) {}
+
+    pub fn baseline_offset(&self, _font_name: &str) -> i32 {
+        12
+    }
 }
 
 #[cfg(not(feature = "fontdue"))]

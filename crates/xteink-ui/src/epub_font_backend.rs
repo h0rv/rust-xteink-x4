@@ -28,18 +28,22 @@ const DEFAULT_SLOT_ID: FontId = 0;
 const MIN_SIZE_PX: f32 = 10.0;
 const MAX_SIZE_PX: f32 = 64.0;
 
+#[allow(dead_code)]
 const BOOKERLY_REGULAR_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/fonts/bookerly/Bookerly-Regular.ttf"
 ));
+#[allow(dead_code)]
 const BOOKERLY_BOLD_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/fonts/bookerly/Bookerly-Bold.ttf"
 ));
+#[allow(dead_code)]
 const BOOKERLY_ITALIC_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/fonts/bookerly/Bookerly-Italic.ttf"
 ));
+#[allow(dead_code)]
 const BOOKERLY_BOLD_ITALIC_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/fonts/bookerly/Bookerly-BoldItalic.ttf"
@@ -66,6 +70,7 @@ impl FontSlotKey {
 
 struct BackendState {
     bitmap_cache: EmbeddedFontCache,
+    #[allow(dead_code)]
     runtime_cache: FontCache,
     next_slot_id: FontId,
     slots_by_key: BTreeMap<FontSlotKey, FontId>,
@@ -75,7 +80,7 @@ struct BackendState {
 
 impl BackendState {
     fn new() -> Self {
-        let mut runtime_cache = FontCache::new();
+        let runtime_cache = FontCache::new();
         #[cfg(not(target_os = "espidf"))]
         {
             let _ = runtime_cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR_TTF);
@@ -144,6 +149,7 @@ impl BackendState {
         }
     }
 
+    #[allow(dead_code)]
     fn runtime_font_available(&self, font_name: &str, size_px: f32) -> bool {
         self.runtime_cache
             .metrics(font_name, 'n')
@@ -182,7 +188,7 @@ impl FontBackend for BookerlyFontBackend {
         let mut accepted = 0usize;
         for (index, face) in faces.iter().enumerate() {
             let resolved_id = (index as u32) + 1;
-            let runtime_name = format!(
+            let _runtime_name = format!(
                 "epub-face-{}-{}-{}-{}",
                 resolved_id,
                 face.family,
@@ -240,7 +246,7 @@ impl FontBackend for BookerlyFontBackend {
     }
 
     fn metrics(&self, font_id: FontId) -> FontMetrics {
-        let mut state = match self.state.lock() {
+        let state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
@@ -306,25 +312,35 @@ impl FontBackend for BookerlyFontBackend {
             Err(poisoned) => poisoned.into_inner(),
         };
         let slot = state.slot_key_for_id(font_id);
+        const BASELINE_SAFETY_PX: i32 = 2;
+        let top_y = origin.y;
         #[cfg(not(target_os = "espidf"))]
         {
             state.runtime_cache.set_font_size(slot.size_px());
         }
         #[cfg(not(target_os = "espidf"))]
         if state.runtime_font_available(&slot.font_name, slot.size_px()) {
+            let baseline_y =
+                top_y + state.runtime_cache.baseline_offset(&slot.font_name) + BASELINE_SAFETY_PX;
             let width = state
                 .runtime_cache
                 .measure_text(text, &slot.font_name)
                 .round()
                 .max(0.0) as i32;
-            state
-                .runtime_cache
-                .render_text(display, text, &slot.font_name, origin.x, origin.y)?;
+            state.runtime_cache.render_text(
+                display,
+                text,
+                &slot.font_name,
+                origin.x,
+                baseline_y,
+            )?;
             return Ok(width);
         }
 
         state.bitmap_cache.set_font(&slot.font_name);
         state.bitmap_cache.set_font_size(slot.size_px());
+        let baseline_y =
+            top_y + state.bitmap_cache.baseline_offset(&slot.font_name) + BASELINE_SAFETY_PX;
 
         let width = state
             .bitmap_cache
@@ -333,7 +349,7 @@ impl FontBackend for BookerlyFontBackend {
             .max(0.0) as i32;
         state
             .bitmap_cache
-            .render_text(display, text, &slot.font_name, origin.x, origin.y)?;
+            .render_text(display, text, &slot.font_name, origin.x, baseline_y)?;
         Ok(width)
     }
 

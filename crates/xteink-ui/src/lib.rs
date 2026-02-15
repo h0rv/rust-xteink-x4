@@ -29,6 +29,7 @@ pub mod font_render;
 pub mod information_activity;
 pub mod input;
 pub mod library_activity;
+pub mod main_activity;
 pub mod reader_settings_activity;
 pub mod settings_activity;
 pub mod system_menu_activity;
@@ -57,8 +58,9 @@ pub use font_render::FontCache;
 pub use information_activity::{InfoField, InformationActivity};
 pub use input::{Button, InputEvent};
 pub use library_activity::{create_mock_books, BookAction, BookInfo, LibraryActivity, SortOrder};
+pub use main_activity::{MainActivity, SettingItem as MainSettingItem, Tab, UnifiedSettings};
 pub use reader_settings_activity::{
-    LineSpacing, MarginSize, ReaderSettings, ReaderSettingsActivity, RefreshFrequency, SettingItem,
+    LineSpacing, MarginSize, ReaderSettings, ReaderSettingsActivity, RefreshFrequency,
     TapZoneConfig, TextAlignment, VolumeButtonAction,
 };
 pub use settings_activity::{FontFamily, FontSize, SettingRow, Settings, SettingsActivity};

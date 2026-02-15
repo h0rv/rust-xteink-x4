@@ -1,311 +1,150 @@
-//! Main application state with activity-based navigation.
+//! Main application state with simplified 3-tab navigation.
 //!
-//! Uses an enum-based activity dispatch with a navigation stack,
-//! routing input events and rendering to the currently active activity.
+//! Single MainActivity with Library, Files, and Settings tabs.
+//! Left/Right cycles tabs, no navigation stack needed.
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
-use crate::file_browser_activity::FileBrowserActivity;
-use crate::information_activity::InformationActivity;
 use crate::input::InputEvent;
-use crate::library_activity::LibraryActivity;
-use crate::reader_settings_activity::ReaderSettingsActivity;
-use crate::settings_activity::SettingsActivity;
-use crate::system_menu_activity::{DeviceStatus, SystemMenuActivity};
-use crate::ui::theme::set_device_font_profile;
+use crate::library_activity::BookInfo;
+use crate::main_activity::MainActivity;
+use crate::system_menu_activity::DeviceStatus;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
-use crate::{BookInfo, FileSystem};
+use crate::FileSystem;
 
+/// Pending library scan state
 struct PendingLibraryScan {
     paths: Vec<String>,
     next_index: usize,
     books: Vec<BookInfo>,
+    scan_fingerprint: u64,
 }
 
-/// Identifies which screen is currently active
+/// AppScreen variants for compatibility during migration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppScreen {
-    /// Main system menu (root activity)
+    Main,
+    // Legacy variants - these will be removed when old activities are deleted
     SystemMenu,
-    /// Library / book browser
     Library,
-    /// Raw filesystem browser
     FileBrowser,
-    /// Device settings (font size, font family)
     Settings,
-    /// Reader-specific settings (margins, layout, etc.)
     ReaderSettings,
-    /// Device information (firmware, battery, storage)
     Information,
 }
 
-macro_rules! dispatch_current_activity_mut {
-    ($app:expr, |$activity:ident| $expr:expr) => {
-        match $app.current_screen() {
-            AppScreen::SystemMenu => {
-                let $activity = &mut $app.system_menu;
-                $expr
-            }
-            AppScreen::Library => {
-                let $activity = &mut $app.library;
-                $expr
-            }
-            AppScreen::FileBrowser => {
-                let $activity = &mut $app.file_browser;
-                $expr
-            }
-            AppScreen::Settings => {
-                let $activity = &mut $app.settings;
-                $expr
-            }
-            AppScreen::ReaderSettings => {
-                let $activity = &mut $app.reader_settings;
-                $expr
-            }
-            AppScreen::Information => {
-                let $activity = &mut $app.information;
-                $expr
-            }
-        }
-    };
-}
-
-macro_rules! dispatch_current_activity {
-    ($app:expr, |$activity:ident| $expr:expr) => {
-        match $app.current_screen() {
-            AppScreen::SystemMenu => {
-                let $activity = &$app.system_menu;
-                $expr
-            }
-            AppScreen::Library => {
-                let $activity = &$app.library;
-                $expr
-            }
-            AppScreen::FileBrowser => {
-                let $activity = &$app.file_browser;
-                $expr
-            }
-            AppScreen::Settings => {
-                let $activity = &$app.settings;
-                $expr
-            }
-            AppScreen::ReaderSettings => {
-                let $activity = &$app.reader_settings;
-                $expr
-            }
-            AppScreen::Information => {
-                let $activity = &$app.information;
-                $expr
-            }
-        }
-    };
-}
-
-/// Application state managing activity-based navigation.
-///
-/// Holds all activity instances and a navigation stack. The top of
-/// the stack is the currently visible screen. Pressing Back pops
-/// the stack, and NavigateTo pushes a new screen.
+/// Application state with simplified navigation.
+/// Only one screen: Main with 3 tabs.
 pub struct App {
-    /// Navigation stack (bottom is always SystemMenu)
-    nav_stack: Vec<AppScreen>,
-
-    // Activity instances (owned, always alive)
-    system_menu: SystemMenuActivity,
-    library: LibraryActivity,
-    file_browser: FileBrowserActivity,
-    settings: SettingsActivity,
-    reader_settings: ReaderSettingsActivity,
-    information: InformationActivity,
-
-    /// Per-activity page counters since last non-fast cleanup refresh.
-    refresh_counters: [u32; Self::SCREEN_COUNT],
-    /// Full refresh frequency setting (pages between full refreshes)
+    main_activity: MainActivity,
+    refresh_counter: u32,
     refresh_frequency_pages: u32,
-    /// Force a full refresh on the next redraw (used on activity enter)
     needs_full_refresh_on_next_draw: bool,
-    /// Cached filesystem-discovered books for the library.
     library_cache: Option<Vec<BookInfo>>,
-    /// Root directory used for library discovery.
     library_root: String,
-    /// Set when we should run a scan on the next task tick.
     library_scan_pending: bool,
-    /// Set when cache should be ignored and rebuilt.
     library_cache_invalidated: bool,
-    /// Pending library file path to open without intermediate UI redraw.
-    pending_library_open_path: Option<String>,
-    /// Incremental library scan state to avoid blocking the UI loop.
+    library_force_rescan: bool,
     pending_library_scan: Option<PendingLibraryScan>,
+    device_status: DeviceStatus,
 }
 
 impl App {
-    const SCREEN_COUNT: usize = 6;
-    const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
-    const MAX_LIBRARY_BOOKS_PER_TICK: usize = 2;
     /// Default number of pages between full refreshes
     const DEFAULT_REFRESH_FREQUENCY: u32 = 10;
+    const MAX_LIBRARY_BOOKS_PER_TICK: usize = 2;
+    const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
 
-    /// Create a new App with SystemMenu as the root screen.
+    /// Create a new App with MainActivity.
     pub fn new() -> Self {
-        let settings = SettingsActivity::new();
-        let applied = *settings.applied_settings();
-        set_device_font_profile(applied.font_size.index(), applied.font_family.index());
-        let reader_settings = ReaderSettingsActivity::new();
-        let initial_reader_settings = *reader_settings.settings();
-        let mut file_browser = FileBrowserActivity::new();
-        file_browser.set_reader_settings(initial_reader_settings);
-
-        Self {
-            nav_stack: alloc::vec![AppScreen::SystemMenu],
-            system_menu: SystemMenuActivity::new(),
-            library: LibraryActivity::new(),
-            file_browser,
-            settings,
-            reader_settings,
-            information: InformationActivity::new(),
-            refresh_counters: [0; Self::SCREEN_COUNT],
+        let mut app = Self {
+            main_activity: MainActivity::new(),
+            refresh_counter: 0,
             refresh_frequency_pages: Self::DEFAULT_REFRESH_FREQUENCY,
             needs_full_refresh_on_next_draw: true,
             library_cache: None,
-            library_root: String::from(LibraryActivity::DEFAULT_BOOKS_ROOT),
-            library_scan_pending: false,
+            library_root: String::from("/books"),
+            library_scan_pending: true, // Start with scan pending
             library_cache_invalidated: true,
-            pending_library_open_path: None,
+            library_force_rescan: false,
             pending_library_scan: None,
-        }
+            device_status: DeviceStatus::default(),
+        };
+        // Initialize library with loading state
+        app.main_activity.library_tab.begin_loading_scan();
+        app.main_activity.on_enter();
+        app
     }
 
-    fn screen_index(screen: AppScreen) -> usize {
-        match screen {
-            AppScreen::SystemMenu => 0,
-            AppScreen::Library => 1,
-            AppScreen::FileBrowser => 2,
-            AppScreen::Settings => 3,
-            AppScreen::ReaderSettings => 4,
-            AppScreen::Information => 5,
-        }
-    }
-
-    /// Get the currently active screen.
-    pub fn current_screen(&self) -> AppScreen {
-        self.nav_stack
-            .last()
-            .copied()
-            .unwrap_or(AppScreen::SystemMenu)
-    }
-
-    /// Get the navigation stack depth.
-    pub fn nav_depth(&self) -> usize {
-        self.nav_stack.len()
-    }
-
-    /// Returns true when file-browser activity is currently displaying text content.
-    pub fn file_browser_is_reading_text(&self) -> bool {
-        self.file_browser.is_viewing_text()
-    }
-
-    /// Returns true when file-browser activity is currently displaying EPUB content.
-    pub fn file_browser_is_reading_epub(&self) -> bool {
-        self.file_browser.is_viewing_epub()
-    }
-
-    /// Returns true when file-browser activity is currently opening an EPUB.
-    pub fn file_browser_is_opening_epub(&self) -> bool {
-        self.file_browser.is_opening_epub()
-    }
-
-    /// Returns the latest file-browser status message, if any.
-    pub fn file_browser_status_message(&self) -> Option<&str> {
-        self.file_browser.status_message()
-    }
-
-    /// Returns current EPUB reading position while EPUB mode is active.
-    pub fn file_browser_epub_position(&self) -> Option<(usize, usize, usize, usize)> {
-        self.file_browser.epub_position()
-    }
-
-    /// Update device status on activities that display it.
+    /// Set device status (battery, etc.)
     pub fn set_device_status(&mut self, status: DeviceStatus) {
-        self.system_menu.set_device_status(status);
-        self.information.set_device_status(status);
+        self.device_status = status;
+        self.main_activity.set_device_status(status);
     }
 
-    /// Get the auto-sleep duration setting in milliseconds (0 for Never).
-    pub fn auto_sleep_duration_ms(&self) -> u32 {
-        self.settings
-            .applied_settings()
-            .auto_sleep_duration
-            .milliseconds()
+    /// Handle input event. Returns true if a redraw is needed.
+    pub fn handle_input(&mut self, event: InputEvent) -> bool {
+        let result = self.main_activity.handle_input(event);
+        let mut redraw = self.process_result(result);
+
+        // Check if library wants to open a book
+        if let Some(path) = self.main_activity.library_tab.take_open_request() {
+            // Forward the open request to file browser
+            self.main_activity.files_tab.request_open_path(path);
+            // Switch to files tab to show the book
+            self.main_activity.set_tab(crate::main_activity::Tab::Files);
+            redraw = true;
+        }
+
+        redraw
+    }
+
+    /// Render the main activity to the display.
+    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+    ) -> Result<(), D::Error> {
+        self.main_activity.render(display)
     }
 
     /// Get the refresh mode for the current activity.
-    ///
-    /// Implements a counter-based strategy:
-    /// - Returns Full refresh when explicitly requested
-    /// - Returns Partial refresh after N fast updates (for ghost cleanup)
-    /// - Returns Fast refresh for most interactions
     pub fn get_refresh_mode(&mut self) -> ActivityRefreshMode {
-        self.refresh_frequency_pages =
-            self.reader_settings.settings().refresh_frequency.pages() as u32;
-        let screen = self.current_screen();
-        let screen_index = Self::screen_index(screen);
-
         if self.needs_full_refresh_on_next_draw {
             self.needs_full_refresh_on_next_draw = false;
-            self.refresh_counters[screen_index] = 0;
-            self.mark_refresh_complete(screen);
+            self.refresh_counter = 0;
             return ActivityRefreshMode::Full;
         }
 
-        // Check if activity explicitly requests a specific mode
-        let activity_mode = dispatch_current_activity!(self, |activity| activity.refresh_mode());
+        let activity_mode = self.main_activity.refresh_mode();
 
-        // If activity requests Full, use Full and mark as consumed
         if activity_mode == ActivityRefreshMode::Full {
-            self.refresh_counters[screen_index] = 0;
-            self.mark_refresh_complete(screen);
+            self.refresh_counter = 0;
             return ActivityRefreshMode::Full;
         }
 
-        // Increment counter and check if we need a partial refresh
-        self.refresh_counters[screen_index] += 1;
+        self.refresh_counter += 1;
 
-        if self.refresh_counters[screen_index] >= self.refresh_frequency_pages {
-            // Time for a ghost-cleanup partial refresh
-            self.refresh_counters[screen_index] = 0;
+        if self.refresh_counter >= self.refresh_frequency_pages {
+            self.refresh_counter = 0;
             ActivityRefreshMode::Partial
         } else {
-            // Use the activity's preference (usually Fast)
             activity_mode
         }
     }
 
-    fn mark_refresh_complete(&mut self, screen: AppScreen) {
-        if screen == AppScreen::Library {
-            self.library.mark_refresh_complete();
+    /// Process an ActivityResult.
+    fn process_result(&mut self, result: ActivityResult) -> bool {
+        match result {
+            ActivityResult::Consumed => true,
+            ActivityResult::NavigateBack => false,
+            ActivityResult::NavigateTo(_) => false,
+            ActivityResult::Ignored => false,
         }
-    }
-
-    /// Reset the refresh counter for an activity.
-    pub fn reset_refresh_counter_for(&mut self, screen: AppScreen) {
-        let index = Self::screen_index(screen);
-        self.refresh_counters[index] = 0;
-    }
-
-    /// Get the current refresh frequency setting (pages between partial refreshes)
-    pub fn refresh_frequency_pages(&self) -> u32 {
-        self.refresh_frequency_pages
-    }
-
-    /// Set the refresh frequency (pages between partial refreshes)
-    pub fn set_refresh_frequency_pages(&mut self, pages: u32) {
-        // Clamp to reasonable values (1-50)
-        self.refresh_frequency_pages = pages.clamp(1, 50);
     }
 
     /// Set the root directory used for library scanning.
@@ -314,44 +153,69 @@ impl App {
         self.invalidate_library_cache();
     }
 
-    /// Invalidate library cache and schedule a scan on next library entry.
+    /// Invalidate library cache and schedule a scan.
     pub fn invalidate_library_cache(&mut self) {
         self.library_cache_invalidated = true;
         self.library_scan_pending = true;
+        self.library_force_rescan = false;
         self.pending_library_scan = None;
+        self.main_activity.library_tab.begin_loading_scan();
+    }
 
-        if self.current_screen() == AppScreen::Library {
-            self.library.begin_loading_scan();
-        }
+    /// Force a full metadata rescan and bypass persisted cache for one cycle.
+    pub fn force_rescan_library(&mut self) {
+        self.library_cache_invalidated = true;
+        self.library_scan_pending = true;
+        self.library_force_rescan = true;
+        self.pending_library_scan = None;
+        self.main_activity.library_tab.begin_loading_scan();
     }
 
     /// Run deferred library scan work.
-    ///
-    /// Returns `true` when UI changed and should be redrawn.
     pub fn process_library_scan(&mut self, fs: &mut dyn FileSystem) -> bool {
         if !self.library_scan_pending && self.pending_library_scan.is_none() {
             return false;
         }
 
         if self.pending_library_scan.is_none() {
-            let paths = fs.scan_directory(&self.library_root).unwrap_or_default();
+            let mut paths = fs.scan_directory(&self.library_root).unwrap_or_default();
+            paths.sort_unstable();
+            let scan_fingerprint = Self::compute_scan_fingerprint(fs, &paths);
+
+            if !self.library_force_rescan {
+                if let Some(cached) =
+                    Self::load_library_cache_for_fingerprint(&self.library_root, scan_fingerprint)
+                {
+                    self.library_cache = Some(cached.clone());
+                    self.library_cache_invalidated = false;
+                    self.library_scan_pending = false;
+                    self.pending_library_scan = None;
+                    self.main_activity.library_tab.set_books(cached);
+                    self.main_activity.library_tab.finish_loading_scan();
+                    return true;
+                }
+            }
+
             let estimated = paths.len();
             self.pending_library_scan = Some(PendingLibraryScan {
                 paths,
                 next_index: 0,
                 books: Vec::with_capacity(estimated),
+                scan_fingerprint,
             });
         }
 
         let mut completed_books: Option<Vec<BookInfo>> = None;
+        let mut completed_fingerprint: Option<u64> = None;
         if let Some(scan) = self.pending_library_scan.as_mut() {
             let mut processed = 0usize;
             while processed < Self::MAX_LIBRARY_BOOKS_PER_TICK && scan.next_index < scan.paths.len()
             {
                 let path = scan.paths[scan.next_index].clone();
                 scan.next_index += 1;
-                scan.books
-                    .push(LibraryActivity::extract_book_info_for_path(fs, &path));
+                scan.books.push(
+                    crate::library_activity::LibraryActivity::extract_book_info_for_path(fs, &path),
+                );
                 processed += 1;
             }
 
@@ -359,6 +223,7 @@ impl App {
                 let mut books = core::mem::take(&mut scan.books);
                 books.sort_by(|a, b| a.title.cmp(&b.title));
                 completed_books = Some(books);
+                completed_fingerprint = Some(scan.scan_fingerprint);
             }
         }
 
@@ -370,31 +235,26 @@ impl App {
         self.library_cache = Some(books.clone());
         self.library_cache_invalidated = false;
         self.library_scan_pending = false;
-
-        if self.current_screen() == AppScreen::Library {
-            self.library.set_books(books);
-            self.library.finish_loading_scan();
-            true
-        } else {
-            false
+        self.library_force_rescan = false;
+        if let Some(fingerprint) = completed_fingerprint {
+            Self::persist_library_cache(&self.library_root, fingerprint, &books);
         }
+
+        self.main_activity.library_tab.set_books(books);
+        self.main_activity.library_tab.finish_loading_scan();
+        true
     }
 
     /// Run deferred file browser work.
-    ///
-    /// Returns `true` when UI changed and should be redrawn.
-    #[inline(never)]
     pub fn process_file_browser_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
-        if self.current_screen() != AppScreen::FileBrowser {
+        // Always process file browser tasks when on Files tab
+        if self.main_activity.current_tab() != crate::main_activity::Tab::Files {
             return false;
         }
 
         let mut updated = false;
-        // Drain chained tasks (OpenPath -> OpenFile) so Library-open lands
-        // directly in reader mode without flashing the browser list.
-        // Keep this bounded to reduce worst-case stack pressure on embedded.
         for _ in 0..Self::MAX_FILE_BROWSER_TASKS_PER_TICK {
-            if !self.file_browser.process_pending_task(fs) {
+            if !self.main_activity.files_tab.process_pending_task(fs) {
                 break;
             }
             updated = true;
@@ -403,176 +263,197 @@ impl App {
     }
 
     /// Run all deferred app tasks.
-    ///
-    /// Returns `true` when UI changed and should be redrawn.
-    #[inline(never)]
     pub fn process_deferred_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
-        let library_open_updated = self.process_library_open_request(fs);
+        if self.main_activity.library_tab.take_refresh_request() {
+            self.force_rescan_library();
+        }
         let library_updated = self.process_library_scan(fs);
         let file_browser_updated = self.process_file_browser_tasks(fs);
-        library_open_updated || library_updated || file_browser_updated
+        library_updated || file_browser_updated
     }
 
-    /// Handle input event. Returns true if a redraw is needed.
-    pub fn handle_input(&mut self, event: InputEvent) -> bool {
-        let result = dispatch_current_activity_mut!(self, |activity| activity.handle_input(event));
+    fn compute_scan_fingerprint(fs: &mut dyn FileSystem, paths: &[String]) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
 
-        let mut redraw = self.process_result(result);
-        self.capture_library_refresh_request();
-        if self.capture_library_open_request() {
-            redraw = false;
-        }
-        self.capture_settings_apply_request();
-        redraw
-    }
-
-    /// Render the currently active screen to the display.
-    pub fn render<D: DrawTarget<Color = BinaryColor>>(
-        &self,
-        display: &mut D,
-    ) -> Result<(), D::Error> {
-        dispatch_current_activity!(self, |activity| activity.render(display))
-    }
-
-    /// Process an ActivityResult, handling navigation.
-    /// Returns true if the screen changed (redraw needed).
-    fn process_result(&mut self, result: ActivityResult) -> bool {
-        match result {
-            ActivityResult::Consumed => true,
-            ActivityResult::NavigateBack => self.navigate_back(),
-            ActivityResult::NavigateTo(target) => self.navigate_to(target),
-            ActivityResult::Ignored => false,
-        }
-    }
-
-    /// Push a new screen onto the navigation stack.
-    fn navigate_to(&mut self, screen: AppScreen) -> bool {
-        let current = self.current_screen();
-        if screen == AppScreen::FileBrowser {
-            self.file_browser
-                .set_reader_settings(*self.reader_settings.settings());
-        }
-
-        // Preserve live reader state when opening reader settings from EPUB/TXT view.
-        let preserve_file_browser_state =
-            current == AppScreen::FileBrowser && screen == AppScreen::ReaderSettings;
-        if !preserve_file_browser_state {
-            self.call_on_exit(current);
-        }
-
-        self.nav_stack.push(screen);
-
-        // Reset refresh counter when entering a new activity
-        self.reset_refresh_counter_for(screen);
-
-        // Call on_enter for new activity
-        self.call_on_enter(screen);
-
-        true
-    }
-
-    /// Pop the current screen and return to the previous one.
-    fn navigate_back(&mut self) -> bool {
-        // Don't pop the root screen
-        if self.nav_stack.len() <= 1 {
-            return false;
-        }
-
-        let Some(leaving) = self.nav_stack.pop() else {
-            return false;
-        };
-        self.call_on_exit(leaving);
-
-        let returning = self.current_screen();
-        self.reset_refresh_counter_for(returning);
-        // If we're returning from reader settings back to file browser,
-        // keep the existing live reader state instead of reinitializing.
-        let preserve_file_browser_state =
-            leaving == AppScreen::ReaderSettings && returning == AppScreen::FileBrowser;
-        if preserve_file_browser_state {
-            self.file_browser
-                .set_reader_settings(*self.reader_settings.settings());
-        }
-        if !preserve_file_browser_state {
-            self.call_on_enter(returning);
-        }
-
-        true
-    }
-
-    /// Call on_enter on the activity for the given screen.
-    fn call_on_enter(&mut self, screen: AppScreen) {
-        match screen {
-            AppScreen::SystemMenu => self.system_menu.on_enter(),
-            AppScreen::Library => {
-                self.library.on_enter();
-
-                if self.library_cache_invalidated || self.library_cache.is_none() {
-                    self.library.begin_loading_scan();
-                    self.library_scan_pending = true;
-                } else if let Some(cached_books) = self.library_cache.as_ref() {
-                    self.library.set_books(cached_books.clone());
-                    self.library.finish_loading_scan();
-                    self.library_scan_pending = false;
-                }
+        fn hash_bytes(mut state: u64, bytes: &[u8]) -> u64 {
+            for b in bytes {
+                state ^= *b as u64;
+                state = state.wrapping_mul(FNV_PRIME);
             }
-            AppScreen::FileBrowser => self.file_browser.on_enter(),
-            AppScreen::Settings => self.settings.on_enter(),
-            AppScreen::ReaderSettings => self.reader_settings.on_enter(),
-            AppScreen::Information => self.information.on_enter(),
+            state
+        }
+
+        let mut state = hash_bytes(FNV_OFFSET, paths.len().to_string().as_bytes());
+        for path in paths {
+            state = hash_bytes(state, path.as_bytes());
+            let size = fs.file_info(path).map(|info| info.size).unwrap_or(0);
+            state = hash_bytes(state, &size.to_le_bytes());
+        }
+        state
+    }
+
+    #[cfg(feature = "std")]
+    fn cache_file_path() -> &'static str {
+        if cfg!(target_os = "espidf") {
+            "/sd/.xteink/library_cache.tsv"
+        } else {
+            "target/.xteink-library-cache.tsv"
         }
     }
 
-    /// Call on_exit on the activity for the given screen.
-    fn call_on_exit(&mut self, screen: AppScreen) {
-        match screen {
-            AppScreen::SystemMenu => self.system_menu.on_exit(),
-            AppScreen::Library => self.library.on_exit(),
-            AppScreen::FileBrowser => self.file_browser.on_exit(),
-            AppScreen::Settings => self.settings.on_exit(),
-            AppScreen::ReaderSettings => self.reader_settings.on_exit(),
-            AppScreen::Information => self.information.on_exit(),
+    #[cfg(feature = "std")]
+    fn escape_cache_field(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        for ch in input.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '\t' => out.push_str("\\t"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                _ => out.push(ch),
+            }
         }
+        out
     }
 
-    fn capture_library_refresh_request(&mut self) {
-        if self.current_screen() == AppScreen::Library && self.library.take_refresh_request() {
-            self.invalidate_library_cache();
+    #[cfg(feature = "std")]
+    fn unescape_cache_field(input: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut chars = input.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('t') => out.push('\t'),
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('\\') => out.push('\\'),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(ch);
+            }
         }
+        out
     }
 
-    fn capture_library_open_request(&mut self) -> bool {
-        if self.current_screen() != AppScreen::Library {
-            return false;
+    #[cfg(feature = "std")]
+    fn load_library_cache_for_fingerprint(root: &str, fingerprint: u64) -> Option<Vec<BookInfo>> {
+        let raw = std::fs::read_to_string(Self::cache_file_path()).ok()?;
+        let mut lines = raw.lines();
+        let header = lines.next()?;
+        let mut header_parts = header.split('\t');
+        let version = header_parts.next()?;
+        let root_raw = header_parts.next()?;
+        let fp_raw = header_parts.next()?;
+        if version != "v1" {
+            return None;
+        }
+        let cached_root = Self::unescape_cache_field(root_raw);
+        if cached_root != root {
+            return None;
+        }
+        let cached_fp = u64::from_str_radix(fp_raw, 16).ok()?;
+        if cached_fp != fingerprint {
+            return None;
         }
 
-        let Some(path) = self.library.take_open_request() else {
-            return false;
-        };
-
-        self.pending_library_open_path = Some(path);
-        true
-    }
-
-    fn process_library_open_request(&mut self, fs: &mut dyn FileSystem) -> bool {
-        let Some(path) = self.pending_library_open_path.take() else {
-            return false;
-        };
-
-        self.file_browser.request_open_path(path);
-        let navigated = self.navigate_to(AppScreen::FileBrowser);
-        let task_updated = self.process_file_browser_tasks(fs);
-        // Redraw after navigation even if deferred open does not update immediately.
-        navigated || task_updated
-    }
-
-    fn capture_settings_apply_request(&mut self) {
-        if self.settings.take_apply_request() {
-            let applied = self.settings.applied_settings();
-            set_device_font_profile(applied.font_size.index(), applied.font_family.index());
-            // Force redraw baseline after applying settings.
-            self.needs_full_refresh_on_next_draw = true;
+        let mut books = Vec::new();
+        for line in lines {
+            let mut parts = line.split('\t');
+            if parts.next()? != "b" {
+                continue;
+            }
+            let title = Self::unescape_cache_field(parts.next()?);
+            let author = Self::unescape_cache_field(parts.next()?);
+            let path = Self::unescape_cache_field(parts.next()?);
+            let progress = parts.next().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
+            let last_read = parts.next().and_then(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    v.parse::<u64>().ok()
+                }
+            });
+            books.push(BookInfo::new(title, author, path, progress, last_read));
         }
+        Some(books)
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn load_library_cache_for_fingerprint(_root: &str, _fingerprint: u64) -> Option<Vec<BookInfo>> {
+        None
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_library_cache(root: &str, fingerprint: u64, books: &[BookInfo]) {
+        let path = Self::cache_file_path();
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let mut out = String::new();
+        out.push_str("v1\t");
+        out.push_str(&Self::escape_cache_field(root));
+        out.push('\t');
+        out.push_str(&format!("{fingerprint:016x}"));
+        out.push('\n');
+
+        for book in books {
+            out.push_str("b\t");
+            out.push_str(&Self::escape_cache_field(&book.title));
+            out.push('\t');
+            out.push_str(&Self::escape_cache_field(&book.author));
+            out.push('\t');
+            out.push_str(&Self::escape_cache_field(&book.path));
+            out.push('\t');
+            out.push_str(&book.progress_percent.to_string());
+            out.push('\t');
+            if let Some(last_read) = book.last_read {
+                out.push_str(&last_read.to_string());
+            }
+            out.push('\n');
+        }
+
+        let _ = std::fs::write(path, out);
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn persist_library_cache(_root: &str, _fingerprint: u64, _books: &[BookInfo]) {}
+
+    /// Get current tab for testing/monitoring.
+    pub fn current_tab(&self) -> crate::main_activity::Tab {
+        self.main_activity.current_tab()
+    }
+
+    /// Check if file browser is currently opening an EPUB.
+    pub fn file_browser_is_opening_epub(&self) -> bool {
+        self.main_activity.files_tab.is_opening_epub()
+    }
+
+    /// Check if file browser is currently reading text.
+    pub fn file_browser_is_reading_text(&self) -> bool {
+        self.main_activity.files_tab.is_reading_text()
+    }
+
+    /// Check if file browser is currently reading an EPUB.
+    pub fn file_browser_is_reading_epub(&self) -> bool {
+        self.main_activity.files_tab.is_reading_epub()
+    }
+
+    /// Get current EPUB reading position.
+    pub fn file_browser_epub_position(&self) -> Option<(usize, usize, usize, usize)> {
+        self.main_activity.files_tab.epub_position()
+    }
+
+    /// Get auto-sleep duration in milliseconds.
+    pub fn auto_sleep_duration_ms(&self) -> u32 {
+        // Default: 5 minutes
+        300_000
     }
 }
 
@@ -586,104 +467,25 @@ impl Default for App {
 mod tests {
     use super::*;
     use crate::input::Button;
-    #[cfg(feature = "std")]
-    use crate::MockFileSystem;
-    #[cfg(feature = "std")]
-    use std::thread;
 
     #[test]
-    fn app_starts_on_system_menu() {
+    fn app_creates_main_activity() {
         let app = App::new();
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.nav_depth(), 1);
+        assert_eq!(app.current_tab() as usize, 0);
     }
 
     #[test]
-    fn app_navigate_to_library() {
+    fn app_left_right_cycles_tabs() {
         let mut app = App::new();
-
-        // Confirm on first item (Library) should navigate
-        let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(redraw);
-        assert_eq!(app.current_screen(), AppScreen::Library);
-        assert_eq!(app.nav_depth(), 2);
-    }
-
-    #[test]
-    fn app_navigate_to_reader_settings() {
-        let mut app = App::new();
-
-        // Move down to Reader Settings (index 2)
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(redraw);
-        assert_eq!(app.current_screen(), AppScreen::ReaderSettings);
-    }
-
-    #[test]
-    fn app_navigate_to_device_settings() {
-        let mut app = App::new();
-
-        // Move down to Device Settings (index 3)
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(redraw);
-        assert_eq!(app.current_screen(), AppScreen::Settings);
-    }
-
-    #[test]
-    fn app_navigate_to_information() {
-        let mut app = App::new();
-
-        // Move down to Information (index 4)
-        for _ in 0..4 {
-            app.handle_input(InputEvent::Press(Button::VolumeDown));
-        }
-        let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(redraw);
-        assert_eq!(app.current_screen(), AppScreen::Information);
-    }
-
-    #[test]
-    fn app_navigate_to_files() {
-        let mut app = App::new();
-
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        let redraw = app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(redraw);
-        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
-        assert_eq!(app.nav_depth(), 2);
-    }
-
-    #[test]
-    fn app_navigate_back_to_system_menu() {
-        let mut app = App::new();
-
-        // Navigate to Library
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(app.current_screen(), AppScreen::Library);
-
-        // Navigate back
-        let redraw = app.handle_input(InputEvent::Press(Button::Back));
-        assert!(redraw);
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.nav_depth(), 1);
-    }
-
-    #[test]
-    fn app_cannot_pop_root() {
-        let mut app = App::new();
-
-        // Back on root should navigate back (handled by SystemMenuActivity)
-        // SystemMenuActivity returns NavigateBack on Back button
-        let redraw = app.handle_input(InputEvent::Press(Button::Back));
-        // Can't pop root, so no redraw
-        assert!(!redraw);
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.nav_depth(), 1);
+        assert_eq!(app.current_tab() as usize, 0);
+        app.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(app.current_tab() as usize, 1);
+        app.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(app.current_tab() as usize, 2);
+        app.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(app.current_tab() as usize, 0);
+        app.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(app.current_tab() as usize, 2);
     }
 
     #[test]
@@ -695,196 +497,9 @@ mod tests {
     }
 
     #[test]
-    fn app_set_device_status() {
+    fn app_forces_full_refresh_on_first_draw() {
         let mut app = App::new();
-        let status = DeviceStatus {
-            battery_percent: 42,
-            is_charging: true,
-            firmware_version: "2.0.0",
-            storage_used_percent: 75,
-        };
-        app.set_device_status(status);
-
-        // Verify status propagated
-        assert_eq!(app.system_menu.device_status().battery_percent, 42);
-        assert_eq!(app.information.device_status().battery_percent, 42);
-    }
-
-    #[test]
-    fn app_deep_navigation_and_back() {
-        let mut app = App::new();
-
-        // SystemMenu -> Library
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(app.current_screen(), AppScreen::Library);
-        assert_eq!(app.nav_depth(), 2);
-
-        // Library -> Back -> SystemMenu
-        app.handle_input(InputEvent::Press(Button::Back));
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.nav_depth(), 1);
-    }
-
-    #[test]
-    fn app_back_from_file_browser_root_returns_to_system_menu() {
-        let mut app = App::new();
-
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
-
-        app.handle_input(InputEvent::Press(Button::Back));
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.nav_depth(), 1);
-    }
-
-    #[test]
-    fn app_default_trait() {
-        let app: App = Default::default();
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-    }
-
-    #[test]
-    fn app_forces_full_refresh_on_activity_enter() {
-        let mut app = App::new();
-
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
-
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(app.current_screen(), AppScreen::Library);
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
-    }
-
-    #[test]
-    fn app_uses_per_activity_refresh_counters() {
-        let mut app = App::new();
-
-        // Consume initial full refresh.
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
-
-        // Use a few fast updates on SystemMenu only.
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
-
-        // Enter Library once: initial render still gets a full refresh baseline.
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(app.current_screen(), AppScreen::Library);
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
-        app.handle_input(InputEvent::Press(Button::Back));
-        assert_eq!(app.current_screen(), AppScreen::SystemMenu);
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
-
-        // SystemMenu counter continues and still reaches periodic partial.
-        for _ in 0..8 {
-            assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
-        }
-        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Partial);
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn library_scan_uses_cache_until_invalidated() {
-        let mut app = App::new();
-        let mut fs = MockFileSystem::new();
-
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(app.process_library_scan(&mut fs));
-        assert!(!app.process_library_scan(&mut fs));
-
-        app.handle_input(InputEvent::Press(Button::Back));
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(!app.process_library_scan(&mut fs));
-
-        app.invalidate_library_cache();
-        assert!(app.process_library_scan(&mut fs));
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn file_browser_tasks_open_text_viewer() {
-        let mut app = App::new();
-        let mut fs = MockFileSystem::new();
-
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
-        assert!(app.process_file_browser_tasks(&mut fs));
-
-        // Enter /documents.
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(app.process_file_browser_tasks(&mut fs));
-
-        // Open /documents/notes.txt (skip parent directory entry).
-        app.handle_input(InputEvent::Press(Button::VolumeDown));
-        app.handle_input(InputEvent::Press(Button::Confirm));
-        assert!(app.process_file_browser_tasks(&mut fs));
-
-        // Back from text viewer returns to browser.
-        app.handle_input(InputEvent::Press(Button::Back));
-        assert_eq!(app.current_screen(), AppScreen::FileBrowser);
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn ui_flow_runs_on_limited_stack() {
-        let stack_bytes = std::env::var("XTEINK_UI_STACK_TEST_BYTES")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(128 * 1024);
-
-        let handle = thread::Builder::new()
-            .name(String::from("ui-flow-limited-stack"))
-            .stack_size(stack_bytes)
-            .spawn(|| {
-                let mut app = App::new();
-                let mut fs = MockFileSystem::new();
-                let mut display = crate::test_display::TestDisplay::default_size();
-
-                // Render root activity.
-                app.render(&mut display).unwrap();
-
-                // System menu -> Library.
-                app.handle_input(InputEvent::Press(Button::Confirm));
-                app.process_deferred_tasks(&mut fs);
-                app.render(&mut display).unwrap();
-
-                // Library -> open first book path (deferred chain to file browser viewer).
-                app.handle_input(InputEvent::Press(Button::Confirm));
-                for _ in 0..3 {
-                    app.process_deferred_tasks(&mut fs);
-                }
-                app.render(&mut display).unwrap();
-
-                // Back to file browser list, then system menu.
-                app.handle_input(InputEvent::Press(Button::Back));
-                app.handle_input(InputEvent::Press(Button::Back));
-                app.render(&mut display).unwrap();
-
-                // Exercise additional activities.
-                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Files
-                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Reader Settings
-                app.handle_input(InputEvent::Press(Button::Confirm));
-                app.render(&mut display).unwrap();
-                app.handle_input(InputEvent::Press(Button::Back));
-
-                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Device Settings
-                app.handle_input(InputEvent::Press(Button::Confirm));
-                app.render(&mut display).unwrap();
-                app.handle_input(InputEvent::Press(Button::Back));
-
-                app.handle_input(InputEvent::Press(Button::VolumeDown)); // Information
-                app.handle_input(InputEvent::Press(Button::Confirm));
-                app.render(&mut display).unwrap();
-
-                assert_eq!(app.current_screen(), AppScreen::Information);
-            })
-            .expect("spawn limited-stack ui-flow test thread");
-
-        handle
-            .join()
-            .expect("ui flow thread panicked or hit stack overflow");
     }
 }

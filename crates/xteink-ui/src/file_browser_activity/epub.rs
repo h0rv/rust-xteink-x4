@@ -38,30 +38,31 @@ impl EpubReadingState {
         let mut layout = opts.layout;
         let side_margin = match settings.margin_size {
             crate::reader_settings_activity::MarginSize::Small => 8,
-            crate::reader_settings_activity::MarginSize::Medium => 16,
-            crate::reader_settings_activity::MarginSize::Large => 24,
+            crate::reader_settings_activity::MarginSize::Medium => 12,
+            crate::reader_settings_activity::MarginSize::Large => 18,
         };
         layout.margin_left = side_margin;
         layout.margin_right = side_margin;
-        layout.margin_top = 18;
-        layout.margin_bottom = 50;
-        layout.first_line_indent_px = 10;
+        // Keep a safety band at the top so ascenders/diacritics never clip on page starts.
+        layout.margin_top = 14;
+        layout.margin_bottom = 24;
+        layout.first_line_indent_px = 0;
         layout.paragraph_gap_px = match settings.line_spacing {
-            crate::reader_settings_activity::LineSpacing::Compact => 5,
-            crate::reader_settings_activity::LineSpacing::Normal => 7,
+            crate::reader_settings_activity::LineSpacing::Compact => 6,
+            crate::reader_settings_activity::LineSpacing::Normal => 8,
             crate::reader_settings_activity::LineSpacing::Relaxed => 10,
         };
         layout.line_gap_px = match settings.line_spacing {
-            crate::reader_settings_activity::LineSpacing::Compact => 0,
-            crate::reader_settings_activity::LineSpacing::Normal => 1,
-            crate::reader_settings_activity::LineSpacing::Relaxed => 3,
+            crate::reader_settings_activity::LineSpacing::Compact => 1,
+            crate::reader_settings_activity::LineSpacing::Normal => 2,
+            crate::reader_settings_activity::LineSpacing::Relaxed => 4,
         };
         layout.typography.justification.enabled = matches!(
             settings.text_alignment,
             crate::reader_settings_activity::TextAlignment::Justified
         );
-        layout.typography.justification.min_words = 5;
-        layout.typography.justification.min_fill_ratio = 0.62;
+        layout.typography.justification.min_words = 6;
+        layout.typography.justification.min_fill_ratio = 0.78;
         opts.layout = layout;
 
         let base_font = settings.font_size.epub_base_px();
@@ -69,11 +70,22 @@ impl EpubReadingState {
         let mut hints = opts.prep.layout_hints;
         hints.base_font_size_px = base_font;
         hints.text_scale = text_scale;
-        hints.min_font_size_px = (base_font * 0.8).max(12.0);
-        hints.max_font_size_px = (base_font * 2.8).min(72.0);
-        let line_height = settings.line_spacing.multiplier() as f32 / 10.0;
-        hints.min_line_height = line_height.max(1.1);
-        hints.max_line_height = (line_height + 0.3).min(2.4);
+        hints.min_font_size_px = (base_font * 0.75).max(14.0);
+        hints.max_font_size_px = (base_font * 2.4).min(80.0);
+        match settings.line_spacing {
+            crate::reader_settings_activity::LineSpacing::Compact => {
+                hints.min_line_height = 1.05;
+                hints.max_line_height = 1.20;
+            }
+            crate::reader_settings_activity::LineSpacing::Normal => {
+                hints.min_line_height = 1.15;
+                hints.max_line_height = 1.30;
+            }
+            crate::reader_settings_activity::LineSpacing::Relaxed => {
+                hints.min_line_height = 1.25;
+                hints.max_line_height = 1.45;
+            }
+        }
         opts.prep.layout_hints = hints;
         opts.prep.style.hints = hints;
         #[cfg(target_os = "espidf")]
@@ -378,14 +390,12 @@ impl EpubReadingState {
             title = fallback;
         }
         let mut out = String::new();
-        let mut count = 0usize;
-        for ch in title.chars() {
+        for (count, ch) in title.chars().enumerate() {
             if count + 1 >= max_chars {
                 out.push('…');
                 break;
             }
             out.push(ch);
-            count += 1;
         }
         if out.is_empty() {
             title
@@ -689,7 +699,6 @@ impl EpubReadingState {
         let chapter_opts = ChapterEventsOptions {
             max_items: Self::MAX_CHAPTER_EVENTS,
             render: self.chapter_events_opts,
-            ..ChapterEventsOptions::default()
         };
 
         if let Ok(required_bytes) = self.book.chapter_uncompressed_size(chapter_idx) {
@@ -859,7 +868,6 @@ impl EpubReadingState {
         let chapter_opts = ChapterEventsOptions {
             max_items: Self::MAX_CHAPTER_EVENTS,
             render: self.chapter_events_opts,
-            ..ChapterEventsOptions::default()
         };
         let mut count = 0usize;
         let mut session = self.engine.begin(chapter_idx, RenderConfig::default());
@@ -929,6 +937,7 @@ impl EpubReadingState {
             // allocations (font blobs), which is not reliable on constrained
             // ESP heaps during open. Keep open deterministic and use bundled
             // fonts on device.
+            #[allow(clippy::needless_return)]
             return;
         }
 

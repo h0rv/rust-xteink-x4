@@ -172,8 +172,15 @@ impl RenderCacheStore for InMemoryRenderCache {
 }
 
 #[cfg(feature = "std")]
+#[cfg(all(feature = "std", target_os = "espidf"))]
+type EpubReader = std::fs::File;
+
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+type EpubReader = Box<dyn ReadSeek>;
+
+#[cfg(feature = "std")]
 struct EpubReadingState {
-    book: EpubBook<Box<dyn ReadSeek>>,
+    book: EpubBook<EpubReader>,
     engine: RenderEngine,
     eg_renderer: ReaderRenderer,
     chapter_buf: Vec<u8>,
@@ -211,9 +218,9 @@ pub struct FileBrowserActivity {
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
     #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 88 * 1024;
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 64 * 1024;
     #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_NAV_WORKER_STACK_BYTES: usize = 72 * 1024;
+    const EPUB_NAV_WORKER_STACK_BYTES: usize = 48 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]

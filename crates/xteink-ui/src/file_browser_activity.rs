@@ -24,7 +24,10 @@ use std::thread;
 
 #[cfg(feature = "std")]
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    mono_font::{
+        ascii::{FONT_6X10, FONT_7X13, FONT_7X13_BOLD},
+        MonoTextStyle,
+    },
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
@@ -49,6 +52,7 @@ use crate::epub_font_backend::BookerlyFontBackend;
 use crate::file_browser::{FileBrowser, TextViewer};
 use crate::filesystem::{basename, dirname, FileSystem};
 use crate::input::{Button, InputEvent};
+use crate::reader_settings_activity::ReaderSettings;
 use crate::ui::{Activity, ActivityResult};
 
 #[cfg(feature = "std")]
@@ -221,6 +225,7 @@ type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
 pub struct FileBrowserActivity {
     browser: FileBrowser,
     mode: BrowserMode,
+    reader_settings: ReaderSettings,
     pending_task: Option<FileBrowserTask>,
     return_to_previous_on_back: bool,
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -242,6 +247,7 @@ impl FileBrowserActivity {
         Self {
             browser: FileBrowser::new(Self::DEFAULT_ROOT),
             mode: BrowserMode::Browsing,
+            reader_settings: ReaderSettings::default(),
             pending_task: None,
             return_to_previous_on_back: false,
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -287,6 +293,23 @@ impl FileBrowserActivity {
 
     pub(crate) fn status_message(&self) -> Option<&str> {
         self.browser.status_message()
+    }
+
+    pub fn set_reader_settings(&mut self, settings: ReaderSettings) {
+        self.reader_settings = settings;
+        #[cfg(feature = "std")]
+        if let BrowserMode::ReadingEpub { renderer } = &self.mode {
+            let mut renderer = match renderer.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Err(error) = renderer.apply_reader_settings(settings) {
+                self.browser.set_status_message(format!(
+                    "Unable to apply reader settings immediately: {}",
+                    error
+                ));
+            }
+        }
     }
 
     /// Returns current EPUB reading position as:
@@ -702,29 +725,38 @@ impl FileBrowserActivity {
         let size = display.bounding_box().size;
         let width = size.width.min(size.height);
         let height = size.width.max(size.height);
-        let footer_h: u32 = 16;
-        let y = height as i32 - footer_h as i32;
+        let footer_h: u32 = 36;
+        let y = (height as i32 - footer_h as i32 - 6).max(0);
 
         Rectangle::new(Point::new(0, y), Size::new(width, footer_h))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
             .draw(display)?;
-        Rectangle::new(Point::new(0, y), Size::new(width, 1))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
 
-        let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-        let info = format!(
-            "Ch {}/{}  Pg {}/{}",
+        let chapter_style = MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::On);
+        let metrics_style = MonoTextStyle::new(&FONT_7X13, BinaryColor::On);
+        let hints_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let max_title_chars = ((width as i32 - 12) / 7).max(0) as usize;
+        let title = renderer.current_chapter_title(max_title_chars);
+        Text::new(&title, Point::new(6, y + 13), chapter_style).draw(display)?;
+
+        let mut info = format!(
+            "Ch {}/{}",
             renderer.current_chapter(),
-            renderer.total_chapters(),
-            renderer.current_page_number(),
-            renderer.total_pages()
+            renderer.total_chapters()
         );
-        Text::new(&info, Point::new(6, y + 11), style).draw(display)?;
+        if self.reader_settings.show_page_numbers {
+            info = format!(
+                "{}  ChPg {}/{}",
+                info,
+                renderer.current_page_number(),
+                renderer.total_pages()
+            );
+        }
+        Text::new(&info, Point::new(6, y + 27), metrics_style).draw(display)?;
 
-        let hints = "Up/Down=Chapter  L/R=Page  P=Settings";
+        let hints = "U/D:Chapter  L/R:Page  P:Settings";
         let hint_x = (width as i32 - (hints.len() as i32 * 6) - 6).max(6);
-        Text::new(hints, Point::new(hint_x, y + 11), style).draw(display)?;
+        Text::new(hints, Point::new(hint_x, y + 27), hints_style).draw(display)?;
         Ok(())
     }
 }
@@ -897,7 +929,10 @@ mod tests {
         let bytes = include_bytes!("../../../sample_books/sample.epub").to_vec();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let result = EpubReadingState::from_reader(Box::new(Cursor::new(bytes)));
+            let result = EpubReadingState::from_reader(
+                Box::new(Cursor::new(bytes)),
+                ReaderSettings::default(),
+            );
             let _ = tx.send(result.map(|_| ()));
         });
 

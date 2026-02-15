@@ -93,14 +93,18 @@ impl App {
         let settings = SettingsActivity::new();
         let applied = *settings.applied_settings();
         set_device_font_profile(applied.font_size.index(), applied.font_family.index());
+        let reader_settings = ReaderSettingsActivity::new();
+        let initial_reader_settings = *reader_settings.settings();
+        let mut file_browser = FileBrowserActivity::new();
+        file_browser.set_reader_settings(initial_reader_settings);
 
         Self {
             nav_stack: alloc::vec![AppScreen::SystemMenu],
             system_menu: SystemMenuActivity::new(),
             library: LibraryActivity::new(),
-            file_browser: FileBrowserActivity::new(),
+            file_browser,
             settings,
-            reader_settings: ReaderSettingsActivity::new(),
+            reader_settings,
             information: InformationActivity::new(),
             refresh_counters: [0; Self::SCREEN_COUNT],
             refresh_frequency_pages: Self::DEFAULT_REFRESH_FREQUENCY,
@@ -403,6 +407,10 @@ impl App {
             "information" => AppScreen::Information,
             _ => return false, // Unknown target
         };
+        if screen == AppScreen::FileBrowser {
+            self.file_browser
+                .set_reader_settings(*self.reader_settings.settings());
+        }
 
         // Preserve live reader state when opening reader settings from EPUB/TXT view.
         let preserve_file_browser_state =
@@ -440,6 +448,10 @@ impl App {
         // keep the existing live reader state instead of reinitializing.
         let preserve_file_browser_state =
             leaving == AppScreen::ReaderSettings && returning == AppScreen::FileBrowser;
+        if preserve_file_browser_state {
+            self.file_browser
+                .set_reader_settings(*self.reader_settings.settings());
+        }
         if !preserve_file_browser_state {
             self.call_on_enter(returning);
         }

@@ -28,8 +28,42 @@ impl EpubReadingState {
     const PAGE_CACHE_LIMIT: usize = 8;
     const OUT_OF_RANGE_ERR: &'static str = "Requested EPUB page is out of range";
 
+    fn create_engine(settings: ReaderSettings) -> RenderEngine {
+        let mut opts = RenderEngineOptions::for_display(
+            crate::DISPLAY_WIDTH as i32,
+            crate::DISPLAY_HEIGHT as i32,
+        );
+        let mut layout = opts.layout;
+        let side_margin = settings.margin_size.pixels() as i32;
+        layout.margin_left = side_margin;
+        layout.margin_right = side_margin;
+        layout.margin_bottom = 56;
+        layout.line_gap_px = match settings.line_spacing {
+            crate::reader_settings_activity::LineSpacing::Compact => 0,
+            crate::reader_settings_activity::LineSpacing::Normal => 2,
+            crate::reader_settings_activity::LineSpacing::Relaxed => 5,
+        };
+        opts.layout = layout;
+
+        let base_font = settings.font_size.epub_base_px();
+        let mut hints = opts.prep.layout_hints;
+        hints.base_font_size_px = base_font;
+        hints.min_font_size_px = (base_font * 0.8).max(12.0);
+        hints.max_font_size_px = (base_font * 2.0).min(64.0);
+        let line_height = settings.line_spacing.multiplier() as f32 / 10.0;
+        hints.min_line_height = line_height.max(1.1);
+        hints.max_line_height = (line_height + 0.3).min(2.4);
+        opts.prep.layout_hints = hints;
+        opts.prep.style.hints = hints;
+
+        RenderEngine::new(opts)
+    }
+
     #[cfg(not(target_os = "espidf"))]
-    pub(super) fn from_reader(reader: Box<dyn ReadSeek>) -> Result<Self, String> {
+    pub(super) fn from_reader(
+        reader: Box<dyn ReadSeek>,
+        settings: ReaderSettings,
+    ) -> Result<Self, String> {
         log::info!("[EPUB] opening reader");
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
@@ -46,10 +80,7 @@ impl EpubReadingState {
         log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
         let mut state = Self {
             book,
-            engine: RenderEngine::new(RenderEngineOptions::for_display(
-                crate::DISPLAY_WIDTH as i32,
-                crate::DISPLAY_HEIGHT as i32,
-            )),
+            engine: Self::create_engine(settings),
             eg_renderer: Self::create_renderer(),
             chapter_buf: Vec::with_capacity(Self::CHAPTER_BUF_CAPACITY_BYTES),
             chapter_scratch: ScratchBuffers::embedded(),
@@ -68,7 +99,7 @@ impl EpubReadingState {
     }
 
     #[cfg(target_os = "espidf")]
-    pub(super) fn from_sd_path_light(path: &str) -> Result<Self, String> {
+    pub(super) fn from_sd_path_light(path: &str, settings: ReaderSettings) -> Result<Self, String> {
         log::info!("[EPUB] opening reader (sd temp)");
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
@@ -92,10 +123,7 @@ impl EpubReadingState {
         log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
         let mut state = Self {
             book,
-            engine: RenderEngine::new(RenderEngineOptions::for_display(
-                crate::DISPLAY_WIDTH as i32,
-                crate::DISPLAY_HEIGHT as i32,
-            )),
+            engine: Self::create_engine(settings),
             eg_renderer: Self::create_renderer(),
             chapter_buf: Vec::with_capacity(Self::CHAPTER_BUF_CAPACITY_BYTES),
             chapter_scratch: ScratchBuffers::embedded(),
@@ -216,6 +244,66 @@ impl EpubReadingState {
             .get(&self.chapter_idx)
             .copied()
             .unwrap_or(1)
+    }
+
+    pub(super) fn current_chapter_title(&self, max_chars: usize) -> String {
+        let fallback = format!("Chapter {}", self.current_chapter());
+        if max_chars == 0 {
+            return fallback;
+        }
+        let href = match self.book.chapter(self.chapter_idx) {
+            Ok(chapter) => chapter.href,
+            Err(_) => return fallback,
+        };
+        let mut title = href
+            .rsplit('/')
+            .next()
+            .unwrap_or(href.as_str())
+            .split('#')
+            .next()
+            .unwrap_or(href.as_str())
+            .split('.')
+            .next()
+            .unwrap_or(href.as_str())
+            .replace(['_', '-'], " ");
+        if title.is_empty() {
+            title = fallback;
+        }
+        let mut out = String::new();
+        let mut count = 0usize;
+        for ch in title.chars() {
+            if count + 1 >= max_chars {
+                out.push('…');
+                break;
+            }
+            out.push(ch);
+            count += 1;
+        }
+        if out.is_empty() {
+            title
+        } else {
+            out
+        }
+    }
+
+    pub(super) fn apply_reader_settings(&mut self, settings: ReaderSettings) -> Result<(), String> {
+        let current_chapter = self.chapter_idx;
+        let current_page = self.page_idx;
+        self.engine = Self::create_engine(settings);
+        self.current_page = None;
+        self.page_cache.clear();
+        self.chapter_page_counts.clear();
+
+        if let Ok(page) = self.load_page(current_chapter, current_page) {
+            self.chapter_idx = current_chapter;
+            self.page_idx = current_page;
+            self.current_page = Some(page);
+            return Ok(());
+        }
+        if self.load_chapter_forward(current_chapter).is_ok() {
+            return Ok(());
+        }
+        self.load_chapter_backward(current_chapter.min(self.book.chapter_count().saturating_sub(1)))
     }
 
     pub(super) fn next_page(&mut self) -> bool {
@@ -567,7 +655,7 @@ impl FileBrowserActivity {
     ) -> bool {
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
-            match Self::spawn_epub_open_worker(fs, path) {
+            match Self::spawn_epub_open_worker(fs, path, self.reader_settings) {
                 Ok(receiver) => {
                     self.epub_open_pending = Some(PendingEpubOpen { receiver });
                     self.mode = BrowserMode::OpeningEpub;
@@ -588,7 +676,7 @@ impl FileBrowserActivity {
                     self.mode = BrowserMode::OpeningEpub;
                     self.browser
                         .set_status_message(format!("Opening EPUB: {}", basename(path)));
-                    match EpubReadingState::from_sd_path_light(&host_path) {
+                    match EpubReadingState::from_sd_path_light(&host_path, self.reader_settings) {
                         Ok(renderer) => {
                             self.epub_open_staged = Some(Arc::new(Mutex::new(renderer)));
                             self.queue_task(FileBrowserTask::FinalizeEpubOpen);
@@ -760,6 +848,7 @@ impl FileBrowserActivity {
     fn spawn_epub_open_worker(
         fs: &mut dyn FileSystem,
         path: &str,
+        settings: ReaderSettings,
     ) -> Result<Receiver<Result<EpubReadingState, String>>, String> {
         let source = Self::prepare_epub_open_source(fs, path)?;
         log::info!(
@@ -775,11 +864,11 @@ impl FileBrowserActivity {
             .spawn(move || {
                 let result = match source {
                     EpubOpenSource::HostPath(path) => match File::open(&path) {
-                        Ok(file) => EpubReadingState::from_reader(Box::new(file)),
+                        Ok(file) => EpubReadingState::from_reader(Box::new(file), settings),
                         Err(err) => Err(format!("Unable to read EPUB: {}", err)),
                     },
                     EpubOpenSource::Bytes(bytes) => {
-                        EpubReadingState::from_reader(Box::new(Cursor::new(bytes)))
+                        EpubReadingState::from_reader(Box::new(Cursor::new(bytes)), settings)
                     }
                 };
                 let _ = tx.send(result);

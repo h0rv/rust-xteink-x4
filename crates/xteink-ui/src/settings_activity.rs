@@ -28,11 +28,20 @@ pub enum FontSize {
     Medium,
     Large,
     ExtraLarge,
+    Huge,
+    Max,
 }
 
 impl FontSize {
     /// All font size variants in order
-    pub const ALL: [Self; 4] = [Self::Small, Self::Medium, Self::Large, Self::ExtraLarge];
+    pub const ALL: [Self; 6] = [
+        Self::Small,
+        Self::Medium,
+        Self::Large,
+        Self::ExtraLarge,
+        Self::Huge,
+        Self::Max,
+    ];
 
     /// Get display label for the font size
     pub const fn label(self) -> &'static str {
@@ -41,6 +50,8 @@ impl FontSize {
             Self::Medium => "Medium",
             Self::Large => "Large",
             Self::ExtraLarge => "Extra Large",
+            Self::Huge => "Huge",
+            Self::Max => "Max",
         }
     }
 
@@ -48,9 +59,23 @@ impl FontSize {
     pub const fn points(self) -> u8 {
         match self {
             Self::Small => 12,
-            Self::Medium => 14,
-            Self::Large => 18,
+            Self::Medium => 16,
+            Self::Large => 20,
             Self::ExtraLarge => 24,
+            Self::Huge => 28,
+            Self::Max => 32,
+        }
+    }
+
+    /// Base EPUB body text size in CSS px used by renderer defaults.
+    pub const fn epub_base_px(self) -> f32 {
+        match self {
+            Self::Small => 16.0,
+            Self::Medium => 19.0,
+            Self::Large => 22.0,
+            Self::ExtraLarge => 26.0,
+            Self::Huge => 30.0,
+            Self::Max => 34.0,
         }
     }
 
@@ -60,7 +85,9 @@ impl FontSize {
             Self::Small => Some(Self::Medium),
             Self::Medium => Some(Self::Large),
             Self::Large => Some(Self::ExtraLarge),
-            Self::ExtraLarge => None,
+            Self::ExtraLarge => Some(Self::Huge),
+            Self::Huge => Some(Self::Max),
+            Self::Max => None,
         }
     }
 
@@ -71,6 +98,8 @@ impl FontSize {
             Self::Medium => Some(Self::Small),
             Self::Large => Some(Self::Medium),
             Self::ExtraLarge => Some(Self::Large),
+            Self::Huge => Some(Self::ExtraLarge),
+            Self::Max => Some(Self::Huge),
         }
     }
 
@@ -81,6 +110,8 @@ impl FontSize {
             Self::Medium => 1,
             Self::Large => 2,
             Self::ExtraLarge => 3,
+            Self::Huge => 4,
+            Self::Max => 5,
         }
     }
 
@@ -91,6 +122,8 @@ impl FontSize {
             1 => Some(Self::Medium),
             2 => Some(Self::Large),
             3 => Some(Self::ExtraLarge),
+            4 => Some(Self::Huge),
+            5 => Some(Self::Max),
             _ => None,
         }
     }

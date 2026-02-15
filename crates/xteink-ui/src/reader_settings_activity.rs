@@ -551,9 +551,8 @@ impl ReaderSettingsActivity {
     /// Calculate how many setting items fit on screen
     fn calculate_visible_count(theme: &Theme) -> usize {
         use crate::DISPLAY_HEIGHT;
-        let content_height = DISPLAY_HEIGHT.saturating_sub(
-            theme.metrics.header_height + theme.metrics.spacing_double()
-        );
+        let content_height = DISPLAY_HEIGHT
+            .saturating_sub(theme.metrics.header_height + theme.metrics.spacing_double());
         let item_height = theme.metrics.list_item_height + SECTION_HEADER_HEIGHT as u32;
         (content_height / item_height) as usize
     }
@@ -795,7 +794,8 @@ impl ReaderSettingsActivity {
         let mut last_section = "";
 
         // Only render visible items based on scroll offset
-        for (i, item) in SettingItem::ALL.iter()
+        for (i, item) in SettingItem::ALL
+            .iter()
             .enumerate()
             .skip(self.scroll_offset)
             .take(self.visible_count)

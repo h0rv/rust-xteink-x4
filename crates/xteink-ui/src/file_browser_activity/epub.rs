@@ -780,7 +780,8 @@ impl EpubReadingState {
             #[cfg(not(target_os = "espidf"))]
             if existing == 0 {
                 if let Ok(count) = self.compute_chapter_page_count(chapter_idx) {
-                    self.chapter_page_counts.insert(chapter_idx, count.max(observed_min));
+                    self.chapter_page_counts
+                        .insert(chapter_idx, count.max(observed_min));
                 }
             }
         }

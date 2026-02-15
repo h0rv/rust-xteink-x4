@@ -175,7 +175,10 @@ impl App {
 
     /// Get the auto-sleep duration setting in milliseconds (0 for Never).
     pub fn auto_sleep_duration_ms(&self) -> u32 {
-        self.settings.applied_settings().auto_sleep_duration.milliseconds()
+        self.settings
+            .applied_settings()
+            .auto_sleep_duration
+            .milliseconds()
     }
 
     /// Get the refresh mode for the current activity.

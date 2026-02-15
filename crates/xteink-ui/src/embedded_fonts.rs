@@ -6,8 +6,8 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 /// Metrics for a single glyph

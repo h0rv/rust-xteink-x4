@@ -756,8 +756,12 @@ impl SettingsActivity {
                 ActivityResult::Consumed
             }
             SettingRow::AutoSleep => {
-                self.settings.auto_sleep_duration = self.settings.auto_sleep_duration.next_wrapped();
-                self.show_toast(format!("Auto-sleep: {}", self.settings.auto_sleep_duration.label()));
+                self.settings.auto_sleep_duration =
+                    self.settings.auto_sleep_duration.next_wrapped();
+                self.show_toast(format!(
+                    "Auto-sleep: {}",
+                    self.settings.auto_sleep_duration.label()
+                ));
                 ActivityResult::Consumed
             }
             SettingRow::ResetButton => {
@@ -788,8 +792,12 @@ impl SettingsActivity {
                 ActivityResult::Consumed
             }
             SettingRow::AutoSleep => {
-                self.settings.auto_sleep_duration = self.settings.auto_sleep_duration.prev_wrapped();
-                self.show_toast(format!("Auto-sleep: {}", self.settings.auto_sleep_duration.label()));
+                self.settings.auto_sleep_duration =
+                    self.settings.auto_sleep_duration.prev_wrapped();
+                self.show_toast(format!(
+                    "Auto-sleep: {}",
+                    self.settings.auto_sleep_duration.label()
+                ));
                 ActivityResult::Consumed
             }
             SettingRow::ResetButton => ActivityResult::Ignored,
@@ -1228,7 +1236,10 @@ mod tests {
 
         assert_eq!(activity.settings().font_size, FontSize::Large);
         assert_eq!(activity.settings().font_family, FontFamily::Serif);
-        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::TenMinutes);
+        assert_eq!(
+            activity.settings().auto_sleep_duration,
+            AutoSleepDuration::TenMinutes
+        );
     }
 
     #[test]
@@ -1350,16 +1361,25 @@ mod tests {
         activity.handle_input(InputEvent::Press(Button::VolumeDown));
         activity.handle_input(InputEvent::Press(Button::VolumeDown));
         assert_eq!(activity.current_row(), SettingRow::AutoSleep);
-        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::FiveMinutes);
+        assert_eq!(
+            activity.settings().auto_sleep_duration,
+            AutoSleepDuration::FiveMinutes
+        );
 
         // Right cycles forward
         let result = activity.handle_input(InputEvent::Press(Button::Right));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::TenMinutes);
+        assert_eq!(
+            activity.settings().auto_sleep_duration,
+            AutoSleepDuration::TenMinutes
+        );
 
         // Left cycles backward
         let result = activity.handle_input(InputEvent::Press(Button::Left));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::FiveMinutes);
+        assert_eq!(
+            activity.settings().auto_sleep_duration,
+            AutoSleepDuration::FiveMinutes
+        );
     }
 }

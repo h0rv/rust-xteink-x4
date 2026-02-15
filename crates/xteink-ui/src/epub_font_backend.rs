@@ -28,12 +28,18 @@ const DEFAULT_SLOT_ID: FontId = 0;
 const MIN_SIZE_PX: f32 = 10.0;
 const MAX_SIZE_PX: f32 = 64.0;
 
-const BOOKERLY_REGULAR_TTF: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/bookerly/Bookerly-Regular.ttf"));
-const BOOKERLY_BOLD_TTF: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/bookerly/Bookerly-Bold.ttf"));
-const BOOKERLY_ITALIC_TTF: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/bookerly/Bookerly-Italic.ttf"));
+const BOOKERLY_REGULAR_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/fonts/bookerly/Bookerly-Regular.ttf"
+));
+const BOOKERLY_BOLD_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/fonts/bookerly/Bookerly-Bold.ttf"
+));
+const BOOKERLY_ITALIC_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/fonts/bookerly/Bookerly-Italic.ttf"
+));
 const BOOKERLY_BOLD_ITALIC_TTF: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/fonts/bookerly/Bookerly-BoldItalic.ttf"
@@ -72,10 +78,10 @@ impl BackendState {
         let mut runtime_cache = FontCache::new();
         #[cfg(not(target_os = "espidf"))]
         {
-        let _ = runtime_cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR_TTF);
-        let _ = runtime_cache.load_font(FONT_BOLD, BOOKERLY_BOLD_TTF);
-        let _ = runtime_cache.load_font(FONT_ITALIC, BOOKERLY_ITALIC_TTF);
-        let _ = runtime_cache.load_font(FONT_BOLD_ITALIC, BOOKERLY_BOLD_ITALIC_TTF);
+            let _ = runtime_cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR_TTF);
+            let _ = runtime_cache.load_font(FONT_BOLD, BOOKERLY_BOLD_TTF);
+            let _ = runtime_cache.load_font(FONT_ITALIC, BOOKERLY_ITALIC_TTF);
+            let _ = runtime_cache.load_font(FONT_BOLD_ITALIC, BOOKERLY_BOLD_ITALIC_TTF);
         }
 
         let default_key = FontSlotKey::new(FONT_REGULAR.to_string(), 16.0);
@@ -184,14 +190,21 @@ impl FontBackend for BookerlyFontBackend {
                 if face.italic { "i" } else { "n" }
             );
             #[cfg(not(target_os = "espidf"))]
-            let chosen_name = if state.runtime_cache.load_font(&runtime_name, face.data).is_ok() {
+            let chosen_name = if state
+                .runtime_cache
+                .load_font(&runtime_name, face.data)
+                .is_ok()
+            {
                 runtime_name
             } else {
                 BackendState::font_name_for_weight(face.weight, face.italic).to_string()
             };
             #[cfg(target_os = "espidf")]
-            let chosen_name = BackendState::font_name_for_weight(face.weight, face.italic).to_string();
-            state.resolved_font_names_by_id.insert(resolved_id, chosen_name);
+            let chosen_name =
+                BackendState::font_name_for_weight(face.weight, face.italic).to_string();
+            state
+                .resolved_font_names_by_id
+                .insert(resolved_id, chosen_name);
             accepted = accepted.saturating_add(1);
         }
         accepted
@@ -251,7 +264,10 @@ impl FontBackend for BookerlyFontBackend {
                 .map(|m| m.advance_width.round() as i32)
                 .unwrap_or(space_width)
                 .max(1);
-            return FontMetrics { char_width, space_width };
+            return FontMetrics {
+                char_width,
+                space_width,
+            };
         }
 
         // Get metrics from embedded font

@@ -46,7 +46,7 @@ pub fn ui_font() -> &'static MonoFont<'static> {
         1 => &ascii::FONT_7X13_BOLD,
         2 => &ascii::FONT_8X13_BOLD,
         3 => &ascii::FONT_9X15_BOLD,
-        4 => &ascii::FONT_9X18_BOLD,  // Largest bold font available
+        4 => &ascii::FONT_9X18_BOLD, // Largest bold font available
         _ => &ascii::FONT_7X13_BOLD,
     }
 }
@@ -217,8 +217,8 @@ impl Default for Theme {
 
 /// UI text rendering system - change FONT_NAME to switch fonts globally
 pub mod ui_text {
-    use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
     use crate::embedded_fonts::EmbeddedFontRegistry;
+    use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
     /// **CHANGE THIS to switch fonts everywhere**
     /// Options: "bookerly-bold", "bookerly-regular", "bookerly-italic", "bookerly-bold-italic"

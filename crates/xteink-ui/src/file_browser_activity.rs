@@ -763,7 +763,8 @@ impl FileBrowserActivity {
                         if let (Some((chapter_idx, page_idx)), Some(path)) =
                             (advanced_position, self.active_epub_path.as_ref())
                         {
-                            let _ = Self::persist_epub_position_for_path(path, chapter_idx, page_idx);
+                            let _ =
+                                Self::persist_epub_position_for_path(path, chapter_idx, page_idx);
                         }
                         return ActivityResult::Consumed;
                     }

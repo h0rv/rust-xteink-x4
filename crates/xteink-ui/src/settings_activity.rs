@@ -350,42 +350,10 @@ impl SettingsActivity {
         display: &mut D,
         theme: &Theme,
     ) -> Result<(), D::Error> {
-        let display_width = display.bounding_box().size.width;
-        let header_height = theme.metrics.header_height;
-        let header_y = theme.metrics.header_text_y();
+        use crate::ui::Header;
 
-        // Header background
-        Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        // Title
-        let title_style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
-            .text_color(BinaryColor::Off)
-            .build();
-        Text::new(
-            "Settings",
-            Point::new(theme.metrics.side_padding as i32, header_y),
-            title_style,
-        )
-        .draw(display)?;
-
-        // Save hint
-        let back_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
-        let back_text = "[Save]";
-        let back_width = ThemeMetrics::text_width(back_text.len());
-        Text::new(
-            back_text,
-            Point::new(
-                display_width as i32 - back_width - theme.metrics.side_padding as i32,
-                header_y,
-            ),
-            back_style,
-        )
-        .draw(display)?;
-
-        Ok(())
+        let header = Header::new("Device Settings");
+        header.render(display, theme)
     }
 
     /// Render main content area

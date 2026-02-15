@@ -394,6 +394,7 @@ impl App {
 
     /// Push a new screen onto the navigation stack.
     fn navigate_to(&mut self, target: &str) -> bool {
+        let current = self.current_screen();
         let screen = match target {
             "library" => AppScreen::Library,
             "files" => AppScreen::FileBrowser,
@@ -403,8 +404,12 @@ impl App {
             _ => return false, // Unknown target
         };
 
-        // Call on_exit for current activity
-        self.call_on_exit(self.current_screen());
+        // Preserve live reader state when opening reader settings from EPUB/TXT view.
+        let preserve_file_browser_state =
+            current == AppScreen::FileBrowser && screen == AppScreen::ReaderSettings;
+        if !preserve_file_browser_state {
+            self.call_on_exit(current);
+        }
 
         self.nav_stack.push(screen);
 
@@ -429,9 +434,15 @@ impl App {
         };
         self.call_on_exit(leaving);
 
-        self.reset_refresh_counter_for(self.current_screen());
-        // Re-enter the now-current screen
-        self.call_on_enter(self.current_screen());
+        let returning = self.current_screen();
+        self.reset_refresh_counter_for(returning);
+        // If we're returning from reader settings back to file browser,
+        // keep the existing live reader state instead of reinitializing.
+        let preserve_file_browser_state =
+            leaving == AppScreen::ReaderSettings && returning == AppScreen::FileBrowser;
+        if !preserve_file_browser_state {
+            self.call_on_enter(returning);
+        }
 
         true
     }

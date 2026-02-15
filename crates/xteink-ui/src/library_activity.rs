@@ -925,42 +925,11 @@ impl LibraryActivity {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        let display_width = display.bounding_box().size.width;
-        let header_height = self.theme.metrics.header_height;
-        let header_y = self.theme.metrics.header_text_y();
+        use crate::ui::Header;
 
-        // Header background
-        Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        // Title
-        let title_style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
-            .text_color(BinaryColor::Off)
-            .build();
-        Text::new(
-            "Library",
-            Point::new(self.theme.metrics.side_padding as i32, header_y),
-            title_style,
-        )
-        .draw(display)?;
-
-        // Sort button
-        let sort_label = format!("[Sort: {}]", self.sort_order.label());
-        let sort_width = ThemeMetrics::text_width(sort_label.len());
-        let sort_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
-        Text::new(
-            &sort_label,
-            Point::new(
-                display_width as i32 - sort_width - self.theme.metrics.side_padding as i32,
-                header_y,
-            ),
-            sort_style,
-        )
-        .draw(display)?;
-
-        Ok(())
+        let sort_label = format!("Sort: {}", self.sort_order.label());
+        let header = Header::new("Library").with_right_text(sort_label);
+        header.render(display, &self.theme)
     }
 
     /// Render book list or empty state

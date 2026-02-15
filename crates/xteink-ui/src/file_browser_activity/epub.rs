@@ -296,6 +296,48 @@ impl EpubReadingState {
         false
     }
 
+    pub(super) fn next_chapter(&mut self) -> bool {
+        if self.chapter_idx + 1 >= self.book.chapter_count() {
+            return false;
+        }
+
+        let previous_chapter = self.chapter_idx;
+        let previous_page = self.page_idx;
+        self.current_page = None;
+
+        if self.load_chapter_forward(self.chapter_idx + 1).is_ok() {
+            return true;
+        }
+
+        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+            self.chapter_idx = previous_chapter;
+            self.page_idx = previous_page;
+            self.current_page = Some(page);
+        }
+        false
+    }
+
+    pub(super) fn prev_chapter(&mut self) -> bool {
+        if self.chapter_idx == 0 {
+            return false;
+        }
+
+        let previous_chapter = self.chapter_idx;
+        let previous_page = self.page_idx;
+        self.current_page = None;
+
+        if self.load_chapter_backward(self.chapter_idx - 1).is_ok() {
+            return true;
+        }
+
+        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+            self.chapter_idx = previous_chapter;
+            self.page_idx = previous_page;
+            self.current_page = Some(page);
+        }
+        false
+    }
+
     pub(super) fn render<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,

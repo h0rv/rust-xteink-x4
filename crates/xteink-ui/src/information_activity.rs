@@ -190,42 +190,10 @@ impl InformationActivity {
         display: &mut D,
         theme: &Theme,
     ) -> Result<(), D::Error> {
-        let display_width = display.bounding_box().size.width;
-        let header_height = theme.metrics.header_height;
-        let header_y = theme.metrics.header_text_y();
+        use crate::ui::Header;
 
-        // Header background
-        Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        // Title
-        let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
-            .text_color(BinaryColor::Off)
-            .build();
-        Text::new(
-            "Information",
-            Point::new(theme.metrics.side_padding as i32, header_y),
-            title_style,
-        )
-        .draw(display)?;
-
-        // Back indicator
-        let back_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
-        let back_text = "[Back]";
-        let text_width = ThemeMetrics::text_width(back_text.len());
-        Text::new(
-            back_text,
-            Point::new(
-                display_width as i32 - text_width - theme.metrics.side_padding as i32,
-                header_y,
-            ),
-            back_style,
-        )
-        .draw(display)?;
-
-        Ok(())
+        let header = Header::new("Information");
+        header.render(display, theme)
     }
 
     /// Render the info list

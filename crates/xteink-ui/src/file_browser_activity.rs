@@ -22,6 +22,12 @@ use std::sync::{Arc, Mutex};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::thread;
 
+#[cfg(feature = "std")]
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    primitives::{PrimitiveStyle, Rectangle},
+    text::Text,
+};
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use mu_epub::book::{ChapterEventsOptions, OpenConfig};
@@ -482,51 +488,94 @@ impl FileBrowserActivity {
             }
             #[cfg(feature = "std")]
             BrowserMode::ReadingEpub { renderer } => {
-                let nav = match event {
+                enum EpubInputAction {
+                    Page(EpubNavigationDirection),
+                    ChapterNext,
+                    ChapterPrev,
+                    OpenSettings,
+                }
+
+                let action = match event {
+                    InputEvent::Press(Button::Power) => Some(EpubInputAction::OpenSettings),
+                    InputEvent::Press(Button::Down) => Some(EpubInputAction::ChapterNext),
+                    InputEvent::Press(Button::Up) => Some(EpubInputAction::ChapterPrev),
                     InputEvent::Press(Button::Right)
-                    | InputEvent::Press(Button::Down)
                     | InputEvent::Press(Button::VolumeDown)
-                    | InputEvent::Press(Button::Confirm) => Some(EpubNavigationDirection::Next),
-                    InputEvent::Press(Button::Left)
-                    | InputEvent::Press(Button::Up)
-                    | InputEvent::Press(Button::VolumeUp) => Some(EpubNavigationDirection::Prev),
+                    | InputEvent::Press(Button::Confirm) => {
+                        Some(EpubInputAction::Page(EpubNavigationDirection::Next))
+                    }
+                    InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+                        Some(EpubInputAction::Page(EpubNavigationDirection::Prev))
+                    }
                     _ => None,
                 };
-                if let Some(direction) = nav {
+
+                if let Some(action) = action {
+                    if let EpubInputAction::OpenSettings = action {
+                        return ActivityResult::NavigateTo("reader_settings");
+                    }
                     #[cfg(target_os = "espidf")]
                     {
                         let mut renderer = match renderer.lock() {
                             Ok(guard) => guard,
                             Err(poisoned) => poisoned.into_inner(),
                         };
-                        let advanced = match direction {
-                            EpubNavigationDirection::Next => renderer.next_page(),
-                            EpubNavigationDirection::Prev => renderer.prev_page(),
+                        let advanced = match action {
+                            EpubInputAction::Page(direction) => match direction {
+                                EpubNavigationDirection::Next => renderer.next_page(),
+                                EpubNavigationDirection::Prev => renderer.prev_page(),
+                            },
+                            EpubInputAction::ChapterNext => renderer.next_chapter(),
+                            EpubInputAction::ChapterPrev => renderer.prev_chapter(),
+                            EpubInputAction::OpenSettings => false,
                         };
                         if !advanced {
-                            log::warn!("[EPUB] unable to advance {} page", direction.label());
+                            log::warn!("[EPUB] unable to handle epub action");
                         }
                         return ActivityResult::Consumed;
                     }
 
                     #[cfg(not(target_os = "espidf"))]
                     {
-                        if self.epub_navigation_pending.is_some() {
-                            return ActivityResult::Consumed;
-                        }
-                        let renderer = Arc::clone(renderer);
-                        match Self::spawn_epub_navigation_worker(renderer, direction) {
-                            Ok(receiver) => {
-                                self.epub_navigation_pending = Some(PendingEpubNavigation {
-                                    receiver,
-                                    direction,
-                                });
+                        match action {
+                            EpubInputAction::Page(direction) => {
+                                if self.epub_navigation_pending.is_some() {
+                                    return ActivityResult::Consumed;
+                                }
+                                let renderer = Arc::clone(renderer);
+                                match Self::spawn_epub_navigation_worker(renderer, direction) {
+                                    Ok(receiver) => {
+                                        self.epub_navigation_pending =
+                                            Some(PendingEpubNavigation {
+                                                receiver,
+                                                direction,
+                                            });
+                                        ActivityResult::Consumed
+                                    }
+                                    Err(error) => {
+                                        self.browser.set_status_message(error);
+                                        ActivityResult::Consumed
+                                    }
+                                }
+                            }
+                            EpubInputAction::ChapterNext | EpubInputAction::ChapterPrev => {
+                                let mut renderer = match renderer.lock() {
+                                    Ok(guard) => guard,
+                                    Err(poisoned) => poisoned.into_inner(),
+                                };
+                                let advanced = match action {
+                                    EpubInputAction::ChapterNext => renderer.next_chapter(),
+                                    EpubInputAction::ChapterPrev => renderer.prev_chapter(),
+                                    _ => false,
+                                };
+                                if !advanced {
+                                    self.browser.set_status_message(
+                                        "No more chapters in this direction".to_string(),
+                                    );
+                                }
                                 ActivityResult::Consumed
                             }
-                            Err(error) => {
-                                self.browser.set_status_message(error);
-                                ActivityResult::Consumed
-                            }
+                            EpubInputAction::OpenSettings => ActivityResult::Ignored,
                         }
                     }
                 } else {
@@ -626,7 +675,8 @@ impl Activity for FileBrowserActivity {
                     Ok(guard) => guard,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                renderer.render(display)
+                renderer.render(display)?;
+                self.render_epub_footer(display, &renderer)
             }
         }
     }
@@ -639,6 +689,43 @@ impl Activity for FileBrowserActivity {
 impl Default for FileBrowserActivity {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl FileBrowserActivity {
+    #[cfg(feature = "std")]
+    fn render_epub_footer<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        renderer: &EpubReadingState,
+    ) -> Result<(), D::Error> {
+        let size = display.bounding_box().size;
+        let width = size.width.min(size.height);
+        let height = size.width.max(size.height);
+        let footer_h: u32 = 16;
+        let y = height as i32 - footer_h as i32;
+
+        Rectangle::new(Point::new(0, y), Size::new(width, footer_h))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+            .draw(display)?;
+        Rectangle::new(Point::new(0, y), Size::new(width, 1))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+
+        let style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let info = format!(
+            "Ch {}/{}  Pg {}/{}",
+            renderer.current_chapter(),
+            renderer.total_chapters(),
+            renderer.current_page_number(),
+            renderer.total_pages()
+        );
+        Text::new(&info, Point::new(6, y + 11), style).draw(display)?;
+
+        let hints = "Up/Down=Chapter  L/R=Page  P=Settings";
+        let hint_x = (width as i32 - (hints.len() as i32 * 6) - 6).max(6);
+        Text::new(hints, Point::new(hint_x, y + 11), style).draw(display)?;
+        Ok(())
     }
 }
 

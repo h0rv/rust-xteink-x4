@@ -65,16 +65,9 @@ impl MenuItem {
     }
 
     /// Get icon character/ASCII art for the menu item
+    /// Returns empty string for clean, modern text-only menu
     pub const fn icon(self) -> &'static str {
-        match self {
-            Self::Library => "[===]",
-            Self::Files => "[DIR]",
-            Self::ReaderSettings => "{Aa}",
-            Self::DeviceSettings => "[*]",
-            Self::Information => "(i)",
-            Self::Sleep => "[Zzz]",
-            Self::PowerOff => "[O]",
-        }
+        ""
     }
 
     /// Get index in ALL array
@@ -369,61 +362,16 @@ impl SystemMenuActivity {
         display: &mut D,
         theme: &Theme,
     ) -> Result<(), D::Error> {
-        let display_width = display.bounding_box().size.width;
-        let header_height = theme.metrics.header_height;
-        let header_y = theme.metrics.header_text_y();
+        use crate::ui::Header;
 
-        // Header background
-        Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        // Title
-        let title_style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
-            .text_color(BinaryColor::Off)
-            .build();
-        Text::new(
-            "System Menu",
-            Point::new(theme.metrics.side_padding as i32, header_y),
-            title_style,
-        )
-        .draw(display)?;
-
-        // Battery indicator
-        self.render_battery_indicator(display, theme, display_width, header_y)?;
-
-        Ok(())
-    }
-
-    /// Render battery indicator in header
-    fn render_battery_indicator<D: DrawTarget<Color = BinaryColor>>(
-        &self,
-        display: &mut D,
-        theme: &Theme,
-        display_width: u32,
-        text_y: i32,
-    ) -> Result<(), D::Error> {
         let battery_text = if self.device_status.is_charging {
-            format!("[+] {}%", self.device_status.battery_percent)
+            format!("{}%+", self.device_status.battery_percent)
         } else {
-            format!("[B] {}%", self.device_status.battery_percent)
+            format!("{}%", self.device_status.battery_percent)
         };
 
-        let battery_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
-        let text_width = ThemeMetrics::text_width(battery_text.len());
-
-        Text::new(
-            &battery_text,
-            Point::new(
-                display_width as i32 - text_width - theme.metrics.side_padding as i32,
-                text_y,
-            ),
-            battery_style,
-        )
-        .draw(display)?;
-
-        Ok(())
+        let header = Header::new("System Menu").with_right_text(battery_text);
+        header.render(display, theme)
     }
 
     /// Render the menu list with large touch-friendly items
@@ -436,7 +384,7 @@ impl SystemMenuActivity {
         let content_width = theme.metrics.content_width(display_width);
         let x = theme.metrics.side_padding as i32;
         let item_height = theme.metrics.list_item_height;
-        let mut y = theme.metrics.header_height as i32 + theme.metrics.spacing_double() as i32;
+        let mut y = theme.metrics.header_height as i32 + theme.metrics.spacing as i32;
 
         for (i, item) in MenuItem::ALL.iter().enumerate() {
             let is_selected = i == self.selected_index;
@@ -452,7 +400,7 @@ impl SystemMenuActivity {
                 is_selected,
             )?;
 
-            y += item_height as i32 + theme.metrics.spacing as i32;
+            y += item_height as i32;
         }
 
         Ok(())
@@ -473,20 +421,12 @@ impl SystemMenuActivity {
     ) -> Result<(), D::Error> {
         let text_y = y + theme.metrics.item_text_y();
 
-        // Background
-        let bg_color = if is_selected {
-            BinaryColor::On
-        } else {
-            BinaryColor::Off
-        };
-        Rectangle::new(Point::new(x, y), Size::new(width, height))
-            .into_styled(PrimitiveStyle::with_fill(bg_color))
-            .draw(display)?;
-
-        // Border
-        Rectangle::new(Point::new(x, y), Size::new(width, height))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
+        // Clean background - only fill if selected
+        if is_selected {
+            Rectangle::new(Point::new(x, y), Size::new(width, height))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+        }
 
         let text_color = if is_selected {
             BinaryColor::Off
@@ -494,23 +434,20 @@ impl SystemMenuActivity {
             BinaryColor::On
         };
 
-        // Icon (left side)
-        let icon_style = MonoTextStyle::new(ui_font_bold(), text_color);
+        // Label (clean, text-only)
+        let label_style = MonoTextStyle::new(ui_font(), text_color);
         Text::new(
-            item.icon(),
+            item.label(),
             Point::new(x + theme.metrics.side_padding as i32, text_y),
-            icon_style,
+            label_style,
         )
         .draw(display)?;
 
-        // Label
-        let label_style = MonoTextStyle::new(ui_font(), text_color);
-        let label_x = x + 70; // Space after icon
-        Text::new(item.label(), Point::new(label_x, text_y), label_style).draw(display)?;
-
-        // Selection indicator (chevron on right)
-        if is_selected {
-            Text::new(">", Point::new(x + width as i32 - 25, text_y), icon_style).draw(display)?;
+        // Subtle bottom divider (except for selected)
+        if !is_selected {
+            Rectangle::new(Point::new(x, y + height as i32 - 1), Size::new(width, 1))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
         }
 
         Ok(())

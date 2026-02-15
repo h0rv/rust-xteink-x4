@@ -512,6 +512,8 @@ pub struct ReaderSettingsActivity {
     settings: ReaderSettings,
     original_settings: ReaderSettings,
     selected_index: usize,
+    scroll_offset: usize,
+    visible_count: usize,
     show_toast: bool,
     toast_message: String,
     toast_frames_remaining: u32,
@@ -528,31 +530,50 @@ impl ReaderSettingsActivity {
     /// Create a new reader settings activity with defaults
     pub fn new() -> Self {
         let settings = ReaderSettings::default();
+        let theme = Theme::default();
+        // Calculate how many items fit on screen
+        let visible_count = Self::calculate_visible_count(&theme);
         Self {
             settings,
             original_settings: settings,
             selected_index: 0,
+            scroll_offset: 0,
+            visible_count,
             show_toast: false,
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_cancel_modal: false,
             modal_button: 0,
-            theme: Theme::default(),
+            theme,
         }
+    }
+
+    /// Calculate how many setting items fit on screen
+    fn calculate_visible_count(theme: &Theme) -> usize {
+        use crate::DISPLAY_HEIGHT;
+        let content_height = DISPLAY_HEIGHT.saturating_sub(
+            theme.metrics.header_height + theme.metrics.spacing_double()
+        );
+        let item_height = theme.metrics.list_item_height + SECTION_HEADER_HEIGHT as u32;
+        (content_height / item_height) as usize
     }
 
     /// Create with specific initial settings
     pub fn with_settings(settings: ReaderSettings) -> Self {
+        let theme = Theme::default();
+        let visible_count = Self::calculate_visible_count(&theme);
         Self {
             settings,
             original_settings: settings,
             selected_index: 0,
+            scroll_offset: 0,
+            visible_count,
             show_toast: false,
             toast_message: String::new(),
             toast_frames_remaining: 0,
             show_cancel_modal: false,
             modal_button: 0,
-            theme: Theme::default(),
+            theme,
         }
     }
 
@@ -622,6 +643,7 @@ impl ReaderSettingsActivity {
     /// Move selection to next item (wraps)
     fn select_next(&mut self) {
         self.selected_index = (self.selected_index + 1) % SettingItem::ALL.len();
+        self.ensure_visible();
     }
 
     /// Move selection to previous item (wraps)
@@ -630,6 +652,16 @@ impl ReaderSettingsActivity {
             self.selected_index = SettingItem::ALL.len() - 1;
         } else {
             self.selected_index -= 1;
+        }
+        self.ensure_visible();
+    }
+
+    /// Ensure selected item is visible by adjusting scroll offset
+    fn ensure_visible(&mut self) {
+        if self.selected_index < self.scroll_offset {
+            self.scroll_offset = self.selected_index;
+        } else if self.selected_index >= self.scroll_offset + self.visible_count {
+            self.scroll_offset = self.selected_index.saturating_sub(self.visible_count - 1);
         }
     }
 
@@ -741,42 +773,10 @@ impl ReaderSettingsActivity {
         display: &mut D,
         theme: &Theme,
     ) -> Result<(), D::Error> {
-        let display_width = display.bounding_box().size.width;
-        let header_height = theme.metrics.header_height;
-        let header_y = theme.metrics.header_text_y();
+        use crate::ui::Header;
 
-        // Header background
-        Rectangle::new(Point::new(0, 0), Size::new(display_width, header_height))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)?;
-
-        // Title
-        let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
-            .text_color(BinaryColor::Off)
-            .build();
-        Text::new(
-            "Reader Settings",
-            Point::new(theme.metrics.side_padding as i32, header_y),
-            title_style,
-        )
-        .draw(display)?;
-
-        // Save button indicator
-        let save_style = MonoTextStyle::new(&ascii::FONT_7X13, BinaryColor::Off);
-        let save_text = "[Save]";
-        let save_width = ThemeMetrics::text_width(save_text.len());
-        Text::new(
-            save_text,
-            Point::new(
-                display_width as i32 - save_width - theme.metrics.side_padding as i32,
-                header_y,
-            ),
-            save_style,
-        )
-        .draw(display)?;
-
-        Ok(())
+        let header = Header::new("Reader Settings");
+        header.render(display, theme)
     }
 
     /// Render settings list
@@ -785,6 +785,8 @@ impl ReaderSettingsActivity {
         display: &mut D,
         theme: &Theme,
     ) -> Result<(), D::Error> {
+        use crate::ui::theme::{ui_font, ui_font_bold};
+
         let display_width = display.bounding_box().size.width;
         let content_width = theme.metrics.content_width(display_width);
         let x = theme.metrics.side_padding as i32;
@@ -792,7 +794,12 @@ impl ReaderSettingsActivity {
 
         let mut last_section = "";
 
-        for (i, item) in SettingItem::ALL.iter().enumerate() {
+        // Only render visible items based on scroll offset
+        for (i, item) in SettingItem::ALL.iter()
+            .enumerate()
+            .skip(self.scroll_offset)
+            .take(self.visible_count)
+        {
             let item = *item;
 
             // Render section header if new section
@@ -846,7 +853,7 @@ impl ReaderSettingsActivity {
                 Text::new(
                     label,
                     Point::new(label_x, y + text_y),
-                    MonoTextStyle::new(&ascii::FONT_7X13_BOLD, text_color),
+                    MonoTextStyle::new(ui_font_bold(), text_color),
                 )
                 .draw(display)?;
             } else {
@@ -854,7 +861,7 @@ impl ReaderSettingsActivity {
                 Text::new(
                     item.label(),
                     Point::new(x + theme.metrics.side_padding as i32, y + text_y),
-                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                    MonoTextStyle::new(ui_font(), text_color),
                 )
                 .draw(display)?;
 
@@ -863,7 +870,7 @@ impl ReaderSettingsActivity {
                 let value_text = if item.is_toggle() {
                     value_label
                 } else {
-                    format!("{} [>]", value_label)
+                    format!("{} >", value_label)
                 };
                 let value_width = ThemeMetrics::text_width(value_text.len());
                 let value_x =
@@ -872,7 +879,7 @@ impl ReaderSettingsActivity {
                 Text::new(
                     &value_text,
                     Point::new(value_x, y + text_y),
-                    MonoTextStyle::new(&ascii::FONT_7X13, text_color),
+                    MonoTextStyle::new(ui_font(), text_color),
                 )
                 .draw(display)?;
             }
@@ -891,8 +898,10 @@ impl ReaderSettingsActivity {
         y: i32,
         title: &str,
     ) -> Result<(), D::Error> {
+        use crate::ui::theme::ui_font_bold;
+
         let title_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_bold())
             .text_color(BinaryColor::On)
             .build();
 
@@ -906,6 +915,7 @@ impl Activity for ReaderSettingsActivity {
     fn on_enter(&mut self) {
         self.original_settings = self.settings;
         self.selected_index = 0;
+        self.scroll_offset = 0;
         self.show_toast = false;
         self.show_cancel_modal = false;
         self.modal_button = 0;

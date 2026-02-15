@@ -213,18 +213,15 @@ impl List {
 
             let is_selected = index == self.selected_index;
 
-            // Background
-            let bg_color = if is_selected {
-                BinaryColor::On
-            } else {
-                BinaryColor::Off
-            };
-            Rectangle::new(
-                Point::new(self.x, y),
-                Size::new(self.width, item_height as u32),
-            )
-            .into_styled(PrimitiveStyle::with_fill(bg_color))
-            .draw(display)?;
+            // Background - only fill if selected
+            if is_selected {
+                Rectangle::new(
+                    Point::new(self.x, y),
+                    Size::new(self.width, item_height as u32),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+            }
 
             // Text
             let text_color = if is_selected {
@@ -240,11 +237,11 @@ impl List {
             )
             .draw(display)?;
 
-            // Separator line (except for last visible)
-            if i < self.visible_count - 1 {
+            // Subtle bottom divider (only for non-selected items)
+            if !is_selected && i < self.visible_count - 1 {
                 Rectangle::new(
-                    Point::new(self.x + 10, y + item_height - 1),
-                    Size::new(self.width - 20, 1),
+                    Point::new(self.x, y + item_height - 1),
+                    Size::new(self.width, 1),
                 )
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)?;
@@ -334,9 +331,9 @@ impl Modal {
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
             .draw(display)?;
 
-        // Border
+        // Clean border (1px)
         Rectangle::new(Point::new(x, y), Size::new(modal_width, modal_height))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
 
         // Title
@@ -346,13 +343,13 @@ impl Modal {
             .build();
         Text::new(
             &self.title,
-            Point::new(x + theme.metrics.side_padding as i32, y + 25),
+            Point::new(x + theme.metrics.side_padding as i32, y + 20),
             title_style,
         )
         .draw(display)?;
 
         // Separator line
-        Rectangle::new(Point::new(x + 10, y + 35), Size::new(modal_width - 20, 1))
+        Rectangle::new(Point::new(x, y + 30), Size::new(modal_width, 1))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
@@ -360,7 +357,7 @@ impl Modal {
         let message_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
         Text::new(
             &self.message,
-            Point::new(x + theme.metrics.side_padding as i32, y + 60),
+            Point::new(x + theme.metrics.side_padding as i32, y + 50),
             message_style,
         )
         .draw(display)?;
@@ -381,18 +378,15 @@ impl Modal {
                     + (i as i32) * (button_width as i32 + theme.metrics.spacing as i32);
                 let is_selected = i == self.selected_button;
 
-                // Button background
-                let bg_color = if is_selected {
-                    BinaryColor::On
-                } else {
-                    BinaryColor::Off
-                };
-                Rectangle::new(
-                    Point::new(button_x, button_y),
-                    Size::new(button_width, theme.metrics.button_height),
-                )
-                .into_styled(PrimitiveStyle::with_fill(bg_color))
-                .draw(display)?;
+                // Button background - only fill if selected
+                if is_selected {
+                    Rectangle::new(
+                        Point::new(button_x, button_y),
+                        Size::new(button_width, theme.metrics.button_height),
+                    )
+                    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                    .draw(display)?;
+                }
 
                 // Button border
                 Rectangle::new(
@@ -486,6 +480,77 @@ impl Toast {
             ),
             character_style,
         )
+        .draw(display)?;
+
+        Ok(())
+    }
+}
+
+/// Simple header bar component with clean, minimal design
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Header {
+    pub title: String,
+    pub right_text: Option<String>,
+}
+
+impl Header {
+    /// Create a new header with just a title
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            right_text: None,
+        }
+    }
+
+    /// Create a header with title and right-side text
+    pub fn with_right_text(mut self, text: impl Into<String>) -> Self {
+        self.right_text = Some(text.into());
+        self
+    }
+
+    /// Render the header with clean design (no heavy background)
+    pub fn render<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        theme: &Theme,
+    ) -> Result<(), D::Error> {
+        let display_width = display.bounding_box().size.width;
+        let header_height = theme.metrics.header_height;
+        let text_y = theme.metrics.header_text_y();
+
+        // Title on the left
+        let title_style = MonoTextStyleBuilder::new()
+            .font(ui_font_bold())
+            .text_color(BinaryColor::On)
+            .build();
+        Text::new(
+            &self.title,
+            Point::new(theme.metrics.side_padding as i32, text_y),
+            title_style,
+        )
+        .draw(display)?;
+
+        // Right text if provided
+        if let Some(right) = &self.right_text {
+            let text_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
+            let text_width = ThemeMetrics::text_width(right.len());
+            Text::new(
+                right,
+                Point::new(
+                    display_width as i32 - text_width - theme.metrics.side_padding as i32,
+                    text_y,
+                ),
+                text_style,
+            )
+            .draw(display)?;
+        }
+
+        // Bottom border line
+        Rectangle::new(
+            Point::new(0, header_height as i32 - 1),
+            Size::new(display_width, 1),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
         .draw(display)?;
 
         Ok(())

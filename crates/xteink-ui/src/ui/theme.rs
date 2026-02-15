@@ -13,7 +13,8 @@ pub const FONT_CHAR_HEIGHT: i32 = 13;
 
 // Global device-font profile selected from Device Settings.
 // 0=6x10, 1=7x13, 2=8x13, 3=9x15, 4=10x20.
-static DEVICE_FONT_PROFILE: AtomicU8 = AtomicU8::new(1);
+// Default to larger font (9x15) for better readability
+static DEVICE_FONT_PROFILE: AtomicU8 = AtomicU8::new(3);
 
 /// Set global UI font profile from settings indices.
 pub fn set_device_font_profile(font_size_index: usize, font_family_index: usize) {
@@ -169,17 +170,19 @@ impl ThemeMetrics {
 impl Default for ThemeMetrics {
     /// Default metrics optimized for Xteink X4 at 220 PPI.
     ///
-    /// - list_item_height 60px ≈ 6.9mm — comfortable for button presses
-    /// - button_height 50px ≈ 5.7mm — adequate for modal buttons
-    /// - side_padding 20px — consistent margin for content and items
+    /// Modern web design principles adapted for e-ink:
+    /// - Generous spacing for breathability
+    /// - Larger text for better readability
+    /// - Clean, minimal visual hierarchy
+    /// - Optimized for button navigation (no touch)
     fn default() -> Self {
         Self {
-            header_height: 50,
-            footer_height: 40,
-            side_padding: 20,
-            list_item_height: 60,
-            button_height: 50,
-            spacing: 8,
+            header_height: 50,    // Increased for larger font
+            footer_height: 40,    // Increased for larger font
+            side_padding: 20,     // More breathing room
+            list_item_height: 64, // Taller for comfort and readability
+            button_height: 50,    // Adequate tap target
+            spacing: 12,          // Generous spacing (doubled from 6)
         }
     }
 }

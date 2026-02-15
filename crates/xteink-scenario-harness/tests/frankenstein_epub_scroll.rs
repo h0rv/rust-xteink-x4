@@ -38,12 +38,12 @@ fn library_open_frankenstein_scroll_and_capture() {
         harness.app().file_browser_status_message()
     );
 
-    assert!(harness.press(Button::Right));
-    let _ = harness.pump_deferred_until_idle();
+    assert!(harness.press_and_settle(Button::Right));
     maybe_capture(&harness, "frankenstein_page2");
 
     let mut visited = BTreeSet::new();
     let mut turns = 0usize;
+    let mut validated_back_nav = false;
     const MAX_TURNS: usize = 20000;
     loop {
         let before = harness
@@ -56,13 +56,32 @@ fn library_open_frankenstein_scroll_and_capture() {
             before
         );
 
-        assert!(harness.press(Button::Right));
-        let _ = harness.pump_deferred_until_idle();
+        assert!(harness.press_and_settle(Button::Right));
         turns += 1;
         let after = harness
             .app()
             .file_browser_epub_position()
             .expect("epub position should still exist");
+
+        if !validated_back_nav && visited.len() >= 8 {
+            let probe_start = after;
+            assert!(harness.press_and_settle(Button::Left));
+            let probe_back = harness
+                .app()
+                .file_browser_epub_position()
+                .expect("epub position should exist after left probe");
+            assert_ne!(
+                probe_back, probe_start,
+                "left navigation probe should move to previous page"
+            );
+
+            assert!(harness.press_and_settle(Button::Right));
+            let _probe_forward = harness
+                .app()
+                .file_browser_epub_position()
+                .expect("epub position should exist after right probe");
+            validated_back_nav = true;
+        }
 
         if turns == 3 {
             harness.assert_render_budget_ms(250, "frankenstein_page5");
@@ -83,22 +102,7 @@ fn library_open_frankenstein_scroll_and_capture() {
         "expected substantial pagination for frankenstein, got {} positions",
         visited.len()
     );
-
-    // Validate backwards navigation from end is still functional.
-    let end_pos = harness
-        .app()
-        .file_browser_epub_position()
-        .expect("epub position should exist at end");
-    assert!(harness.press(Button::Left));
-    let _ = harness.pump_deferred_until_idle();
-    let back_pos = harness
-        .app()
-        .file_browser_epub_position()
-        .expect("epub position should exist after going back");
-    assert_ne!(
-        back_pos, end_pos,
-        "left navigation should move to previous page"
-    );
+    assert!(validated_back_nav, "did not reach back-nav probe checkpoint");
     harness.assert_render_budget_ms(250, "frankenstein_back_nav");
 }
 

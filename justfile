@@ -220,6 +220,11 @@ test:
 sim-scenarios:
     cargo test -p xteink-scenario-harness --target {{ host_target }}
 
+# Run scripted scenario harness tests on a deterministic local host target.
+# Use this for day-to-day local iteration regardless of auto-detected host target.
+sim-scenarios-local:
+    cargo test -p xteink-scenario-harness --target x86_64-unknown-linux-gnu -- --nocapture
+
 # Build stack-size report for scenario harness host builds
 stack-report:
     ./scripts/stack_sizes_report.sh xteink-scenario-harness {{ host_target }}

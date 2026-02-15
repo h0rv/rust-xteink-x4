@@ -970,14 +970,14 @@ impl FileBrowserActivity {
 
         let info = if self.reader_settings.show_page_numbers {
             format!(
-                "{} · {} · {}%",
+                "{} | {} | {}%",
                 renderer.page_progress_label(),
                 renderer.chapter_progress_label(),
                 renderer.book_progress_percent(),
             )
         } else {
             format!(
-                "{} · {}%",
+                "{} | {}%",
                 renderer.chapter_progress_label(),
                 renderer.book_progress_percent(),
             )

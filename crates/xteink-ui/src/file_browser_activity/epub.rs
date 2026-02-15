@@ -314,7 +314,7 @@ impl EpubReadingState {
     pub(super) fn page_progress_label(&self) -> String {
         let current = self.current_page_number();
         let total = self.total_pages().max(current);
-        if self.chapter_page_counts_exact.contains(&self.chapter_idx) && total > current {
+        if self.chapter_page_counts_exact.contains(&self.chapter_idx) {
             format!("p{}/{}", current, total)
         } else {
             format!("p{}", current)
@@ -331,7 +331,10 @@ impl EpubReadingState {
 
     pub(super) fn book_progress_percent(&self) -> u8 {
         let total_chapters = self.total_chapters().max(1);
-        let chapter_zero_based = self.current_chapter().saturating_sub(1).min(total_chapters - 1);
+        let chapter_zero_based = self
+            .current_chapter()
+            .saturating_sub(1)
+            .min(total_chapters - 1);
         let is_last_chapter = chapter_zero_based + 1 >= total_chapters;
         let total_pages = self.total_pages().max(1);
         let at_last_page = self.chapter_page_counts_exact.contains(&self.chapter_idx)
@@ -981,7 +984,7 @@ impl EpubReadingState {
             let mut registrations = Vec::with_capacity(face_meta.len());
             for (family, data_idx, weight, italic) in face_meta.iter() {
                 let data = face_data[*data_idx].as_slice();
-                registrations.push(FontFaceRegistration {
+                registrations.push(mu_epub_embedded_graphics::FontFaceRegistration {
                     family,
                     weight: *weight,
                     italic: *italic,

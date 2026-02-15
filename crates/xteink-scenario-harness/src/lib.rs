@@ -21,6 +21,9 @@ pub struct ScenarioHarness {
 impl ScenarioHarness {
     /// Construct a harness with caller-provided app and mock filesystem state.
     pub fn new(app: App, fs: MockFileSystem) -> Self {
+        // Keep scenario tests deterministic across runs by dropping any
+        // persisted host-side EPUB restore state.
+        let _ = std::fs::remove_file("/tmp/.xteink/reader_state.tsv");
         Self {
             app,
             fs,
@@ -31,6 +34,16 @@ impl ScenarioHarness {
     /// Simulate a button press through the app input pipeline.
     pub fn press(&mut self, button: Button) -> bool {
         self.app.handle_input(InputEvent::Press(button))
+    }
+
+    /// Press a button, wait for async/deferred work to settle, then render.
+    ///
+    /// Returns whether the press was consumed by the app.
+    pub fn press_and_settle(&mut self, button: Button) -> bool {
+        let consumed = self.press(button);
+        let _ = self.pump_deferred_until_idle();
+        self.render();
+        consumed
     }
 
     /// Pump deferred tasks until idle or a safety cap is reached.

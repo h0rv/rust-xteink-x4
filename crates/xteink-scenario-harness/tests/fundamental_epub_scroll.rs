@@ -41,7 +41,7 @@ fn library_open_fundamental_epub_and_scroll_to_end() {
         harness.app().file_browser_is_opening_epub(),
         harness.app().file_browser_status_message()
     );
-    assert!(harness.press(Button::Right));
+    assert!(harness.press_and_settle(Button::Right));
     maybe_capture(&harness, "fundamental_page2");
 
     let mut visited = BTreeSet::new();
@@ -62,7 +62,7 @@ fn library_open_fundamental_epub_and_scroll_to_end() {
         harness.assert_render_budget_ms(250, "fundamental_scroll");
         assert!(harness.display().black_pixel_count() > 0);
 
-        assert!(harness.press(Button::Right));
+        assert!(harness.press_and_settle(Button::Right));
         turns += 1;
         if turns == 2 {
             maybe_capture(&harness, "fundamental_page3");

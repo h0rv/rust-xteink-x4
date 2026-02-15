@@ -58,8 +58,7 @@ fn run_library_open_epub_render_back_flow(enable_capture: bool, turn_page: bool)
 
     if turn_page {
         // Turn a page to help diagnose layout pagination issues.
-        assert!(harness.press(Button::Right));
-        harness.render();
+        assert!(harness.press_and_settle(Button::Right));
         assert!(harness.display().black_pixel_count() > 0);
         maybe_capture(&harness, "library_epub_page2", enable_capture);
     }

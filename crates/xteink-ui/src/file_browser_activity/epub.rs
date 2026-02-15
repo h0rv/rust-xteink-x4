@@ -68,7 +68,7 @@ impl EpubReadingState {
     }
 
     #[cfg(target_os = "espidf")]
-    pub(super) fn from_sd_path(path: &str) -> Result<Self, String> {
+    pub(super) fn from_sd_path_light(path: &str) -> Result<Self, String> {
         log::info!("[EPUB] opening reader (sd temp)");
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
@@ -108,9 +108,17 @@ impl EpubReadingState {
             page_idx: 0,
         };
         state.register_embedded_fonts();
-        state.load_chapter_forward(0)?;
-        log::info!("[EPUB] initial chapter/page loaded");
         Ok(state)
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub(super) fn ensure_initial_page_loaded(&mut self) -> Result<(), String> {
+        if self.current_page.is_some() {
+            return Ok(());
+        }
+        self.load_chapter_forward(0)?;
+        log::info!("[EPUB] initial chapter/page loaded");
+        Ok(())
     }
 
     fn load_chapter_exact(&mut self, chapter_idx: usize) -> Result<(), String> {
@@ -262,6 +270,12 @@ impl EpubReadingState {
                     .get(&prev_chapter)
                     .copied()
                     .unwrap_or(1);
+                if total_prev <= 1 {
+                    // `load_chapter_backward` already loaded page 0 for this chapter.
+                    // Avoid re-loading the same page, which needlessly re-streams the
+                    // chapter and can trigger allocation failures on constrained heaps.
+                    return true;
+                }
                 self.page_idx = total_prev.saturating_sub(1);
                 if let Ok(page) = self.load_page(self.chapter_idx, self.page_idx) {
                     self.current_page = Some(page);
@@ -319,6 +333,32 @@ impl EpubReadingState {
             max_items: Self::MAX_CHAPTER_EVENTS,
             ..ChapterEventsOptions::default()
         };
+
+        if let Ok(required_bytes) = self.book.chapter_uncompressed_size(chapter_idx) {
+            if required_bytes > self.chapter_buf.capacity() {
+                if required_bytes > Self::MAX_CHAPTER_BUF_CAPACITY_BYTES {
+                    return Err(format!(
+                        "Unable to stream EPUB chapter: required {} bytes exceeds chapter buffer cap {} bytes",
+                        required_bytes,
+                        Self::MAX_CHAPTER_BUF_CAPACITY_BYTES
+                    ));
+                }
+                let len = self.chapter_buf.len();
+                let additional = required_bytes.saturating_sub(len);
+                self.chapter_buf.try_reserve(additional).map_err(|_| {
+                    format!(
+                        "Unable to allocate EPUB chapter buffer (required {} bytes)",
+                        required_bytes
+                    )
+                })?;
+                log::info!(
+                    "[EPUB] pre-sized chapter buffer to {} bytes for chapter={}",
+                    self.chapter_buf.capacity(),
+                    chapter_idx
+                );
+            }
+        }
+
         let mut grow_retries = 0usize;
         let page = loop {
             let mut target_page: Option<RenderPage> = None;
@@ -483,7 +523,7 @@ impl FileBrowserActivity {
         fs: &mut dyn FileSystem,
         path: &str,
     ) -> bool {
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             match Self::spawn_epub_open_worker(fs, path) {
                 Ok(receiver) => {
@@ -499,6 +539,37 @@ impl FileBrowserActivity {
             }
         }
 
+        #[cfg(all(feature = "std", target_os = "espidf"))]
+        {
+            match Self::prepare_epub_open_source(fs, path) {
+                Ok(EpubOpenSource::HostPath(host_path)) => {
+                    self.mode = BrowserMode::OpeningEpub;
+                    self.browser
+                        .set_status_message(format!("Opening EPUB: {}", basename(path)));
+                    match EpubReadingState::from_sd_path_light(&host_path) {
+                        Ok(renderer) => {
+                            self.epub_open_staged = Some(Arc::new(Mutex::new(renderer)));
+                            self.queue_task(FileBrowserTask::FinalizeEpubOpen);
+                        }
+                        Err(error) => {
+                            self.mode = BrowserMode::Browsing;
+                            self.browser.set_status_message(error);
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.mode = BrowserMode::Browsing;
+                    self.browser.set_status_message(error);
+                }
+                #[allow(unreachable_patterns)]
+                _ => {
+                    self.mode = BrowserMode::Browsing;
+                    self.browser
+                        .set_status_message("Unable to open EPUB: unsupported source".to_string());
+                }
+            }
+        }
+
         #[cfg(not(feature = "std"))]
         {
             let _ = path;
@@ -509,7 +580,7 @@ impl FileBrowserActivity {
         true
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     pub(super) fn poll_epub_open_result(&mut self) -> bool {
         let recv_result = match self.epub_open_pending.as_mut() {
             Some(pending) => pending.receiver.try_recv(),
@@ -542,7 +613,7 @@ impl FileBrowserActivity {
         }
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     pub(super) fn poll_epub_navigation_result(&mut self) -> bool {
         let recv_result = match self.epub_navigation_pending.as_mut() {
             Some(pending) => pending.receiver.try_recv(),
@@ -579,6 +650,36 @@ impl FileBrowserActivity {
         }
     }
 
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    pub(super) fn process_finalize_epub_open_task(&mut self) -> bool {
+        let Some(renderer) = self.epub_open_staged.take() else {
+            self.mode = BrowserMode::Browsing;
+            self.browser
+                .set_status_message("Unable to open EPUB: staged state missing".to_string());
+            return true;
+        };
+
+        let init_result = match renderer.lock() {
+            Ok(mut guard) => guard.ensure_initial_page_loaded(),
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.ensure_initial_page_loaded()
+            }
+        };
+
+        match init_result {
+            Ok(()) => {
+                self.mode = BrowserMode::ReadingEpub { renderer };
+            }
+            Err(error) => {
+                self.mode = BrowserMode::Browsing;
+                self.browser.set_status_message(error);
+            }
+        }
+
+        true
+    }
+
     #[cfg(feature = "std")]
     fn prepare_epub_open_source(
         fs: &mut dyn FileSystem,
@@ -612,7 +713,7 @@ impl FileBrowserActivity {
         }
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     #[inline(never)]
     fn spawn_epub_open_worker(
         fs: &mut dyn FileSystem,
@@ -631,20 +732,10 @@ impl FileBrowserActivity {
         builder
             .spawn(move || {
                 let result = match source {
-                    EpubOpenSource::HostPath(path) => {
-                        #[cfg(target_os = "espidf")]
-                        {
-                            EpubReadingState::from_sd_path(&path)
-                        }
-                        #[cfg(not(target_os = "espidf"))]
-                        {
-                            match File::open(&path) {
-                                Ok(file) => EpubReadingState::from_reader(Box::new(file)),
-                                Err(err) => Err(format!("Unable to read EPUB: {}", err)),
-                            }
-                        }
-                    }
-                    #[cfg(not(target_os = "espidf"))]
+                    EpubOpenSource::HostPath(path) => match File::open(&path) {
+                        Ok(file) => EpubReadingState::from_reader(Box::new(file)),
+                        Err(err) => Err(format!("Unable to read EPUB: {}", err)),
+                    },
                     EpubOpenSource::Bytes(bytes) => {
                         EpubReadingState::from_reader(Box::new(Cursor::new(bytes)))
                     }
@@ -655,7 +746,7 @@ impl FileBrowserActivity {
         Ok(rx)
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     pub(super) fn spawn_epub_navigation_worker(
         renderer: Arc<Mutex<EpubReadingState>>,
         direction: EpubNavigationDirection,

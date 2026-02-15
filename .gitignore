@@ -8,3 +8,4 @@ ssd1675
 flash.log
 crates/xteink-scenario-harness/target/
 microreader
+crates/xteink-scenario-harness/screenshots

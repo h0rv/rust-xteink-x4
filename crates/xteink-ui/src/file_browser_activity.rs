@@ -15,11 +15,11 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 #[cfg(feature = "std")]
 use std::fs::File;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::thread;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
@@ -51,9 +51,17 @@ mod epub;
 #[derive(Debug, Clone)]
 enum FileBrowserTask {
     LoadCurrentDirectory,
-    OpenPath { path: String },
-    OpenTextFile { path: String },
-    OpenEpubFile { path: String },
+    OpenPath {
+        path: String,
+    },
+    OpenTextFile {
+        path: String,
+    },
+    OpenEpubFile {
+        path: String,
+    },
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    FinalizeEpubOpen,
 }
 
 enum BrowserMode {
@@ -76,12 +84,12 @@ trait ReadSeek: Read + Seek + Send {}
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 struct PendingEpubOpen {
     receiver: Receiver<Result<EpubReadingState, String>>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 struct PendingEpubNavigation {
     receiver: Receiver<Result<bool, String>>,
     direction: EpubNavigationDirection,
@@ -209,18 +217,16 @@ pub struct FileBrowserActivity {
     mode: BrowserMode,
     pending_task: Option<FileBrowserTask>,
     return_to_previous_on_back: bool,
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     epub_open_pending: Option<PendingEpubOpen>,
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     epub_navigation_pending: Option<PendingEpubNavigation>,
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    epub_open_staged: Option<Arc<Mutex<EpubReadingState>>>,
 }
 
 impl FileBrowserActivity {
     pub const DEFAULT_ROOT: &'static str = "/";
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 96 * 1024;
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    const EPUB_NAV_WORKER_STACK_BYTES: usize = 64 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -232,10 +238,12 @@ impl FileBrowserActivity {
             mode: BrowserMode::Browsing,
             pending_task: None,
             return_to_previous_on_back: false,
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", not(target_os = "espidf")))]
             epub_open_pending: None,
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", not(target_os = "espidf")))]
             epub_navigation_pending: None,
+            #[cfg(all(feature = "std", target_os = "espidf"))]
+            epub_open_staged: None,
         }
     }
 
@@ -299,13 +307,13 @@ impl FileBrowserActivity {
 
     #[inline(never)]
     pub fn process_pending_task(&mut self, fs: &mut dyn FileSystem) -> bool {
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
         let mut updated = self.poll_epub_open_result();
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             updated |= self.poll_epub_navigation_result();
         }
-        #[cfg(not(feature = "std"))]
+        #[cfg(any(not(feature = "std"), target_os = "espidf"))]
         let mut updated = false;
 
         let Some(task) = self.pending_task.take() else {
@@ -317,6 +325,8 @@ impl FileBrowserActivity {
             FileBrowserTask::OpenPath { path } => self.process_open_path_task(fs, &path),
             FileBrowserTask::OpenTextFile { path } => self.process_open_text_file_task(fs, &path),
             FileBrowserTask::OpenEpubFile { path } => self.process_open_epub_file_task(fs, &path),
+            #[cfg(all(feature = "std", target_os = "espidf"))]
+            FileBrowserTask::FinalizeEpubOpen => self.process_finalize_epub_open_task(),
         };
         updated |= task_updated;
         updated
@@ -445,10 +455,14 @@ impl FileBrowserActivity {
 
     fn handle_reader_input(&mut self, event: InputEvent) -> ActivityResult {
         if matches!(event, InputEvent::Press(Button::Back)) {
-            #[cfg(feature = "std")]
+            #[cfg(all(feature = "std", not(target_os = "espidf")))]
             {
                 self.epub_open_pending = None;
                 self.epub_navigation_pending = None;
+            }
+            #[cfg(all(feature = "std", target_os = "espidf"))]
+            {
+                self.epub_open_staged = None;
             }
             self.mode = BrowserMode::Browsing;
             if self.return_to_previous_on_back {
@@ -479,21 +493,40 @@ impl FileBrowserActivity {
                     _ => None,
                 };
                 if let Some(direction) = nav {
-                    if self.epub_navigation_pending.is_some() {
+                    #[cfg(target_os = "espidf")]
+                    {
+                        let mut renderer = match renderer.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        let advanced = match direction {
+                            EpubNavigationDirection::Next => renderer.next_page(),
+                            EpubNavigationDirection::Prev => renderer.prev_page(),
+                        };
+                        if !advanced {
+                            log::warn!("[EPUB] unable to advance {} page", direction.label());
+                        }
                         return ActivityResult::Consumed;
                     }
-                    let renderer = Arc::clone(renderer);
-                    match Self::spawn_epub_navigation_worker(renderer, direction) {
-                        Ok(receiver) => {
-                            self.epub_navigation_pending = Some(PendingEpubNavigation {
-                                receiver,
-                                direction,
-                            });
-                            ActivityResult::Consumed
+
+                    #[cfg(not(target_os = "espidf"))]
+                    {
+                        if self.epub_navigation_pending.is_some() {
+                            return ActivityResult::Consumed;
                         }
-                        Err(error) => {
-                            self.browser.set_status_message(error);
-                            ActivityResult::Consumed
+                        let renderer = Arc::clone(renderer);
+                        match Self::spawn_epub_navigation_worker(renderer, direction) {
+                            Ok(receiver) => {
+                                self.epub_navigation_pending = Some(PendingEpubNavigation {
+                                    receiver,
+                                    direction,
+                                });
+                                ActivityResult::Consumed
+                            }
+                            Err(error) => {
+                                self.browser.set_status_message(error);
+                                ActivityResult::Consumed
+                            }
                         }
                     }
                 } else {
@@ -510,10 +543,14 @@ impl FileBrowserActivity {
 impl Activity for FileBrowserActivity {
     fn on_enter(&mut self) {
         self.mode = BrowserMode::Browsing;
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             self.epub_open_pending = None;
             self.epub_navigation_pending = None;
+        }
+        #[cfg(all(feature = "std", target_os = "espidf"))]
+        {
+            self.epub_open_staged = None;
         }
         if self.pending_task.is_none() {
             self.queue_load_current_directory();
@@ -524,10 +561,14 @@ impl Activity for FileBrowserActivity {
         self.mode = BrowserMode::Browsing;
         self.pending_task = None;
         self.return_to_previous_on_back = false;
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             self.epub_open_pending = None;
             self.epub_navigation_pending = None;
+        }
+        #[cfg(all(feature = "std", target_os = "espidf"))]
+        {
+            self.epub_open_staged = None;
         }
     }
 

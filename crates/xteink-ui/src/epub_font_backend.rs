@@ -17,6 +17,7 @@ use mu_epub_embedded_graphics::{
 use mu_epub_render::ResolvedTextStyle;
 
 use crate::embedded_fonts::{EmbeddedFontCache, EmbeddedFontRegistry};
+use crate::font_render::FontCache;
 
 const FONT_REGULAR: &str = "bookerly-regular";
 const FONT_BOLD: &str = "bookerly-bold";
@@ -25,7 +26,18 @@ const FONT_BOLD_ITALIC: &str = "bookerly-bold-italic";
 
 const DEFAULT_SLOT_ID: FontId = 0;
 const MIN_SIZE_PX: f32 = 10.0;
-const MAX_SIZE_PX: f32 = 36.0;
+const MAX_SIZE_PX: f32 = 64.0;
+
+const BOOKERLY_REGULAR_TTF: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/bookerly/Bookerly-Regular.ttf"));
+const BOOKERLY_BOLD_TTF: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/bookerly/Bookerly-Bold.ttf"));
+const BOOKERLY_ITALIC_TTF: &[u8] =
+    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/fonts/bookerly/Bookerly-Italic.ttf"));
+const BOOKERLY_BOLD_ITALIC_TTF: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/fonts/bookerly/Bookerly-BoldItalic.ttf"
+));
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct FontSlotKey {
@@ -47,16 +59,24 @@ impl FontSlotKey {
 }
 
 struct BackendState {
-    cache: EmbeddedFontCache,
+    bitmap_cache: EmbeddedFontCache,
+    runtime_cache: FontCache,
     next_slot_id: FontId,
     slots_by_key: BTreeMap<FontSlotKey, FontId>,
     slot_keys_by_id: BTreeMap<FontId, FontSlotKey>,
-    embedded_font_names_by_resolved_id: BTreeMap<u32, String>,
+    resolved_font_names_by_id: BTreeMap<u32, String>,
 }
 
 impl BackendState {
     fn new() -> Self {
-        let cache = EmbeddedFontCache::new();
+        let mut runtime_cache = FontCache::new();
+        #[cfg(not(target_os = "espidf"))]
+        {
+        let _ = runtime_cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR_TTF);
+        let _ = runtime_cache.load_font(FONT_BOLD, BOOKERLY_BOLD_TTF);
+        let _ = runtime_cache.load_font(FONT_ITALIC, BOOKERLY_ITALIC_TTF);
+        let _ = runtime_cache.load_font(FONT_BOLD_ITALIC, BOOKERLY_BOLD_ITALIC_TTF);
+        }
 
         let default_key = FontSlotKey::new(FONT_REGULAR.to_string(), 16.0);
         let mut slots_by_key = BTreeMap::new();
@@ -65,11 +85,12 @@ impl BackendState {
         slot_keys_by_id.insert(DEFAULT_SLOT_ID, default_key);
 
         Self {
-            cache,
+            bitmap_cache: EmbeddedFontCache::new(),
+            runtime_cache,
             next_slot_id: 1,
             slots_by_key,
             slot_keys_by_id,
-            embedded_font_names_by_resolved_id: BTreeMap::new(),
+            resolved_font_names_by_id: BTreeMap::new(),
         }
     }
 
@@ -107,6 +128,26 @@ impl BackendState {
             .cloned()
             .unwrap_or_else(|| FontSlotKey::new(FONT_REGULAR.to_string(), 16.0))
     }
+
+    fn font_name_for_weight(weight: u16, italic: bool) -> &'static str {
+        match (weight >= 700, italic) {
+            (true, true) => FONT_BOLD_ITALIC,
+            (true, false) => FONT_BOLD,
+            (false, true) => FONT_ITALIC,
+            (false, false) => FONT_REGULAR,
+        }
+    }
+
+    fn runtime_font_available(&self, font_name: &str, size_px: f32) -> bool {
+        self.runtime_cache
+            .metrics(font_name, 'n')
+            .or_else(|| self.runtime_cache.metrics(font_name, 'a'))
+            .or_else(|| self.runtime_cache.metrics(font_name, ' '))
+            .is_some_and(|m| {
+                let _ = size_px;
+                m.advance_width > 0.0
+            })
+    }
 }
 
 /// Font backend that renders with embedded Bookerly bitmap fonts.
@@ -134,19 +175,24 @@ impl FontBackend for BookerlyFontBackend {
 
         let mut accepted = 0usize;
         for (index, face) in faces.iter().enumerate() {
-            let font_name = format!(
-                "embedded-{}-{}-{}-{}",
-                index,
+            let resolved_id = (index as u32) + 1;
+            let runtime_name = format!(
+                "epub-face-{}-{}-{}-{}",
+                resolved_id,
                 face.family,
                 face.weight,
                 if face.italic { "i" } else { "n" }
             );
-            // Note: Embedded fonts can't load external TTF data at runtime
-            // We just track the name for fallback purposes
-            state
-                .embedded_font_names_by_resolved_id
-                .insert((index as u32) + 1, font_name);
-            accepted += 1;
+            #[cfg(not(target_os = "espidf"))]
+            let chosen_name = if state.runtime_cache.load_font(&runtime_name, face.data).is_ok() {
+                runtime_name
+            } else {
+                BackendState::font_name_for_weight(face.weight, face.italic).to_string()
+            };
+            #[cfg(target_os = "espidf")]
+            let chosen_name = BackendState::font_name_for_weight(face.weight, face.italic).to_string();
+            state.resolved_font_names_by_id.insert(resolved_id, chosen_name);
+            accepted = accepted.saturating_add(1);
         }
         accepted
     }
@@ -157,20 +203,20 @@ impl FontBackend for BookerlyFontBackend {
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        let use_embedded = !BackendState::is_generic_family(&style.family);
-        let chosen_name = if use_embedded {
-            font_id
-                .and_then(|id| state.embedded_font_names_by_resolved_id.get(&id).cloned())
-                .unwrap_or_else(|| BackendState::default_font_name_for_style(style).to_string())
-        } else {
+        let mut fallback_reason = None;
+        let chosen_name = if let Some(id) = font_id {
+            match state.resolved_font_names_by_id.get(&id) {
+                Some(name) => name.clone(),
+                None => {
+                    fallback_reason = Some(FontFallbackReason::UnknownFontId);
+                    BackendState::default_font_name_for_style(style).to_string()
+                }
+            }
+        } else if BackendState::is_generic_family(&style.family) {
             BackendState::default_font_name_for_style(style).to_string()
-        };
-        let fallback_reason = if use_embedded {
-            font_id
-                .filter(|id| !state.embedded_font_names_by_resolved_id.contains_key(id))
-                .map(|_| FontFallbackReason::UnknownFontId)
         } else {
-            None
+            fallback_reason = Some(FontFallbackReason::UnknownFamily);
+            BackendState::default_font_name_for_style(style).to_string()
         };
 
         let slot_id = state.ensure_slot_for(FontSlotKey::new(chosen_name, style.size_px));
@@ -181,11 +227,32 @@ impl FontBackend for BookerlyFontBackend {
     }
 
     fn metrics(&self, font_id: FontId) -> FontMetrics {
-        let state = match self.state.lock() {
+        let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         let slot = state.slot_key_for_id(font_id);
+        #[cfg(not(target_os = "espidf"))]
+        {
+            state.runtime_cache.set_font_size(slot.size_px());
+        }
+        #[cfg(not(target_os = "espidf"))]
+        if state.runtime_font_available(&slot.font_name, slot.size_px()) {
+            let space_width = state
+                .runtime_cache
+                .metrics(&slot.font_name, ' ')
+                .map(|m| m.advance_width.round() as i32)
+                .unwrap_or(6)
+                .max(1);
+            let char_width = state
+                .runtime_cache
+                .metrics(&slot.font_name, 'n')
+                .or_else(|| state.runtime_cache.metrics(&slot.font_name, 'a'))
+                .map(|m| m.advance_width.round() as i32)
+                .unwrap_or(space_width)
+                .max(1);
+            return FontMetrics { char_width, space_width };
+        }
 
         // Get metrics from embedded font
         let space_width =
@@ -223,17 +290,33 @@ impl FontBackend for BookerlyFontBackend {
             Err(poisoned) => poisoned.into_inner(),
         };
         let slot = state.slot_key_for_id(font_id);
+        #[cfg(not(target_os = "espidf"))]
+        {
+            state.runtime_cache.set_font_size(slot.size_px());
+        }
+        #[cfg(not(target_os = "espidf"))]
+        if state.runtime_font_available(&slot.font_name, slot.size_px()) {
+            let width = state
+                .runtime_cache
+                .measure_text(text, &slot.font_name)
+                .round()
+                .max(0.0) as i32;
+            state
+                .runtime_cache
+                .render_text(display, text, &slot.font_name, origin.x, origin.y)?;
+            return Ok(width);
+        }
 
-        state.cache.set_font(&slot.font_name);
-        state.cache.set_font_size(slot.size_px());
+        state.bitmap_cache.set_font(&slot.font_name);
+        state.bitmap_cache.set_font_size(slot.size_px());
 
         let width = state
-            .cache
+            .bitmap_cache
             .measure_text(text, &slot.font_name)
             .round()
             .max(0.0) as i32;
         state
-            .cache
+            .bitmap_cache
             .render_text(display, text, &slot.font_name, origin.x, origin.y)?;
         Ok(width)
     }

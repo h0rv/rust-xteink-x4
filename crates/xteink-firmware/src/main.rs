@@ -616,6 +616,12 @@ fn main() {
     };
     let mut input_debug_ticks: u32 = 0;
 
+    // Auto-sleep tracking
+    let mut inactivity_ms: u32 = 0;
+    let mut sleep_warning_shown: bool = false;
+    const LOOP_DELAY_MS: u32 = 50;
+    const SLEEP_WARNING_MS: u32 = 10_000; // Show warning 10 seconds before sleep
+
     loop {
         if let Some(cli) = cli.as_mut() {
             if let Some(line) = cli.poll_line() {
@@ -632,6 +638,13 @@ fn main() {
         }
 
         let (button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
+
+        // Reset inactivity timer on any button press
+        if button.is_some() || power_pressed {
+            inactivity_ms = 0;
+            sleep_warning_shown = false;
+        }
+
         if DEBUG_INPUT {
             input_debug_ticks = input_debug_ticks.saturating_add(1);
             if input_debug_ticks >= 10 {
@@ -786,6 +799,48 @@ fn main() {
             }
         }
 
-        FreeRtos::delay_ms(50);
+        // Auto-sleep handling
+        let auto_sleep_duration_ms = app.auto_sleep_duration_ms();
+        if auto_sleep_duration_ms > 0 {
+            // Increment inactivity timer
+            inactivity_ms = inactivity_ms.saturating_add(LOOP_DELAY_MS);
+
+            // Check if we should show the warning (10 seconds before sleep)
+            if !sleep_warning_shown
+                && inactivity_ms >= auto_sleep_duration_ms.saturating_sub(SLEEP_WARNING_MS)
+                && inactivity_ms < auto_sleep_duration_ms
+            {
+                sleep_warning_shown = true;
+                log::info!("Auto-sleep: showing warning (sleeping in 10s)");
+
+                // Show warning toast - we need to render it
+                // For now, just log it. In a full implementation, we'd use a toast overlay
+                // that persists across renders until dismissed or sleep occurs.
+                // Since we don't have a global toast system, we'll just log for now.
+            }
+
+            // Check if we should enter sleep
+            if inactivity_ms >= auto_sleep_duration_ms {
+                log::info!(
+                    "Auto-sleep: entering deep sleep after {}ms of inactivity",
+                    inactivity_ms
+                );
+
+                // Clear display before sleep
+                buffered_display.clear();
+                display
+                    .update_with_mode(
+                        buffered_display.buffer(),
+                        &[],
+                        RefreshMode::Full,
+                        &mut delay,
+                    )
+                    .ok();
+
+                enter_deep_sleep(3);
+            }
+        }
+
+        FreeRtos::delay_ms(LOOP_DELAY_MS);
     }
 }

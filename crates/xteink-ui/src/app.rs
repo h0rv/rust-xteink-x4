@@ -173,6 +173,11 @@ impl App {
         self.information.set_device_status(status);
     }
 
+    /// Get the auto-sleep duration setting in milliseconds (0 for Never).
+    pub fn auto_sleep_duration_ms(&self) -> u32 {
+        self.settings.applied_settings().auto_sleep_duration.milliseconds()
+    }
+
     /// Get the refresh mode for the current activity.
     ///
     /// Implements a counter-based strategy:

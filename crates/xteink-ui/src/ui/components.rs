@@ -19,7 +19,7 @@ use embedded_graphics::{
     text::Text,
 };
 
-use crate::ui::theme::{ui_font, ui_font_bold, Theme, ThemeMetrics};
+use crate::ui::theme::{ui_font, ui_font_bold, ui_text, Theme, ThemeMetrics};
 
 /// Button component with focus state
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -508,7 +508,7 @@ impl Header {
         self
     }
 
-    /// Render the header with clean design (no heavy background)
+    /// Render the header with clean design using Bookerly font
     pub fn render<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
@@ -516,33 +516,27 @@ impl Header {
     ) -> Result<(), D::Error> {
         let display_width = display.bounding_box().size.width;
         let header_height = theme.metrics.header_height;
-        let text_y = theme.metrics.header_text_y();
+        let text_y = ui_text::center_y(header_height, Some(ui_text::HEADER_SIZE));
 
-        // Title on the left
-        let title_style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
-            .text_color(BinaryColor::On)
-            .build();
-        Text::new(
+        // Title on the left (Bookerly Bold)
+        ui_text::draw(
+            display,
             &self.title,
-            Point::new(theme.metrics.side_padding as i32, text_y),
-            title_style,
-        )
-        .draw(display)?;
+            theme.metrics.side_padding as i32,
+            text_y,
+            Some(ui_text::HEADER_SIZE),
+        )?;
 
-        // Right text if provided
+        // Right text if provided (Bookerly Bold, smaller size)
         if let Some(right) = &self.right_text {
-            let text_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
-            let text_width = ThemeMetrics::text_width(right.len());
-            Text::new(
+            let text_width = ui_text::width(right, Some(ui_text::DEFAULT_SIZE));
+            ui_text::draw(
+                display,
                 right,
-                Point::new(
-                    display_width as i32 - text_width - theme.metrics.side_padding as i32,
-                    text_y,
-                ),
-                text_style,
-            )
-            .draw(display)?;
+                display_width as i32 - text_width as i32 - theme.metrics.side_padding as i32,
+                text_y,
+                Some(ui_text::DEFAULT_SIZE),
+            )?;
         }
 
         // Bottom border line

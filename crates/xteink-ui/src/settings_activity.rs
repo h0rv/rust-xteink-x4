@@ -68,14 +68,27 @@ impl FontSize {
     }
 
     /// Base EPUB body text size in CSS px used by renderer defaults.
+    /// All sizes increased by 25% for better readability.
     pub const fn epub_base_px(self) -> f32 {
         match self {
-            Self::Small => 16.0,
-            Self::Medium => 19.0,
-            Self::Large => 22.0,
-            Self::ExtraLarge => 26.0,
-            Self::Huge => 30.0,
-            Self::Max => 34.0,
+            Self::Small => 20.0,
+            Self::Medium => 24.0,
+            Self::Large => 28.0,
+            Self::ExtraLarge => 33.0,
+            Self::Huge => 38.0,
+            Self::Max => 43.0,
+        }
+    }
+
+    /// Global EPUB text scaling factor (applies to px/em/default text sizes).
+    pub const fn epub_text_scale(self) -> f32 {
+        match self {
+            Self::Small => 0.90,
+            Self::Medium => 1.00,
+            Self::Large => 1.18,
+            Self::ExtraLarge => 1.34,
+            Self::Huge => 1.52,
+            Self::Max => 1.72,
         }
     }
 
@@ -138,6 +151,109 @@ pub enum FontFamily {
     SansSerif,
 }
 
+/// Auto-sleep duration options for power management
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoSleepDuration {
+    OneMinute,
+    ThreeMinutes,
+    #[default]
+    FiveMinutes,
+    TenMinutes,
+    FifteenMinutes,
+    ThirtyMinutes,
+    Never,
+}
+
+impl AutoSleepDuration {
+    /// All auto-sleep duration variants
+    pub const ALL: [Self; 7] = [
+        Self::OneMinute,
+        Self::ThreeMinutes,
+        Self::FiveMinutes,
+        Self::TenMinutes,
+        Self::FifteenMinutes,
+        Self::ThirtyMinutes,
+        Self::Never,
+    ];
+
+    /// Get display label
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::OneMinute => "1 minute",
+            Self::ThreeMinutes => "3 minutes",
+            Self::FiveMinutes => "5 minutes",
+            Self::TenMinutes => "10 minutes",
+            Self::FifteenMinutes => "15 minutes",
+            Self::ThirtyMinutes => "30 minutes",
+            Self::Never => "Never",
+        }
+    }
+
+    /// Get duration in milliseconds (0 for Never)
+    pub const fn milliseconds(self) -> u32 {
+        match self {
+            Self::OneMinute => 60_000,
+            Self::ThreeMinutes => 180_000,
+            Self::FiveMinutes => 300_000,
+            Self::TenMinutes => 600_000,
+            Self::FifteenMinutes => 900_000,
+            Self::ThirtyMinutes => 1_800_000,
+            Self::Never => 0,
+        }
+    }
+
+    /// Get index in ALL array
+    pub const fn index(self) -> usize {
+        match self {
+            Self::OneMinute => 0,
+            Self::ThreeMinutes => 1,
+            Self::FiveMinutes => 2,
+            Self::TenMinutes => 3,
+            Self::FifteenMinutes => 4,
+            Self::ThirtyMinutes => 5,
+            Self::Never => 6,
+        }
+    }
+
+    /// Create from index
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::OneMinute),
+            1 => Some(Self::ThreeMinutes),
+            2 => Some(Self::FiveMinutes),
+            3 => Some(Self::TenMinutes),
+            4 => Some(Self::FifteenMinutes),
+            5 => Some(Self::ThirtyMinutes),
+            6 => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::OneMinute => Self::ThreeMinutes,
+            Self::ThreeMinutes => Self::FiveMinutes,
+            Self::FiveMinutes => Self::TenMinutes,
+            Self::TenMinutes => Self::FifteenMinutes,
+            Self::FifteenMinutes => Self::ThirtyMinutes,
+            Self::ThirtyMinutes => Self::Never,
+            Self::Never => Self::OneMinute,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::OneMinute => Self::Never,
+            Self::ThreeMinutes => Self::OneMinute,
+            Self::FiveMinutes => Self::ThreeMinutes,
+            Self::TenMinutes => Self::FiveMinutes,
+            Self::FifteenMinutes => Self::TenMinutes,
+            Self::ThirtyMinutes => Self::FifteenMinutes,
+            Self::Never => Self::ThirtyMinutes,
+        }
+    }
+}
+
 impl FontFamily {
     /// All font family variants
     pub const ALL: [Self; 3] = [Self::Monospace, Self::Serif, Self::SansSerif];
@@ -192,6 +308,7 @@ impl FontFamily {
 pub struct Settings {
     pub font_size: FontSize,
     pub font_family: FontFamily,
+    pub auto_sleep_duration: AutoSleepDuration,
 }
 
 impl Settings {
@@ -206,15 +323,17 @@ impl Settings {
 pub enum SettingRow {
     FontSize,
     FontFamily,
+    AutoSleep,
     ResetButton,
     SaveButton,
 }
 
 impl SettingRow {
     /// All setting rows in display order
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::FontSize,
         Self::FontFamily,
+        Self::AutoSleep,
         Self::ResetButton,
         Self::SaveButton,
     ];
@@ -224,6 +343,7 @@ impl SettingRow {
         match self {
             Self::FontSize => "Font Size",
             Self::FontFamily => "Font Family",
+            Self::AutoSleep => "Auto-Sleep",
             Self::ResetButton => "Reset to Defaults",
             Self::SaveButton => "Save Changes",
         }
@@ -372,6 +492,7 @@ impl SettingsActivity {
         match row {
             SettingRow::FontSize => self.settings.font_size.label(),
             SettingRow::FontFamily => self.settings.font_family.label(),
+            SettingRow::AutoSleep => self.settings.auto_sleep_duration.label(),
             SettingRow::ResetButton => "",
             SettingRow::SaveButton => "",
         }
@@ -634,6 +755,11 @@ impl SettingsActivity {
                 self.show_toast(format!("Font: {}", self.settings.font_family.label()));
                 ActivityResult::Consumed
             }
+            SettingRow::AutoSleep => {
+                self.settings.auto_sleep_duration = self.settings.auto_sleep_duration.next_wrapped();
+                self.show_toast(format!("Auto-sleep: {}", self.settings.auto_sleep_duration.label()));
+                ActivityResult::Consumed
+            }
             SettingRow::ResetButton => {
                 self.show_reset_modal = true;
                 self.modal_button = 0; // Start on Cancel (safe default)
@@ -659,6 +785,11 @@ impl SettingsActivity {
             SettingRow::FontFamily => {
                 self.settings.font_family = self.settings.font_family.prev_wrapped();
                 self.show_toast(format!("Font: {}", self.settings.font_family.label()));
+                ActivityResult::Consumed
+            }
+            SettingRow::AutoSleep => {
+                self.settings.auto_sleep_duration = self.settings.auto_sleep_duration.prev_wrapped();
+                self.show_toast(format!("Auto-sleep: {}", self.settings.auto_sleep_duration.label()));
                 ActivityResult::Consumed
             }
             SettingRow::ResetButton => ActivityResult::Ignored,
@@ -690,7 +821,19 @@ mod tests {
         size = size.next().unwrap();
         assert_eq!(size, FontSize::ExtraLarge);
 
+        size = size.next().unwrap();
+        assert_eq!(size, FontSize::Huge);
+
+        size = size.next().unwrap();
+        assert_eq!(size, FontSize::Max);
+
         assert!(size.next().is_none());
+
+        size = size.prev().unwrap();
+        assert_eq!(size, FontSize::Huge);
+
+        size = size.prev().unwrap();
+        assert_eq!(size, FontSize::ExtraLarge);
 
         size = size.prev().unwrap();
         assert_eq!(size, FontSize::Large);
@@ -710,23 +853,27 @@ mod tests {
         assert_eq!(FontSize::Medium.label(), "Medium");
         assert_eq!(FontSize::Large.label(), "Large");
         assert_eq!(FontSize::ExtraLarge.label(), "Extra Large");
+        assert_eq!(FontSize::Huge.label(), "Huge");
+        assert_eq!(FontSize::Max.label(), "Max");
     }
 
     #[test]
     fn font_size_points() {
         assert_eq!(FontSize::Small.points(), 12);
-        assert_eq!(FontSize::Medium.points(), 14);
-        assert_eq!(FontSize::Large.points(), 18);
+        assert_eq!(FontSize::Medium.points(), 16);
+        assert_eq!(FontSize::Large.points(), 20);
         assert_eq!(FontSize::ExtraLarge.points(), 24);
+        assert_eq!(FontSize::Huge.points(), 28);
+        assert_eq!(FontSize::Max.points(), 32);
     }
 
     #[test]
     fn font_size_index_roundtrip() {
-        for i in 0..4 {
+        for i in 0..6 {
             let size = FontSize::from_index(i).unwrap();
             assert_eq!(size.index(), i);
         }
-        assert!(FontSize::from_index(4).is_none());
+        assert!(FontSize::from_index(6).is_none());
     }
 
     #[test]
@@ -750,6 +897,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.font_size, FontSize::Medium);
         assert_eq!(settings.font_family, FontFamily::Monospace);
+        assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::FiveMinutes);
     }
 
     #[test]
@@ -757,12 +905,14 @@ mod tests {
         let mut settings = Settings {
             font_size: FontSize::ExtraLarge,
             font_family: FontFamily::SansSerif,
+            auto_sleep_duration: AutoSleepDuration::Never,
         };
 
         settings.reset_to_defaults();
 
         assert_eq!(settings.font_size, FontSize::Medium);
         assert_eq!(settings.font_family, FontFamily::Monospace);
+        assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::FiveMinutes);
     }
 
     #[test]
@@ -902,21 +1052,23 @@ mod tests {
 
     #[test]
     fn settings_activity_font_size_at_bounds() {
-        // Right at ExtraLarge doesn't change
+        // Right at Max doesn't change
         let mut activity = SettingsActivity::with_settings(Settings {
-            font_size: FontSize::ExtraLarge,
+            font_size: FontSize::Max,
             font_family: FontFamily::Monospace,
+            auto_sleep_duration: AutoSleepDuration::FiveMinutes,
         });
         activity.on_enter();
 
         let result = activity.handle_input(InputEvent::Press(Button::Right));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.settings().font_size, FontSize::ExtraLarge);
+        assert_eq!(activity.settings().font_size, FontSize::Max);
 
         // Left at Small doesn't change
         let mut activity = SettingsActivity::with_settings(Settings {
             font_size: FontSize::Small,
             font_family: FontFamily::Monospace,
+            auto_sleep_duration: AutoSleepDuration::FiveMinutes,
         });
         activity.on_enter();
 
@@ -1069,12 +1221,14 @@ mod tests {
         let custom = Settings {
             font_size: FontSize::Large,
             font_family: FontFamily::Serif,
+            auto_sleep_duration: AutoSleepDuration::TenMinutes,
         };
 
         let activity = SettingsActivity::with_settings(custom);
 
         assert_eq!(activity.settings().font_size, FontSize::Large);
         assert_eq!(activity.settings().font_family, FontFamily::Serif);
+        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::TenMinutes);
     }
 
     #[test]
@@ -1120,5 +1274,92 @@ mod tests {
         }
 
         assert!(!activity.show_toast);
+    }
+
+    #[test]
+    fn auto_sleep_duration_labels() {
+        assert_eq!(AutoSleepDuration::OneMinute.label(), "1 minute");
+        assert_eq!(AutoSleepDuration::ThreeMinutes.label(), "3 minutes");
+        assert_eq!(AutoSleepDuration::FiveMinutes.label(), "5 minutes");
+        assert_eq!(AutoSleepDuration::TenMinutes.label(), "10 minutes");
+        assert_eq!(AutoSleepDuration::FifteenMinutes.label(), "15 minutes");
+        assert_eq!(AutoSleepDuration::ThirtyMinutes.label(), "30 minutes");
+        assert_eq!(AutoSleepDuration::Never.label(), "Never");
+    }
+
+    #[test]
+    fn auto_sleep_duration_milliseconds() {
+        assert_eq!(AutoSleepDuration::OneMinute.milliseconds(), 60_000);
+        assert_eq!(AutoSleepDuration::ThreeMinutes.milliseconds(), 180_000);
+        assert_eq!(AutoSleepDuration::FiveMinutes.milliseconds(), 300_000);
+        assert_eq!(AutoSleepDuration::TenMinutes.milliseconds(), 600_000);
+        assert_eq!(AutoSleepDuration::FifteenMinutes.milliseconds(), 900_000);
+        assert_eq!(AutoSleepDuration::ThirtyMinutes.milliseconds(), 1_800_000);
+        assert_eq!(AutoSleepDuration::Never.milliseconds(), 0);
+    }
+
+    #[test]
+    fn auto_sleep_duration_index_roundtrip() {
+        for i in 0..7 {
+            let duration = AutoSleepDuration::from_index(i).unwrap();
+            assert_eq!(duration.index(), i);
+        }
+        assert!(AutoSleepDuration::from_index(7).is_none());
+    }
+
+    #[test]
+    fn auto_sleep_duration_cycling() {
+        let mut duration = AutoSleepDuration::OneMinute;
+
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::ThreeMinutes);
+
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::FiveMinutes);
+
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::TenMinutes);
+
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::FifteenMinutes);
+
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::ThirtyMinutes);
+
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::Never);
+
+        // Wraps back to start
+        duration = duration.next_wrapped();
+        assert_eq!(duration, AutoSleepDuration::OneMinute);
+
+        // Test backwards
+        duration = duration.prev_wrapped();
+        assert_eq!(duration, AutoSleepDuration::Never);
+
+        duration = duration.prev_wrapped();
+        assert_eq!(duration, AutoSleepDuration::ThirtyMinutes);
+    }
+
+    #[test]
+    fn settings_activity_auto_sleep_adjust() {
+        let mut activity = SettingsActivity::new();
+        activity.on_enter();
+
+        // Navigate to AutoSleep row
+        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        assert_eq!(activity.current_row(), SettingRow::AutoSleep);
+        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::FiveMinutes);
+
+        // Right cycles forward
+        let result = activity.handle_input(InputEvent::Press(Button::Right));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::TenMinutes);
+
+        // Left cycles backward
+        let result = activity.handle_input(InputEvent::Press(Button::Left));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert_eq!(activity.settings().auto_sleep_duration, AutoSleepDuration::FiveMinutes);
     }
 }

@@ -7,6 +7,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloc::vec;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 /// Metrics for a single glyph
@@ -57,6 +58,7 @@ impl EmbeddedBitmapFont {
     }
 
     /// Render a glyph to the display at the given position
+    /// Supports both 1bpp (binary) and 2bpp (grayscale with dithering)
     pub fn draw_glyph<D: DrawTarget<Color = BinaryColor>>(
         &self,
         display: &mut D,
@@ -73,18 +75,69 @@ impl EmbeddedBitmapFont {
         let glyph_y = y - glyph.y_offset as i32 - glyph.height as i32;
 
         let mut pixels = Vec::new();
-        let row_bytes = (glyph.width as usize).div_ceil(8);
 
-        for row in 0..glyph.height {
-            for col in 0..glyph.width {
-                let byte_idx = (row as usize) * row_bytes + (col as usize) / 8;
-                let bit_idx = 7 - ((col as usize) % 8); // MSB first
+        if self.bits_per_pixel == 2 {
+            // 2bpp grayscale with Floyd-Steinberg dithering
+            let width = glyph.width as usize;
+            let height = glyph.height as usize;
+            let row_bytes = width.div_ceil(4); // 4 pixels per byte (2 bits each)
 
-                if byte_idx < bitmap.len() {
-                    let byte = bitmap[byte_idx];
-                    if (byte >> bit_idx) & 1 == 1 {
+            // Extract grayscale pixels (0-3)
+            let mut gray_pixels = vec![0u8; width * height];
+            for row in 0..height {
+                for col in 0..width {
+                    let byte_idx = row * row_bytes + col / 4;
+                    let bit_offset = 6 - ((col % 4) * 2);
+                    if byte_idx < bitmap.len() {
+                        let level = (bitmap[byte_idx] >> bit_offset) & 0x03;
+                        gray_pixels[row * width + col] = level;
+                    }
+                }
+            }
+
+            // Apply Floyd-Steinberg dithering to convert 0-3 to binary
+            let mut error_buffer = vec![0i16; width * height];
+            for row in 0..height {
+                for col in 0..width {
+                    let idx = row * width + col;
+                    let old_pixel = gray_pixels[idx] as i16 * 85 + error_buffer[idx]; // Scale 0-3 to 0-255
+                    let new_pixel = if old_pixel >= 128 { 255 } else { 0 };
+                    let error = old_pixel - new_pixel;
+
+                    // Distribute error to neighboring pixels (Floyd-Steinberg)
+                    if col + 1 < width {
+                        error_buffer[idx + 1] += error * 7 / 16;
+                    }
+                    if row + 1 < height {
+                        if col > 0 {
+                            error_buffer[idx + width - 1] += error * 3 / 16;
+                        }
+                        error_buffer[idx + width] += error * 5 / 16;
+                        if col + 1 < width {
+                            error_buffer[idx + width + 1] += error * 1 / 16;
+                        }
+                    }
+
+                    if new_pixel >= 128 {
                         let point = Point::new(glyph_x + col as i32, glyph_y + row as i32);
                         pixels.push(Pixel(point, BinaryColor::On));
+                    }
+                }
+            }
+        } else {
+            // 1bpp binary
+            let row_bytes = (glyph.width as usize).div_ceil(8);
+            for row in 0..glyph.height {
+                for col in 0..glyph.width {
+                    let byte_idx = (row as usize) * row_bytes + (col as usize) / 8;
+                    let bit_idx = 7 - ((col as usize) % 8);
+
+                    if byte_idx < bitmap.len() {
+                        let byte = bitmap[byte_idx];
+                        if (byte >> bit_idx) & 1 == 1 {
+                            let point = Point::new(glyph_x + col as i32, glyph_y + row as i32);
+                            pixels.push(Pixel(point, BinaryColor::On));
+                        }
                     }
                 }
             }

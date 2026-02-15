@@ -9,10 +9,10 @@ use alloc::format;
 use alloc::string::{String, ToString};
 #[cfg(feature = "std")]
 use alloc::vec::Vec;
-#[cfg(feature = "std")]
-use std::collections::BTreeMap;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::collections::HashMap;
+#[cfg(feature = "std")]
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "std")]
 use std::fs::File;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -35,7 +35,7 @@ use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use mu_epub::book::{ChapterEventsOptions, OpenConfig};
 #[cfg(feature = "std")]
-use mu_epub::{EpubBook, ScratchBuffers, ZipLimits};
+use mu_epub::{EpubBook, RenderPrepOptions, ScratchBuffers, ZipLimits};
 #[cfg(feature = "std")]
 use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -47,7 +47,7 @@ use std::io::Cursor;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::{Read, Seek};
 
-#[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
+#[cfg(all(feature = "std", feature = "fontdue"))]
 use crate::epub_font_backend::BookerlyFontBackend;
 use crate::file_browser::{FileBrowser, TextViewer};
 use crate::filesystem::{basename, dirname, FileSystem};
@@ -85,6 +85,29 @@ enum BrowserMode {
     #[cfg(feature = "std")]
     ReadingEpub {
         renderer: Arc<Mutex<EpubReadingState>>,
+    },
+}
+
+#[cfg(feature = "std")]
+#[derive(Clone)]
+struct EpubTocItem {
+    chapter_index: usize,
+    depth: usize,
+    label: String,
+}
+
+#[cfg(feature = "std")]
+enum EpubOverlay {
+    QuickMenu {
+        selected: usize,
+    },
+    Toc {
+        items: Vec<EpubTocItem>,
+        selected: usize,
+        scroll: usize,
+    },
+    JumpPercent {
+        percent: u8,
     },
 }
 
@@ -200,6 +223,7 @@ type EpubReader = Box<dyn ReadSeek>;
 struct EpubReadingState {
     book: EpubBook<EpubReader>,
     engine: RenderEngine,
+    chapter_events_opts: RenderPrepOptions,
     eg_renderer: ReaderRenderer,
     chapter_buf: Vec<u8>,
     chapter_scratch: ScratchBuffers,
@@ -208,17 +232,15 @@ struct EpubReadingState {
     #[cfg(not(target_os = "espidf"))]
     render_cache: InMemoryRenderCache,
     chapter_page_counts: BTreeMap<usize, usize>,
+    non_renderable_chapters: BTreeSet<usize>,
     chapter_idx: usize,
     page_idx: usize,
 }
 
-#[cfg(all(feature = "std", feature = "fontdue", not(target_os = "espidf")))]
+#[cfg(all(feature = "std", feature = "fontdue"))]
 type ReaderRenderer = EgRenderer<BookerlyFontBackend>;
 
-#[cfg(any(
-    all(feature = "std", not(feature = "fontdue")),
-    all(feature = "std", target_os = "espidf")
-))]
+#[cfg(all(feature = "std", not(feature = "fontdue")))]
 type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
 
 /// Raw filesystem browser activity.
@@ -226,6 +248,10 @@ pub struct FileBrowserActivity {
     browser: FileBrowser,
     mode: BrowserMode,
     reader_settings: ReaderSettings,
+    #[cfg(feature = "std")]
+    epub_overlay: Option<EpubOverlay>,
+    #[cfg(feature = "std")]
+    active_epub_path: Option<String>,
     pending_task: Option<FileBrowserTask>,
     return_to_previous_on_back: bool,
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -237,6 +263,160 @@ pub struct FileBrowserActivity {
 }
 
 impl FileBrowserActivity {
+    #[cfg(feature = "std")]
+    fn handle_epub_overlay_input(&mut self, event: InputEvent) -> ActivityResult {
+        let Some(mut overlay) = self.epub_overlay.take() else {
+            return ActivityResult::Ignored;
+        };
+        if matches!(event, InputEvent::Press(Button::Back)) {
+            self.epub_overlay = None;
+            return ActivityResult::Consumed;
+        }
+
+        let mut navigate_settings = false;
+        let mut put_back = true;
+        match &mut self.mode {
+            BrowserMode::ReadingEpub { renderer } => match &mut overlay {
+                EpubOverlay::QuickMenu { selected } => {
+                    const COUNT: usize = 4;
+                    match event {
+                        InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                            if *selected == 0 {
+                                *selected = COUNT - 1;
+                            } else {
+                                *selected -= 1;
+                            }
+                        }
+                        InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                            *selected = (*selected + 1) % COUNT;
+                        }
+                        InputEvent::Press(Button::Confirm) | InputEvent::Press(Button::Right) => {
+                            match *selected {
+                                0 => put_back = false,
+                                1 => {
+                                    let mut guard = match renderer.lock() {
+                                        Ok(guard) => guard,
+                                        Err(poisoned) => poisoned.into_inner(),
+                                    };
+                                    let items = guard.toc_items();
+                                    if items.is_empty() {
+                                        self.browser.set_status_message(
+                                            "EPUB has no TOC entries".to_string(),
+                                        );
+                                        put_back = false;
+                                    } else {
+                                        overlay = EpubOverlay::Toc {
+                                            items,
+                                            selected: 0,
+                                            scroll: 0,
+                                        };
+                                    }
+                                }
+                                2 => {
+                                    let guard = match renderer.lock() {
+                                        Ok(guard) => guard,
+                                        Err(poisoned) => poisoned.into_inner(),
+                                    };
+                                    overlay = EpubOverlay::JumpPercent {
+                                        percent: guard.book_progress_percent(),
+                                    };
+                                }
+                                3 => {
+                                    navigate_settings = true;
+                                    put_back = false;
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                EpubOverlay::Toc {
+                    items,
+                    selected,
+                    scroll,
+                } => {
+                    let page = 8usize;
+                    match event {
+                        InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                            if *selected == 0 {
+                                *selected = items.len().saturating_sub(1);
+                            } else {
+                                *selected -= 1;
+                            }
+                        }
+                        InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                            *selected = (*selected + 1) % items.len();
+                        }
+                        InputEvent::Press(Button::Left) => {
+                            *selected = selected.saturating_sub(page);
+                        }
+                        InputEvent::Press(Button::Right) => {
+                            *selected = (*selected + page).min(items.len().saturating_sub(1));
+                        }
+                        InputEvent::Press(Button::Confirm) => {
+                            let mut guard = match renderer.lock() {
+                                Ok(guard) => guard,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            let target = items[*selected].chapter_index;
+                            if !guard.jump_to_chapter(target) {
+                                self.browser.set_status_message(
+                                    "Unable to jump to selected chapter".to_string(),
+                                );
+                            }
+                            put_back = false;
+                        }
+                        _ => {}
+                    }
+                    let visible = 8usize;
+                    if *selected < *scroll {
+                        *scroll = *selected;
+                    } else if *selected >= *scroll + visible {
+                        *scroll = selected.saturating_sub(visible - 1);
+                    }
+                }
+                EpubOverlay::JumpPercent { percent } => match event {
+                    InputEvent::Press(Button::Left) => *percent = percent.saturating_sub(1),
+                    InputEvent::Press(Button::Right) => *percent = (*percent + 1).min(100),
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                        *percent = percent.saturating_sub(10)
+                    }
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                        *percent = (*percent + 10).min(100)
+                    }
+                    InputEvent::Press(Button::Confirm) => {
+                        let mut guard = match renderer.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        if !guard.jump_to_book_percent(*percent) {
+                            self.browser.set_status_message(
+                                "Unable to jump to selected position".to_string(),
+                            );
+                        }
+                        put_back = false;
+                    }
+                    _ => {}
+                },
+            },
+            _ => {
+                put_back = false;
+            }
+        }
+
+        if navigate_settings {
+            self.epub_overlay = None;
+            return ActivityResult::NavigateTo("reader_settings");
+        }
+        if put_back {
+            self.epub_overlay = Some(overlay);
+        } else {
+            self.epub_overlay = None;
+        }
+        ActivityResult::Consumed
+    }
+
     pub const DEFAULT_ROOT: &'static str = "/";
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
@@ -248,6 +428,10 @@ impl FileBrowserActivity {
             browser: FileBrowser::new(Self::DEFAULT_ROOT),
             mode: BrowserMode::Browsing,
             reader_settings: ReaderSettings::default(),
+            #[cfg(feature = "std")]
+            epub_overlay: None,
+            #[cfg(feature = "std")]
+            active_epub_path: None,
             pending_task: None,
             return_to_previous_on_back: false,
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -483,7 +667,18 @@ impl FileBrowserActivity {
     }
 
     fn handle_reader_input(&mut self, event: InputEvent) -> ActivityResult {
+        #[cfg(feature = "std")]
+        if self.is_viewing_epub() {
+            if self.epub_overlay.is_some() {
+                return self.handle_epub_overlay_input(event);
+            }
+        }
+
         if matches!(event, InputEvent::Press(Button::Back)) {
+            #[cfg(feature = "std")]
+            {
+                self.persist_active_epub_position();
+            }
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
             {
                 self.epub_open_pending = None;
@@ -494,6 +689,11 @@ impl FileBrowserActivity {
                 self.epub_open_staged = None;
             }
             self.mode = BrowserMode::Browsing;
+            #[cfg(feature = "std")]
+            {
+                self.epub_overlay = None;
+                self.active_epub_path = None;
+            }
             if self.return_to_previous_on_back {
                 self.return_to_previous_on_back = false;
                 return ActivityResult::NavigateBack;
@@ -535,10 +735,12 @@ impl FileBrowserActivity {
 
                 if let Some(action) = action {
                     if let EpubInputAction::OpenSettings = action {
-                        return ActivityResult::NavigateTo("reader_settings");
+                        self.epub_overlay = Some(EpubOverlay::QuickMenu { selected: 0 });
+                        return ActivityResult::Consumed;
                     }
                     #[cfg(target_os = "espidf")]
                     {
+                        let mut advanced_position: Option<(usize, usize)> = None;
                         let mut renderer = match renderer.lock() {
                             Ok(guard) => guard,
                             Err(poisoned) => poisoned.into_inner(),
@@ -554,6 +756,14 @@ impl FileBrowserActivity {
                         };
                         if !advanced {
                             log::warn!("[EPUB] unable to handle epub action");
+                        } else {
+                            advanced_position = Some(renderer.position_indices());
+                        }
+                        drop(renderer);
+                        if let (Some((chapter_idx, page_idx)), Some(path)) =
+                            (advanced_position, self.active_epub_path.as_ref())
+                        {
+                            let _ = Self::persist_epub_position_for_path(path, chapter_idx, page_idx);
                         }
                         return ActivityResult::Consumed;
                     }
@@ -615,6 +825,11 @@ impl FileBrowserActivity {
 impl Activity for FileBrowserActivity {
     fn on_enter(&mut self) {
         self.mode = BrowserMode::Browsing;
+        #[cfg(feature = "std")]
+        {
+            self.epub_overlay = None;
+            self.active_epub_path = None;
+        }
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             self.epub_open_pending = None;
@@ -630,7 +845,16 @@ impl Activity for FileBrowserActivity {
     }
 
     fn on_exit(&mut self) {
+        #[cfg(feature = "std")]
+        {
+            self.persist_active_epub_position();
+        }
         self.mode = BrowserMode::Browsing;
+        #[cfg(feature = "std")]
+        {
+            self.epub_overlay = None;
+            self.active_epub_path = None;
+        }
         self.pending_task = None;
         self.return_to_previous_on_back = false;
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -699,7 +923,8 @@ impl Activity for FileBrowserActivity {
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 renderer.render(display)?;
-                self.render_epub_footer(display, &renderer)
+                self.render_epub_footer(display, &renderer)?;
+                self.render_epub_overlay(display, &renderer)
             }
         }
     }
@@ -739,24 +964,198 @@ impl FileBrowserActivity {
         let title = renderer.current_chapter_title(max_title_chars);
         Text::new(&title, Point::new(6, y + 13), chapter_style).draw(display)?;
 
-        let mut info = format!(
-            "Ch {}/{}",
-            renderer.current_chapter(),
-            renderer.total_chapters()
-        );
-        if self.reader_settings.show_page_numbers {
-            info = format!(
-                "{}  ChPg {}/{}",
-                info,
+        let info = if self.reader_settings.show_page_numbers {
+            format!(
+                "{}/{} · {}% · {}/{}",
                 renderer.current_page_number(),
-                renderer.total_pages()
-            );
-        }
+                renderer.total_pages(),
+                renderer.book_progress_percent(),
+                renderer.current_chapter(),
+                renderer.total_chapters()
+            )
+        } else {
+            format!(
+                "{}% · {}/{}",
+                renderer.book_progress_percent(),
+                renderer.current_chapter(),
+                renderer.total_chapters()
+            )
+        };
         Text::new(&info, Point::new(6, y + 27), metrics_style).draw(display)?;
 
-        let hints = "U/D:Chapter  L/R:Page  P:Settings";
+        let hints = "Power:Menu  U/D:Chapter  L/R:Page";
         let hint_x = (width as i32 - (hints.len() as i32 * 6) - 6).max(6);
         Text::new(hints, Point::new(hint_x, y + 27), hints_style).draw(display)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    fn render_epub_overlay<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        renderer: &EpubReadingState,
+    ) -> Result<(), D::Error> {
+        let Some(overlay) = self.epub_overlay.as_ref() else {
+            return Ok(());
+        };
+        let size = display.bounding_box().size;
+        let width = size.width.min(size.height) as i32;
+        let height = size.width.max(size.height) as i32;
+        let panel_w = (width - 32).max(120);
+        let panel_h = (height - 110).max(120);
+        let panel_x = (width - panel_w) / 2;
+        let panel_y = ((height - panel_h) / 2 - 8).max(8);
+        Rectangle::new(
+            Point::new(panel_x - 4, panel_y - 4),
+            Size::new((panel_w + 8) as u32, (panel_h + 8) as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+        .draw(display)?;
+        Rectangle::new(
+            Point::new(panel_x, panel_y),
+            Size::new(panel_w as u32, panel_h as u32),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(display)?;
+
+        let title_style = MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::On);
+        let body_style = MonoTextStyle::new(&FONT_7X13, BinaryColor::On);
+        let hint_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+        match overlay {
+            EpubOverlay::QuickMenu { selected } => {
+                Text::new(
+                    "Reader Menu",
+                    Point::new(panel_x + 8, panel_y + 16),
+                    title_style,
+                )
+                .draw(display)?;
+                let items = [
+                    "Resume",
+                    "Table of Contents",
+                    "Go to Position",
+                    "Reader Settings",
+                ];
+                for (i, item) in items.iter().enumerate() {
+                    let y = panel_y + 36 + (i as i32 * 20);
+                    if i == *selected {
+                        Rectangle::new(
+                            Point::new(panel_x + 6, y - 11),
+                            Size::new((panel_w - 12) as u32, 16),
+                        )
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display)?;
+                        Text::new(
+                            item,
+                            Point::new(panel_x + 10, y),
+                            MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::Off),
+                        )
+                        .draw(display)?;
+                    } else {
+                        Text::new(item, Point::new(panel_x + 10, y), body_style).draw(display)?;
+                    }
+                }
+                Text::new(
+                    "U/D Move  OK Select  Back Close",
+                    Point::new(panel_x + 8, panel_y + panel_h - 8),
+                    hint_style,
+                )
+                .draw(display)?;
+            }
+            EpubOverlay::Toc {
+                items,
+                selected,
+                scroll,
+            } => {
+                Text::new(
+                    "Table of Contents",
+                    Point::new(panel_x + 8, panel_y + 16),
+                    title_style,
+                )
+                .draw(display)?;
+                let visible = 8usize;
+                for row in 0..visible {
+                    let idx = scroll + row;
+                    if idx >= items.len() {
+                        break;
+                    }
+                    let item = &items[idx];
+                    let y = panel_y + 36 + (row as i32 * 16);
+                    let indent = (item.depth.min(4) as i32) * 10;
+                    if idx == *selected {
+                        Rectangle::new(
+                            Point::new(panel_x + 6, y - 11),
+                            Size::new((panel_w - 12) as u32, 14),
+                        )
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display)?;
+                        Text::new(
+                            &item.label,
+                            Point::new(panel_x + 10 + indent, y),
+                            MonoTextStyle::new(&FONT_6X10, BinaryColor::Off),
+                        )
+                        .draw(display)?;
+                    } else {
+                        Text::new(
+                            &item.label,
+                            Point::new(panel_x + 10 + indent, y),
+                            hint_style,
+                        )
+                        .draw(display)?;
+                    }
+                }
+                let pos = format!("{}/{}", selected + 1, items.len());
+                Text::new(
+                    &pos,
+                    Point::new(panel_x + panel_w - 56, panel_y + 16),
+                    hint_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    "U/D Move  L/R Pg  OK Jump  Back",
+                    Point::new(panel_x + 8, panel_y + panel_h - 8),
+                    hint_style,
+                )
+                .draw(display)?;
+            }
+            EpubOverlay::JumpPercent { percent } => {
+                Text::new(
+                    "Go to Position",
+                    Point::new(panel_x + 8, panel_y + 16),
+                    title_style,
+                )
+                .draw(display)?;
+                let pct = format!("{}%", percent);
+                Text::new(
+                    &pct,
+                    Point::new(panel_x + panel_w / 2 - 18, panel_y + 52),
+                    MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::On),
+                )
+                .draw(display)?;
+
+                let bar_x = panel_x + 16;
+                let bar_y = panel_y + 70;
+                let bar_w = panel_w - 32;
+                Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_w as u32, 12))
+                    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                    .draw(display)?;
+                let fill = (bar_w.saturating_sub(4) * (*percent as i32)) / 100;
+                if fill > 0 {
+                    Rectangle::new(Point::new(bar_x + 2, bar_y + 2), Size::new(fill as u32, 8))
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display)?;
+                }
+                let chapter = format!("Now: {}%", renderer.book_progress_percent());
+                Text::new(&chapter, Point::new(bar_x, bar_y + 26), hint_style).draw(display)?;
+                Text::new(
+                    "L/R 1%  U/D 10%  OK Jump  Back",
+                    Point::new(panel_x + 8, panel_y + panel_h - 8),
+                    hint_style,
+                )
+                .draw(display)?;
+            }
+        }
+
         Ok(())
     }
 }

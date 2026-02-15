@@ -15,7 +15,8 @@ fn main() {
     let mut f = fs::File::create(&dest_path).unwrap();
 
     // Font sizes to generate (in pixels)
-    let sizes = vec![12u32, 14, 16, 18, 20];
+    // Includes larger sizes for UI text readability
+    let sizes = vec![12u32, 14, 16, 18, 20, 22, 24, 28];
 
     // ASCII + common Latin-1 characters
     let charset: Vec<char> = (0x20..=0x7E) // ASCII printable
@@ -148,9 +149,9 @@ fn generate_size(
                 data_len: 0,
             });
         } else {
-            // Pack bitmap data (1bpp: threshold at 128)
+            // Pack bitmap data (2bpp: 4-level grayscale for antialiasing)
             let offset = bitmap_data.len() as u32;
-            let packed = pack_bitmap_1bpp(&bitmap, metrics.width, metrics.height);
+            let packed = pack_bitmap_2bpp(&bitmap, metrics.width, metrics.height);
             let len = packed.len() as u32;
             bitmap_data.extend_from_slice(&packed);
 
@@ -221,9 +222,45 @@ fn generate_size(
     writeln!(f, "    glyph_count: {},", glyphs.len()).unwrap();
     writeln!(f, "    glyphs: &{}_GLYPHS,", const_prefix).unwrap();
     writeln!(f, "    bitmap_data: &{}_BITMAP_DATA,", const_prefix).unwrap();
-    writeln!(f, "    bits_per_pixel: 1,").unwrap();
+    writeln!(f, "    bits_per_pixel: 2,").unwrap();
     writeln!(f, "}};").unwrap();
     writeln!(f).unwrap();
+}
+
+/// Pack grayscale bitmap to 2bpp (4 pixels per byte, 4 gray levels)
+/// Maps fontdue's 0-255 grayscale to 0-3:
+/// - 0-63: level 0 (white)
+/// - 64-127: level 1 (light gray)
+/// - 128-191: level 2 (dark gray)
+/// - 192-255: level 3 (black)
+fn pack_bitmap_2bpp(bitmap: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let row_bytes = width.div_ceil(4); // 4 pixels per byte (2 bits each)
+    let mut packed = vec![0u8; row_bytes * height];
+
+    for y in 0..height {
+        for x in 0..width {
+            let pixel_idx = y * width + x;
+            if pixel_idx < bitmap.len() {
+                // Quantize 0-255 to 0-3 with gamma adjustment for e-ink
+                let gray = bitmap[pixel_idx];
+                let level = if gray < 64 {
+                    0 // white
+                } else if gray < 128 {
+                    1 // light gray
+                } else if gray < 192 {
+                    2 // dark gray
+                } else {
+                    3 // black
+                };
+
+                let byte_idx = y * row_bytes + (x / 4);
+                let bit_offset = 6 - ((x % 4) * 2); // 2 bits per pixel, MSB first
+                packed[byte_idx] |= level << bit_offset;
+            }
+        }
+    }
+
+    packed
 }
 
 fn pack_bitmap_1bpp(bitmap: &[u8], width: usize, height: usize) -> Vec<u8> {

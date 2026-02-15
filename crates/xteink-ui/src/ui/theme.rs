@@ -4,17 +4,17 @@ use core::sync::atomic::{AtomicU8, Ordering};
 
 use embedded_graphics::mono_font::{ascii, MonoFont};
 
-/// FONT_7X13 character width in pixels.
-/// All text width calculations should use this instead of hardcoded `* 7`.
-pub const FONT_CHAR_WIDTH: i32 = 7;
+/// Default font character width in pixels (FONT_9X18_BOLD).
+/// All text width calculations should use this instead of hardcoded values.
+pub const FONT_CHAR_WIDTH: i32 = 9;
 
-/// FONT_7X13 character height in pixels.
-pub const FONT_CHAR_HEIGHT: i32 = 13;
+/// Default font character height in pixels (FONT_9X18_BOLD).
+pub const FONT_CHAR_HEIGHT: i32 = 18;
 
 // Global device-font profile selected from Device Settings.
 // 0=6x10, 1=7x13, 2=8x13, 3=9x15, 4=10x20.
-// Default to larger font (9x15) for better readability
-static DEVICE_FONT_PROFILE: AtomicU8 = AtomicU8::new(3);
+// Default to largest font (10x20) for optimal readability (25% larger than previous default)
+static DEVICE_FONT_PROFILE: AtomicU8 = AtomicU8::new(4);
 
 /// Set global UI font profile from settings indices.
 pub fn set_device_font_profile(font_size_index: usize, font_family_index: usize) {
@@ -39,14 +39,15 @@ pub fn set_device_font_profile(font_size_index: usize, font_family_index: usize)
 }
 
 /// Current primary UI font selected by device settings.
+/// Uses bold variants by default for better readability on e-ink.
 pub fn ui_font() -> &'static MonoFont<'static> {
     match DEVICE_FONT_PROFILE.load(Ordering::Relaxed) {
-        0 => &ascii::FONT_6X10,
-        1 => &ascii::FONT_7X13,
-        2 => &ascii::FONT_8X13,
-        3 => &ascii::FONT_9X15,
-        4 => &ascii::FONT_10X20,
-        _ => &ascii::FONT_7X13,
+        0 => &ascii::FONT_6X13_BOLD,
+        1 => &ascii::FONT_7X13_BOLD,
+        2 => &ascii::FONT_8X13_BOLD,
+        3 => &ascii::FONT_9X15_BOLD,
+        4 => &ascii::FONT_9X18_BOLD,  // Largest bold font available
+        _ => &ascii::FONT_7X13_BOLD,
     }
 }
 
@@ -132,12 +133,13 @@ impl ThemeMetrics {
         display_height.saturating_sub(self.header_height + self.footer_height)
     }
 
-    /// Y offset to vertically center FONT_7X13 text within a box of given height.
+    /// Y offset to vertically center text within a box of given height.
+    /// Optimized for 10x20 font (default UI font).
     ///
     /// Use as: `Text::new(text, Point::new(x, y + ThemeMetrics::text_y_offset(h)), ...)`
     /// where `y` is the top edge and `h` is the box height.
     pub const fn text_y_offset(height: u32) -> i32 {
-        (height as i32) / 2 + 5
+        (height as i32) / 2 + 10
     }
 
     /// Shorthand: Y offset for centering text within a list item.
@@ -171,18 +173,18 @@ impl Default for ThemeMetrics {
     /// Default metrics optimized for Xteink X4 at 220 PPI.
     ///
     /// Modern web design principles adapted for e-ink:
-    /// - Generous spacing for breathability
-    /// - Larger text for better readability
+    /// - Generous spacing for breathability (all sizes increased 25%)
+    /// - Large text (10x20 font) for excellent readability
     /// - Clean, minimal visual hierarchy
     /// - Optimized for button navigation (no touch)
     fn default() -> Self {
         Self {
-            header_height: 50,    // Increased for larger font
-            footer_height: 40,    // Increased for larger font
-            side_padding: 20,     // More breathing room
-            list_item_height: 64, // Taller for comfort and readability
-            button_height: 50,    // Adequate tap target
-            spacing: 12,          // Generous spacing (doubled from 6)
+            header_height: 62,    // Sized for 10x20 font (25% increase)
+            footer_height: 50,    // Sized for 10x20 font (25% increase)
+            side_padding: 25,     // Ample breathing room (25% increase)
+            list_item_height: 80, // Very comfortable and readable (25% increase)
+            button_height: 62,    // Large interaction target (25% increase)
+            spacing: 15,          // Extremely generous spacing (25% increase)
         }
     }
 }
@@ -210,6 +212,76 @@ impl Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self::default_theme()
+    }
+}
+
+/// UI text rendering system - change FONT_NAME to switch fonts globally
+pub mod ui_text {
+    use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+    use crate::embedded_fonts::EmbeddedFontRegistry;
+
+    /// **CHANGE THIS to switch fonts everywhere**
+    /// Options: "bookerly-bold", "bookerly-regular", "bookerly-italic", "bookerly-bold-italic"
+    pub const FONT_NAME: &str = "bookerly-bold";
+
+    /// Default UI font size (24px - readable and crisp)
+    pub const DEFAULT_SIZE: u32 = 24;
+
+    /// Header/title font size (28px - larger for emphasis)
+    pub const HEADER_SIZE: u32 = 28;
+
+    /// Small UI font size (20px - for secondary text)
+    pub const SMALL_SIZE: u32 = 20;
+
+    /// Render text using the configured UI font (see FONT_NAME)
+    /// Returns the width of the rendered text
+    ///
+    /// # Arguments
+    /// * `display` - Target display
+    /// * `text` - Text to render
+    /// * `x` - X position
+    /// * `y` - Y position (baseline)
+    /// * `size` - Font size in pixels (defaults to DEFAULT_SIZE if None)
+    pub fn draw<D: DrawTarget<Color = BinaryColor>>(
+        display: &mut D,
+        text: &str,
+        x: i32,
+        y: i32,
+        size: Option<u32>,
+    ) -> Result<i32, D::Error> {
+        let size = size.unwrap_or(DEFAULT_SIZE);
+        if let Some(font) = EmbeddedFontRegistry::get_font_nearest(FONT_NAME, size) {
+            font.draw_text(display, text, x, y)
+        } else {
+            Ok(0)
+        }
+    }
+
+    /// Measure text width using the configured UI font
+    pub fn width(text: &str, size: Option<u32>) -> u32 {
+        let size = size.unwrap_or(DEFAULT_SIZE);
+        if let Some(font) = EmbeddedFontRegistry::get_font_nearest(FONT_NAME, size) {
+            font.text_width(text)
+        } else {
+            0
+        }
+    }
+
+    /// Get line height for the configured UI font
+    pub fn line_height(size: Option<u32>) -> u8 {
+        let size = size.unwrap_or(DEFAULT_SIZE);
+        if let Some(font) = EmbeddedFontRegistry::get_font_nearest(FONT_NAME, size) {
+            font.line_height
+        } else {
+            size as u8
+        }
+    }
+
+    /// Calculate Y position to center text vertically in a box
+    pub fn center_y(box_height: u32, size: Option<u32>) -> i32 {
+        let size = size.unwrap_or(DEFAULT_SIZE);
+        let lh = line_height(Some(size)) as i32;
+        (box_height as i32 / 2) + (lh / 2)
     }
 }
 

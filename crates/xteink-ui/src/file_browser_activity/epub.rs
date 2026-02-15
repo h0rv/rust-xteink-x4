@@ -20,6 +20,8 @@ impl EpubReadingState {
     const MAX_CHAPTER_BUF_CAPACITY_BYTES: usize = 512 * 1024;
     const MAX_CHAPTER_BUF_GROW_RETRIES: usize = 8;
     #[cfg(target_os = "espidf")]
+    const EPUB_TEMP_DIR: &'static str = "/sd/.tmp";
+    #[cfg(target_os = "espidf")]
     #[allow(dead_code)]
     const PAGE_CACHE_LIMIT: usize = 0;
     #[cfg(not(target_os = "espidf"))]
@@ -39,6 +41,52 @@ impl EpubReadingState {
             lazy_navigation: true,
         };
         let book = EpubBook::from_reader_with_config(reader, open_cfg)
+            .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
+        log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
+        let mut state = Self {
+            book,
+            engine: RenderEngine::new(RenderEngineOptions::for_display(
+                crate::DISPLAY_WIDTH as i32,
+                crate::DISPLAY_HEIGHT as i32,
+            )),
+            eg_renderer: Self::create_renderer(),
+            chapter_buf: Vec::with_capacity(Self::CHAPTER_BUF_CAPACITY_BYTES),
+            chapter_scratch: ScratchBuffers::embedded(),
+            current_page: None,
+            page_cache: BTreeMap::new(),
+            #[cfg(not(target_os = "espidf"))]
+            render_cache: InMemoryRenderCache::default(),
+            chapter_page_counts: BTreeMap::new(),
+            chapter_idx: 0,
+            page_idx: 0,
+        };
+        state.register_embedded_fonts();
+        state.load_chapter_forward(0)?;
+        log::info!("[EPUB] initial chapter/page loaded");
+        Ok(state)
+    }
+
+    #[cfg(target_os = "espidf")]
+    pub(super) fn from_sd_path(path: &str) -> Result<Self, String> {
+        log::info!("[EPUB] opening reader (sd temp)");
+        let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
+            .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
+        let open_cfg = OpenConfig {
+            options: mu_epub::book::EpubBookOptions {
+                zip_limits: Some(zip_limits),
+                validation_mode: mu_epub::book::ValidationMode::Lenient,
+                max_nav_bytes: Some(Self::MAX_NAV_BYTES),
+            },
+            lazy_navigation: true,
+        };
+        std::fs::create_dir_all(Self::EPUB_TEMP_DIR).map_err(|e| {
+            format!(
+                "Unable to create EPUB temp dir ({}): {}",
+                Self::EPUB_TEMP_DIR,
+                e
+            )
+        })?;
+        let book = EpubBook::open_with_temp_storage(path, Self::EPUB_TEMP_DIR, open_cfg)
             .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
         log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
         let mut state = Self {
@@ -582,10 +630,19 @@ impl FileBrowserActivity {
         builder
             .spawn(move || {
                 let result = match source {
-                    EpubOpenSource::HostPath(path) => match File::open(&path) {
-                        Ok(file) => EpubReadingState::from_reader(Box::new(file)),
-                        Err(err) => Err(format!("Unable to read EPUB: {}", err)),
-                    },
+                    EpubOpenSource::HostPath(path) => {
+                        #[cfg(target_os = "espidf")]
+                        {
+                            EpubReadingState::from_sd_path(&path)
+                        }
+                        #[cfg(not(target_os = "espidf"))]
+                        {
+                            match File::open(&path) {
+                                Ok(file) => EpubReadingState::from_reader(Box::new(file)),
+                                Err(err) => Err(format!("Unable to read EPUB: {}", err)),
+                            }
+                        }
+                    }
                     #[cfg(not(target_os = "espidf"))]
                     EpubOpenSource::Bytes(bytes) => {
                         EpubReadingState::from_reader(Box::new(Cursor::new(bytes)))

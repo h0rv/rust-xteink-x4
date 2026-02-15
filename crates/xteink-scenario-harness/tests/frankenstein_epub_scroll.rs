@@ -102,7 +102,10 @@ fn library_open_frankenstein_scroll_and_capture() {
         "expected substantial pagination for frankenstein, got {} positions",
         visited.len()
     );
-    assert!(validated_back_nav, "did not reach back-nav probe checkpoint");
+    assert!(
+        validated_back_nav,
+        "did not reach back-nav probe checkpoint"
+    );
     harness.assert_render_budget_ms(250, "frankenstein_back_nav");
 }
 

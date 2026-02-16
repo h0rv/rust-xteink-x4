@@ -350,7 +350,9 @@ impl FileBrowserActivity {
         let Some(mut overlay) = self.epub_overlay.take() else {
             return ActivityResult::Ignored;
         };
-        if matches!(event, InputEvent::Press(Button::Back)) {
+        if matches!(event, InputEvent::Press(Button::Back))
+            && !matches!(overlay, EpubOverlay::Finished)
+        {
             self.epub_overlay = None;
             return ActivityResult::Consumed;
         }
@@ -642,6 +644,21 @@ impl FileBrowserActivity {
             }
         }
 
+        None
+    }
+
+    /// Returns current EPUB overall progress percent (0-100).
+    pub fn epub_book_progress_percent(&self) -> Option<u8> {
+        #[cfg(feature = "std")]
+        {
+            if let BrowserMode::ReadingEpub { renderer } = &self.mode {
+                let renderer = match renderer.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                return Some(renderer.book_progress_percent());
+            }
+        }
         None
     }
 
@@ -1551,6 +1568,39 @@ mod tests {
             activity.is_opening_epub(),
             activity.status_message()
         );
+    }
+
+    #[test]
+    fn finished_overlay_back_exits_epub_reader() {
+        let mut activity = FileBrowserActivity::new();
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/books");
+        fs.add_file(
+            "/books/sample.epub",
+            include_bytes!("../../../sample_books/sample.epub"),
+        );
+
+        activity.on_enter();
+        assert!(activity.process_pending_task(&mut fs));
+
+        activity.request_open_path("/books/sample.epub");
+        assert!(activity.process_pending_task(&mut fs));
+        let start = Instant::now();
+        while activity.is_opening_epub() && start.elapsed() < Duration::from_secs(20) {
+            let _ = activity.process_pending_task(&mut fs);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(activity.is_viewing_epub());
+
+        activity.epub_overlay = Some(EpubOverlay::Finished);
+        let result = activity.handle_input(InputEvent::Press(Button::Back));
+        assert!(matches!(
+            result,
+            ActivityResult::Consumed | ActivityResult::NavigateBack
+        ));
+        assert!(!activity.is_viewing_epub());
+        assert!(activity.epub_overlay.is_none());
     }
 
     // TODO: Fix this test - Cursor not imported

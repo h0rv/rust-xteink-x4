@@ -325,7 +325,42 @@ impl App {
         }
         let library_updated = self.process_library_scan(fs);
         let file_browser_updated = self.process_file_browser_tasks(fs);
-        settings_updated || library_updated || file_browser_updated
+        let library_progress_updated = self.sync_active_book_progress();
+        settings_updated || library_updated || file_browser_updated || library_progress_updated
+    }
+
+    #[cfg(feature = "std")]
+    fn sync_active_book_progress(&mut self) -> bool {
+        let Some(path) = self.main_activity.files_tab.active_epub_path() else {
+            return false;
+        };
+        let Some(progress) = self.main_activity.files_tab.epub_book_progress_percent() else {
+            return false;
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut updated = false;
+        if let Some(cache) = self.library_cache.as_mut() {
+            if let Some(book) = cache.iter_mut().find(|book| book.path == path) {
+                let next = progress.min(100);
+                if book.progress_percent != next || book.last_read != Some(now) {
+                    book.progress_percent = next;
+                    book.last_read = Some(now);
+                    updated = true;
+                }
+            }
+        }
+        self.main_activity
+            .library_tab
+            .update_book_progress(path, progress.min(100), now);
+        updated
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn sync_active_book_progress(&mut self) -> bool {
+        false
     }
 
     fn sync_runtime_settings(&mut self) -> bool {

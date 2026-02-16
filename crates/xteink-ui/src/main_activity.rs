@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use embedded_graphics::{
@@ -32,7 +32,8 @@ use crate::ui::theme::layout::{
     MARGIN, SELECT_PAD_X,
 };
 use crate::ui::theme::{
-    set_device_font_profile, ui_font_body, ui_font_small, ui_font_small_char_width, ui_font_title,
+    set_device_font_profile, ui_font_body, ui_font_body_char_width, ui_font_small,
+    ui_font_small_char_width, ui_font_title,
 };
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::DISPLAY_HEIGHT;
@@ -76,6 +77,7 @@ pub struct MainActivity {
 pub struct LibraryTabContent {
     books: Vec<BookInfo>,
     selected_index: usize,
+    hero_selected: bool,
     is_loading: bool,
     pending_open_path: Option<String>,
     refresh_request: bool,
@@ -355,6 +357,23 @@ impl MainActivity {
         )
         .draw(display)?;
 
+        // Library-only quick action hint.
+        if self.current_tab == Tab::Library.index() {
+            let chip_w = 104u32;
+            let chip_h = 18u32;
+            let chip_x = MARGIN - 2;
+            let chip_y = bar_y + ((BOTTOM_BAR_H - chip_h as i32) / 2);
+            Rectangle::new(Point::new(chip_x, chip_y), Size::new(chip_w, chip_h))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(display)?;
+            Text::new(
+                "Back: Rescan",
+                Point::new(chip_x + 6, chip_y + 13),
+                MonoTextStyle::new(ui_font_small(), BinaryColor::On),
+            )
+            .draw(display)?;
+        }
+
         Ok(())
     }
 
@@ -454,6 +473,7 @@ impl LibraryTabContent {
         Self {
             books: Vec::new(),
             selected_index: 0,
+            hero_selected: true,
             is_loading: false,
             pending_open_path: None,
             refresh_request: false,
@@ -471,6 +491,14 @@ impl LibraryTabContent {
     pub fn set_books(&mut self, books: Vec<BookInfo>) {
         self.books = books;
         self.selected_index = 0;
+        self.hero_selected = true;
+    }
+
+    pub fn update_book_progress(&mut self, path: &str, progress_percent: u8, last_read: u64) {
+        if let Some(book) = self.books.iter_mut().find(|book| book.path == path) {
+            book.progress_percent = progress_percent.min(100);
+            book.last_read = Some(last_read);
+        }
     }
 
     pub fn take_refresh_request(&mut self) -> bool {
@@ -490,28 +518,40 @@ impl LibraryTabContent {
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
             InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
-                if self.selected_index > 0 {
+                if self.hero_selected {
+                    // already at top row
+                } else if self.selected_index == 0 {
+                    self.hero_selected = true;
+                } else {
                     self.selected_index -= 1;
                 }
                 ActivityResult::Consumed
             }
             InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
-                if self.selected_index + 1 < self.books.len() {
+                if self.hero_selected {
+                    if !self.books.is_empty() {
+                        self.hero_selected = false;
+                        self.selected_index = 0;
+                    }
+                } else if self.selected_index + 1 < self.books.len() {
                     self.selected_index += 1;
                 }
                 ActivityResult::Consumed
             }
             InputEvent::Press(Button::Confirm) => {
-                // Open the selected book
-                if let Some(book) = self.books.get(self.selected_index) {
+                if self.hero_selected {
+                    if let Some(idx) = self.currently_reading_index() {
+                        self.pending_open_path = Some(self.books[idx].path.clone());
+                    }
+                } else if let Some(book) = self.books.get(self.selected_index) {
                     self.pending_open_path = Some(book.path.clone());
                 }
                 ActivityResult::Consumed
             }
             InputEvent::Press(Button::Power) => {
                 // Quick resume: open most recent book from hero card in one press.
-                if let Some(book) = self.books.first() {
-                    self.pending_open_path = Some(book.path.clone());
+                if let Some(idx) = self.currently_reading_index() {
+                    self.pending_open_path = Some(self.books[idx].path.clone());
                 } else {
                     self.refresh_request = true;
                     self.begin_loading_scan();
@@ -527,10 +567,127 @@ impl LibraryTabContent {
         }
     }
 
+    fn currently_reading_index(&self) -> Option<usize> {
+        self.books
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, book)| (book.last_read.unwrap_or(0), book.progress_percent))
+            .map(|(idx, _)| idx)
+    }
+
+    fn progress_label(progress_percent: u8) -> String {
+        match progress_percent {
+            0 => String::from("Not started"),
+            100 => String::from("Finished"),
+            value => format!("{}%", value),
+        }
+    }
+
+    fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+        if max_chars == 0 {
+            return String::new();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        if chars.len() <= max_chars {
+            return text.to_string();
+        }
+        if max_chars <= 1 {
+            return String::from("…");
+        }
+        let mut out = String::with_capacity(max_chars);
+        for ch in chars.into_iter().take(max_chars - 1) {
+            out.push(ch);
+        }
+        out.push('…');
+        out
+    }
+
+    fn wrap_to_two_lines(text: &str, max_chars: usize) -> (String, Option<String>) {
+        if max_chars == 0 {
+            return (String::new(), None);
+        }
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.is_empty() {
+            return (String::new(), None);
+        }
+        if normalized.chars().count() <= max_chars {
+            return (normalized, None);
+        }
+
+        let mut line1 = String::new();
+        let mut used_words = 0usize;
+        for word in normalized.split(' ') {
+            let candidate_len = if line1.is_empty() {
+                word.chars().count()
+            } else {
+                line1.chars().count() + 1 + word.chars().count()
+            };
+            if candidate_len > max_chars {
+                break;
+            }
+            if !line1.is_empty() {
+                line1.push(' ');
+            }
+            line1.push_str(word);
+            used_words += 1;
+        }
+
+        if line1.is_empty() {
+            line1 = Self::truncate_with_ellipsis(&normalized, max_chars);
+            return (line1, None);
+        }
+
+        let remainder = normalized
+            .split(' ')
+            .skip(used_words)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if remainder.is_empty() {
+            (line1, None)
+        } else {
+            (
+                line1,
+                Some(Self::truncate_with_ellipsis(remainder.trim(), max_chars)),
+            )
+        }
+    }
+
+    fn render_cover_slot<D: DrawTarget<Color = BinaryColor>>(
+        display: &mut D,
+        book: Option<&BookInfo>,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), D::Error> {
+        Rectangle::new(Point::new(x, y), Size::new(width, height))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+            .draw(display)?;
+        Rectangle::new(Point::new(x, y), Size::new(width, height))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)?;
+        if let Some(book) = book {
+            if book.has_cover_thumbnail() {
+                let _ =
+                    book.draw_cover_thumbnail_scaled(display, x + 1, y + 1, width - 2, height - 2)?;
+            } else {
+                Text::new(
+                    "No",
+                    Point::new(x + 8, y + (height as i32 / 2) - 4),
+                    MonoTextStyle::new(ui_font_small(), BinaryColor::On),
+                )
+                .draw(display)?;
+            }
+        }
+        Ok(())
+    }
+
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
         let title_style = MonoTextStyle::new(ui_font_title(), BinaryColor::On);
         let body_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
         let small_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
+        let body_h = ui_font_body().character_size.height as i32;
+        let small_h = ui_font_small().character_size.height as i32;
 
         // Title
         Text::new("Library", Point::new(MARGIN, HEADER_TEXT_Y), title_style).draw(display)?;
@@ -538,68 +695,100 @@ impl LibraryTabContent {
         // Hero card area
         let hero_y = HEADER_TEXT_Y + GAP_MD;
         let hero_height = HERO_H;
+        let hero_w = DISPLAY_WIDTH - (MARGIN as u32 * 2);
+        let hero_x = MARGIN;
+        let hero_bg = if self.hero_selected {
+            BinaryColor::On
+        } else {
+            BinaryColor::Off
+        };
+        let hero_fg = if self.hero_selected {
+            BinaryColor::Off
+        } else {
+            BinaryColor::On
+        };
 
-        // Hero card border
         Rectangle::new(
-            Point::new(MARGIN, hero_y),
-            Size::new(DISPLAY_WIDTH - (MARGIN as u32 * 2), hero_height as u32),
+            Point::new(hero_x, hero_y),
+            Size::new(hero_w, hero_height as u32),
+        )
+        .into_styled(PrimitiveStyle::with_fill(hero_bg))
+        .draw(display)?;
+        Rectangle::new(
+            Point::new(hero_x, hero_y),
+            Size::new(hero_w, hero_height as u32),
         )
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
 
-        // Vertical positions inside hero card (evenly spaced)
-        let hero_line1 = hero_y + GAP_MD + 2; // "Currently Reading" label
-        let hero_line2 = hero_line1 + GAP_LG; // Title / loading text
-        let hero_line3 = hero_line2 + GAP_LG - 5; // Author
-        let hero_line4 = hero_line3 + GAP_LG - 5; // Progress
+        let cover_w = 62u32;
+        let cover_h = (hero_height as u32).saturating_sub((INNER_PAD as u32) * 2);
+        let cover_x = hero_x + INNER_PAD;
+        let cover_y = hero_y + INNER_PAD;
 
+        let current_book = self
+            .currently_reading_index()
+            .and_then(|idx| self.books.get(idx));
+        Self::render_cover_slot(display, current_book, cover_x, cover_y, cover_w, cover_h)?;
+
+        let text_x = cover_x + cover_w as i32 + INNER_PAD;
+        let text_right = hero_x + hero_w as i32 - INNER_PAD;
+        let text_w_chars = ((text_right - text_x) / ui_font_body_char_width()).max(8) as usize;
+        let hero_label_style = MonoTextStyle::new(ui_font_body(), hero_fg);
+        let hero_small_style = MonoTextStyle::new(ui_font_small(), hero_fg);
         Text::new(
             "Currently Reading",
-            Point::new(MARGIN + INNER_PAD, hero_line1),
-            body_style,
+            Point::new(text_x, hero_y + INNER_PAD + body_h),
+            hero_label_style,
         )
         .draw(display)?;
 
         if self.is_loading {
             Text::new(
                 "Loading...",
-                Point::new(MARGIN + INNER_PAD, hero_line2),
-                small_style,
+                Point::new(text_x, hero_y + INNER_PAD + body_h + GAP_MD),
+                hero_small_style,
             )
             .draw(display)?;
-        } else if self.books.is_empty() {
+        } else if current_book.is_none() {
             Text::new(
                 "No book in progress",
-                Point::new(MARGIN + INNER_PAD, hero_line2),
-                small_style,
+                Point::new(text_x, hero_y + INNER_PAD + body_h + GAP_MD),
+                hero_small_style,
             )
             .draw(display)?;
-        } else if let Some(book) = self.books.first() {
-            Text::new(
-                &book.title,
-                Point::new(MARGIN + INNER_PAD, hero_line2),
-                body_style,
-            )
-            .draw(display)?;
-            if !book.author.is_empty() {
+        } else if let Some(book) = current_book {
+            let (line1, line2) = Self::wrap_to_two_lines(&book.title, text_w_chars);
+            let title_y = hero_y + INNER_PAD + body_h + GAP_MD;
+            Text::new(&line1, Point::new(text_x, title_y), hero_small_style).draw(display)?;
+            if let Some(line2) = line2.as_ref() {
                 Text::new(
-                    &book.author,
-                    Point::new(MARGIN + INNER_PAD, hero_line3),
-                    small_style,
+                    line2,
+                    Point::new(text_x, title_y + small_h + 2),
+                    hero_small_style,
                 )
                 .draw(display)?;
             }
-            let progress_text = format!("{}%", book.progress_percent);
+            if !book.author.is_empty() {
+                let author = Self::truncate_with_ellipsis(&book.author, text_w_chars);
+                Text::new(
+                    &author,
+                    Point::new(text_x, hero_y + hero_height - (small_h * 2) - 4),
+                    hero_small_style,
+                )
+                .draw(display)?;
+            }
+            let progress_text = Self::progress_label(book.progress_percent);
             Text::new(
                 &progress_text,
-                Point::new(MARGIN + INNER_PAD, hero_line4),
-                small_style,
+                Point::new(text_x, hero_y + hero_height - 4),
+                hero_small_style,
             )
             .draw(display)?;
         }
 
         // Library section
-        let list_y = hero_y + hero_height + GAP_LG;
+        let list_y = hero_y + hero_height + GAP_MD;
         Text::new("Your Books", Point::new(MARGIN, list_y), title_style).draw(display)?;
 
         if self.is_loading {
@@ -617,16 +806,26 @@ impl LibraryTabContent {
             )
             .draw(display)?;
         } else {
-            let font_h = ui_font_body().character_size.height as i32;
-            let item_h = font_h + INNER_PAD;
-            let start_y = list_y + GAP_LG;
-            let max_items =
-                layout::max_items(start_y, item_h, DISPLAY_HEIGHT as i32).max(1) as usize;
-            for (i, book) in self.books.iter().enumerate().take(max_items) {
-                let y = start_y + (i as i32) * item_h;
-                if i == self.selected_index {
+            let item_h = (body_h + small_h + INNER_PAD + 8).max(40);
+            let start_y = list_y + body_h + 2;
+            let bottom_limit = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - INNER_PAD;
+            let max_items = ((bottom_limit - start_y) / item_h).max(1) as usize;
+            let selected = if self.hero_selected {
+                0
+            } else {
+                self.selected_index.min(self.books.len().saturating_sub(1))
+            };
+            let scroll_offset = selected.saturating_sub(max_items / 2);
+            for (row, idx) in (scroll_offset..self.books.len())
+                .take(max_items)
+                .enumerate()
+            {
+                let y = start_y + (row as i32) * item_h;
+                let book = &self.books[idx];
+                let is_selected = !self.hero_selected && idx == self.selected_index;
+                if is_selected {
                     Rectangle::new(
-                        Point::new(MARGIN - SELECT_PAD_X, y - font_h),
+                        Point::new(MARGIN - SELECT_PAD_X, y - body_h),
                         Size::new(
                             DISPLAY_WIDTH - (MARGIN as u32 * 2) + (SELECT_PAD_X as u32 * 2),
                             item_h as u32,
@@ -639,9 +838,88 @@ impl LibraryTabContent {
                         .text_color(BinaryColor::Off)
                         .background_color(BinaryColor::On)
                         .build();
-                    Text::new(&book.title, Point::new(MARGIN, y), selected_style).draw(display)?;
+                    let selected_small_style = MonoTextStyleBuilder::new()
+                        .font(ui_font_small())
+                        .text_color(BinaryColor::Off)
+                        .background_color(BinaryColor::On)
+                        .build();
+                    let row_cover_x = MARGIN + 2;
+                    let row_cover_y = y - body_h + 3;
+                    let row_cover_w = 26u32;
+                    let row_cover_h = (item_h as u32).saturating_sub(6);
+                    Self::render_cover_slot(
+                        display,
+                        Some(book),
+                        row_cover_x,
+                        row_cover_y,
+                        row_cover_w,
+                        row_cover_h,
+                    )?;
+                    let row_text_x = row_cover_x + row_cover_w as i32 + 8;
+                    let row_right = DISPLAY_WIDTH as i32 - MARGIN;
+                    let progress_text = Self::progress_label(book.progress_percent);
+                    let progress_w = progress_text.len() as i32 * ui_font_small_char_width();
+                    let title_max_chars = ((row_right - row_text_x - progress_w - 6)
+                        / ui_font_body_char_width())
+                    .max(6) as usize;
+                    let title = Self::truncate_with_ellipsis(&book.title, title_max_chars);
+                    Text::new(&title, Point::new(row_text_x, y), selected_style).draw(display)?;
+                    let author = if book.author.is_empty() {
+                        String::from("Unknown")
+                    } else {
+                        Self::truncate_with_ellipsis(&book.author, title_max_chars)
+                    };
+                    Text::new(
+                        &author,
+                        Point::new(row_text_x, y + small_h + 1),
+                        selected_small_style,
+                    )
+                    .draw(display)?;
+                    Text::new(
+                        &progress_text,
+                        Point::new(row_right - progress_w, y + small_h + 1),
+                        selected_small_style,
+                    )
+                    .draw(display)?;
                 } else {
-                    Text::new(&book.title, Point::new(MARGIN, y), body_style).draw(display)?;
+                    let row_cover_x = MARGIN + 2;
+                    let row_cover_y = y - body_h + 3;
+                    let row_cover_w = 26u32;
+                    let row_cover_h = (item_h as u32).saturating_sub(6);
+                    Self::render_cover_slot(
+                        display,
+                        Some(book),
+                        row_cover_x,
+                        row_cover_y,
+                        row_cover_w,
+                        row_cover_h,
+                    )?;
+                    let row_text_x = row_cover_x + row_cover_w as i32 + 8;
+                    let row_right = DISPLAY_WIDTH as i32 - MARGIN;
+                    let progress_text = Self::progress_label(book.progress_percent);
+                    let progress_w = progress_text.len() as i32 * ui_font_small_char_width();
+                    let title_max_chars = ((row_right - row_text_x - progress_w - 6)
+                        / ui_font_body_char_width())
+                    .max(6) as usize;
+                    let title = Self::truncate_with_ellipsis(&book.title, title_max_chars);
+                    let author = if book.author.is_empty() {
+                        String::from("Unknown")
+                    } else {
+                        Self::truncate_with_ellipsis(&book.author, title_max_chars)
+                    };
+                    Text::new(&title, Point::new(row_text_x, y), body_style).draw(display)?;
+                    Text::new(
+                        &author,
+                        Point::new(row_text_x, y + small_h + 1),
+                        small_style,
+                    )
+                    .draw(display)?;
+                    Text::new(
+                        &progress_text,
+                        Point::new(row_right - progress_w, y + small_h + 1),
+                        small_style,
+                    )
+                    .draw(display)?;
                 }
             }
         }
@@ -695,6 +973,10 @@ impl FilesTabContent {
 
     pub fn epub_position(&self) -> Option<(usize, usize, usize, usize)> {
         self.file_browser.epub_position()
+    }
+
+    pub fn epub_book_progress_percent(&self) -> Option<u8> {
+        self.file_browser.epub_book_progress_percent()
     }
 
     #[cfg(feature = "std")]

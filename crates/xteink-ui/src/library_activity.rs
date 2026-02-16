@@ -69,6 +69,41 @@ impl BookInfo {
         }
     }
 
+    pub(crate) fn has_cover_thumbnail(&self) -> bool {
+        self.cover_thumbnail.is_some()
+    }
+
+    pub(crate) fn draw_cover_thumbnail_scaled<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) -> Result<bool, D::Error> {
+        let Some(thumb) = self.cover_thumbnail.as_ref() else {
+            return Ok(false);
+        };
+        let draw_w = width.min(thumb.width).max(1);
+        let draw_h = height.min(thumb.height).max(1);
+        let offset_x = ((width as i32 - draw_w as i32).max(0)) / 2;
+        let offset_y = ((height as i32 - draw_h as i32).max(0)) / 2;
+        for dy in 0..draw_h {
+            let src_y = (dy as u64 * thumb.height as u64 / draw_h as u64) as u32;
+            for dx in 0..draw_w {
+                let src_x = (dx as u64 * thumb.width as u64 / draw_w as u64) as u32;
+                if thumb.is_black(src_x, src_y) {
+                    Pixel(
+                        Point::new(x + offset_x + dx as i32, y + offset_y + dy as i32),
+                        BinaryColor::On,
+                    )
+                    .draw(display)?;
+                }
+            }
+        }
+        Ok(true)
+    }
+
     #[cfg(feature = "std")]
     pub(crate) fn cover_thumbnail_compact(&self) -> Option<String> {
         let thumb = self.cover_thumbnail.as_ref()?;

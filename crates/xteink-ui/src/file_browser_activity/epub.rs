@@ -221,6 +221,7 @@ impl EpubReadingState {
             page_idx: 0,
         };
         log::info!("[EPUB] reader state allocated (lazy buffers)");
+        state.reserve_working_buffers_early();
         state.register_embedded_fonts();
         log::info!("[EPUB] reader state ready");
         Ok(state)
@@ -249,7 +250,12 @@ impl EpubReadingState {
         for idx in start_chapter_idx..self.book.chapter_count() {
             match self.load_chapter_exact(idx) {
                 Ok(()) => return Ok(()),
-                Err(err) if Self::is_out_of_range_error(&err) => {
+                Err(err) if Self::is_non_renderable_chapter_error(&err) => {
+                    log::warn!(
+                        "[EPUB] skipping chapter idx={} due to non-renderable error: {}",
+                        idx,
+                        err
+                    );
                     self.non_renderable_chapters.insert(idx);
                     continue;
                 }
@@ -264,7 +270,12 @@ impl EpubReadingState {
         while idx >= 0 {
             match self.load_chapter_exact(idx as usize) {
                 Ok(()) => return Ok(()),
-                Err(err) if Self::is_out_of_range_error(&err) => {
+                Err(err) if Self::is_non_renderable_chapter_error(&err) => {
+                    log::warn!(
+                        "[EPUB] skipping chapter idx={} due to non-renderable error: {}",
+                        idx,
+                        err
+                    );
                     self.non_renderable_chapters.insert(idx as usize);
                     idx -= 1;
                 }
@@ -278,8 +289,45 @@ impl EpubReadingState {
         err.contains(Self::OUT_OF_RANGE_ERR)
     }
 
+    fn is_non_renderable_chapter_error(err: &str) -> bool {
+        Self::is_out_of_range_error(err)
+            || err.contains("Unable to allocate EPUB chapter buffer")
+            || err.contains("chapter buffer capped")
+    }
+
     fn is_buffer_too_small_error(err: &str) -> bool {
         err.to_ascii_lowercase().contains("buffer too small")
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn reserve_working_buffers_early(&mut self) {
+        if self.chapter_buf.capacity() < Self::CHAPTER_BUF_CAPACITY_BYTES {
+            if let Err(err) = self
+                .chapter_buf
+                .try_reserve(Self::CHAPTER_BUF_CAPACITY_BYTES)
+            {
+                log::warn!(
+                    "[EPUB] unable to pre-reserve chapter buffer (target={}): {}",
+                    Self::CHAPTER_BUF_CAPACITY_BYTES,
+                    err
+                );
+            } else {
+                log::info!(
+                    "[EPUB] pre-reserved chapter buffer to {} bytes",
+                    self.chapter_buf.capacity()
+                );
+            }
+        }
+
+        if self.chapter_scratch.read_buf.capacity() < 4096 {
+            let _ = self.chapter_scratch.read_buf.try_reserve(4096);
+        }
+        if self.chapter_scratch.xml_buf.capacity() < 2048 {
+            let _ = self.chapter_scratch.xml_buf.try_reserve(2048);
+        }
+        if self.chapter_scratch.text_buf.capacity() < 2048 {
+            let _ = self.chapter_scratch.text_buf.try_reserve(2048);
+        }
     }
 
     fn grow_chapter_buffer(&mut self) -> Result<bool, String> {

@@ -11,7 +11,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -20,7 +20,9 @@ use embedded_graphics::{
 
 use crate::filesystem::{basename, dirname, join_path, FileSystem};
 use crate::input::{Button, InputEvent};
-use crate::ui::theme::{ui_font, ui_font_bold, ui_font_char_width};
+use crate::ui::theme::{
+    layout, ui_font_body, ui_font_body_char_width, ui_font_small, ui_font_title,
+};
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult, Modal, Theme, ThemeMetrics};
 use crate::{DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
@@ -252,9 +254,9 @@ impl LibraryActivity {
     /// Toast display duration in frames
     const TOAST_DURATION: u32 = 120; // ~2 seconds at 60fps
 
-    /// Cover placeholder width
-    const COVER_WIDTH: u32 = 50;
-    const COVER_MAX_HEIGHT: u32 = 44;
+    /// Cover placeholder width (from layout module).
+    const COVER_WIDTH: u32 = layout::COVER_W;
+    const COVER_MAX_HEIGHT: u32 = layout::COVER_MAX_H;
     const MAX_BMP_PIXELS: u32 = 1_500_000;
     const MAX_BMP_BYTES: usize = 2_000_000;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -1185,7 +1187,7 @@ impl LibraryActivity {
         let x = (display_width as i32 - message_width) / 2;
 
         let style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
+            .font(ui_font_title())
             .text_color(BinaryColor::On)
             .build();
         Text::new(message, Point::new(x, center_y), style).draw(display)?;
@@ -1193,8 +1195,13 @@ impl LibraryActivity {
         let sub_message = "Searching /books recursively";
         let sub_width = ThemeMetrics::text_width(sub_message.len());
         let sub_x = (display_width as i32 - sub_width) / 2;
-        let sub_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
-        Text::new(sub_message, Point::new(sub_x, center_y + 25), sub_style).draw(display)?;
+        let sub_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
+        Text::new(
+            sub_message,
+            Point::new(sub_x, center_y + layout::GAP_LG),
+            sub_style,
+        )
+        .draw(display)?;
 
         Ok(())
     }
@@ -1213,7 +1220,7 @@ impl LibraryActivity {
         let x = (display_width as i32 - message_width) / 2;
 
         let style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
+            .font(ui_font_title())
             .text_color(BinaryColor::On)
             .build();
 
@@ -1223,8 +1230,13 @@ impl LibraryActivity {
         let sub_width = ThemeMetrics::text_width(sub_message.len());
         let sub_x = (display_width as i32 - sub_width) / 2;
 
-        let sub_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
-        Text::new(sub_message, Point::new(sub_x, center_y + 25), sub_style).draw(display)?;
+        let sub_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
+        Text::new(
+            sub_message,
+            Point::new(sub_x, center_y + layout::GAP_LG),
+            sub_style,
+        )
+        .draw(display)?;
 
         Ok(())
     }
@@ -1286,7 +1298,7 @@ impl LibraryActivity {
             .draw(display)?;
 
         // Cover placeholder (rectangle)
-        let cover_padding: u32 = 8;
+        let cover_padding = layout::BOOK_COVER_PAD;
         let cover_x = x + cover_padding as i32;
         let cover_y = y + cover_padding as i32;
         let cover_height = item_height - cover_padding * 2;
@@ -1306,19 +1318,19 @@ impl LibraryActivity {
             BinaryColor::On
         };
 
-        let title_style = MonoTextStyle::new(ui_font_bold(), text_color);
-        let author_style = MonoTextStyle::new(ui_font(), text_color);
+        let title_style = MonoTextStyle::new(ui_font_title(), text_color);
+        let author_style = MonoTextStyle::new(ui_font_body(), text_color);
 
         // Title
         let title_x = x + Self::COVER_WIDTH as i32 + (cover_padding * 2) as i32;
-        let title_y = y + 20;
+        let title_y = y + layout::BOOK_TITLE_Y;
         let title_max_width = (x + width as i32 - title_x).max(0);
-        let max_title_chars = (title_max_width / ui_font_char_width()) as usize;
+        let max_title_chars = (title_max_width / ui_font_body_char_width()) as usize;
         let title = book.display_title(max_title_chars);
         Text::new(title, Point::new(title_x, title_y), title_style).draw(display)?;
 
         // Author
-        let author_y = y + 40;
+        let author_y = y + layout::BOOK_AUTHOR_Y;
         let author = if book.author.len() > 25 {
             format!("{}...", &book.author[..22])
         } else {
@@ -1400,9 +1412,9 @@ impl LibraryActivity {
         width: u32,
         text_color: BinaryColor,
     ) -> Result<(), D::Error> {
-        let bar_y = y + 52;
-        let bar_width = 100;
-        let bar_height = 6;
+        let bar_y = y + layout::BOOK_PROGRESS_Y;
+        let bar_width = layout::BOOK_PROGRESS_W;
+        let bar_height = layout::PROGRESS_BAR_H;
         let bar_x = x + width as i32 - bar_width as i32 - self.theme.metrics.side_padding as i32;
 
         // Background bar
@@ -1424,10 +1436,10 @@ impl LibraryActivity {
         // Percentage text
         let percent_label = format!("{}%", progress);
         let percent_x = bar_x - 35;
-        let percent_style = MonoTextStyle::new(&ascii::FONT_6X9, text_color);
+        let percent_style = MonoTextStyle::new(ui_font_small(), text_color);
         Text::new(
             &percent_label,
-            Point::new(percent_x, bar_y + 6),
+            Point::new(percent_x, bar_y + bar_height as i32),
             percent_style,
         )
         .draw(display)?;
@@ -1442,14 +1454,14 @@ impl LibraryActivity {
     ) -> Result<(), D::Error> {
         let display_width = display.bounding_box().size.width;
         let display_height = display.bounding_box().size.height;
-        let indicator_y = display_height as i32 - 20;
-        let indicator_width = 60;
+        let indicator_y = display_height as i32 - layout::MARGIN;
+        let indicator_width = layout::SCROLL_INDICATOR_W;
         let indicator_x = (display_width as i32 - indicator_width) / 2;
 
         // Draw scroll bar background
         Rectangle::new(
             Point::new(indicator_x, indicator_y),
-            Size::new(indicator_width as u32, 4),
+            Size::new(indicator_width as u32, layout::SCROLL_INDICATOR_H),
         )
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
@@ -1466,7 +1478,7 @@ impl LibraryActivity {
 
         Rectangle::new(
             Point::new(indicator_x + thumb_pos, indicator_y),
-            Size::new(thumb_width as u32, 4),
+            Size::new(thumb_width as u32, layout::SCROLL_INDICATOR_H),
         )
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
         .draw(display)?;

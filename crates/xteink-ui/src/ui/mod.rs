@@ -8,4 +8,4 @@ pub mod theme;
 
 pub use activity::{Activity, ActivityRefreshMode, ActivityResult};
 pub use components::{Button, Header, List, Modal, Toast};
-pub use theme::{Theme, ThemeMetrics, FONT_CHAR_WIDTH};
+pub use theme::{Theme, ThemeMetrics};

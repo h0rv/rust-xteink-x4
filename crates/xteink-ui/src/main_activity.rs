@@ -27,16 +27,16 @@ use crate::reader_settings_activity::{
 };
 use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
 use crate::system_menu_activity::DeviceStatus;
-use crate::ui::theme::{set_device_font_profile, ui_font, ui_font_bold, ui_font_char_width};
+use crate::ui::theme::layout::{
+    self, BOTTOM_BAR_H, DOT_SIZE, DOT_SPACING, GAP_LG, GAP_MD, HEADER_TEXT_Y, HERO_H, INNER_PAD,
+    MARGIN, SELECT_PAD_X,
+};
+use crate::ui::theme::{
+    set_device_font_profile, ui_font_body, ui_font_small, ui_font_small_char_width, ui_font_title,
+};
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::DISPLAY_HEIGHT;
 use crate::DISPLAY_WIDTH;
-
-// Layout constants for clean, consistent spacing
-const MARGIN: i32 = 20;
-const BOTTOM_BAR_HEIGHT: i32 = 50;
-const DOT_SIZE: u32 = 10;
-const DOT_SPACING: i32 = 24;
 
 /// The three tabs in order
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,42 +92,66 @@ pub enum SettingItem {
     FontSize,
     FontFamily,
     AutoSleep,
+    InvertColors,
+    // --- Advanced divider rendered between these ---
     LineSpacing,
     MarginSize,
     TextAlignment,
     ShowPageNumbers,
     RefreshFrequency,
-    InvertColors,
     VolumeButtonAction,
     TapZoneConfig,
 }
 
 impl SettingItem {
-    pub const ALL: [Self; 11] = [
+    /// Primary settings (most-used, always visible first).
+    pub const PRIMARY: [Self; 4] = [
         Self::FontSize,
         Self::FontFamily,
         Self::AutoSleep,
+        Self::InvertColors,
+    ];
+
+    /// Advanced / reader-specific settings.
+    pub const ADVANCED: [Self; 7] = [
         Self::LineSpacing,
         Self::MarginSize,
         Self::TextAlignment,
         Self::ShowPageNumbers,
         Self::RefreshFrequency,
-        Self::InvertColors,
         Self::VolumeButtonAction,
         Self::TapZoneConfig,
     ];
+
+    /// All settings in display order (primary then advanced).
+    pub const ALL: [Self; 11] = [
+        Self::FontSize,
+        Self::FontFamily,
+        Self::AutoSleep,
+        Self::InvertColors,
+        Self::LineSpacing,
+        Self::MarginSize,
+        Self::TextAlignment,
+        Self::ShowPageNumbers,
+        Self::RefreshFrequency,
+        Self::VolumeButtonAction,
+        Self::TapZoneConfig,
+    ];
+
+    /// Index of the first advanced item in ALL.
+    pub const ADVANCED_START: usize = Self::PRIMARY.len();
 
     pub fn label(self) -> &'static str {
         match self {
             Self::FontSize => "Font Size",
             Self::FontFamily => "Font Family",
             Self::AutoSleep => "Auto Sleep",
+            Self::InvertColors => "Invert Colors",
             Self::LineSpacing => "Line Spacing",
             Self::MarginSize => "Margins",
             Self::TextAlignment => "Text Align",
             Self::ShowPageNumbers => "Page Numbers",
             Self::RefreshFrequency => "Refresh",
-            Self::InvertColors => "Invert Colors",
             Self::VolumeButtonAction => "Vol Buttons",
             Self::TapZoneConfig => "Tap Zones",
         }
@@ -289,19 +313,19 @@ impl MainActivity {
         &self,
         display: &mut D,
     ) -> Result<(), D::Error> {
-        let bar_y = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_HEIGHT;
+        let bar_y = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H;
 
         // Clear the bottom bar area first
         Rectangle::new(
             Point::new(0, bar_y),
-            Size::new(DISPLAY_WIDTH, BOTTOM_BAR_HEIGHT as u32),
+            Size::new(DISPLAY_WIDTH, BOTTOM_BAR_H as u32),
         )
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
         .draw(display)?;
 
         // Calculate center position for dots
         let center_x = (DISPLAY_WIDTH as i32) / 2;
-        let dot_y = bar_y + 25;
+        let dot_y = bar_y + BOTTOM_BAR_H / 2;
 
         // Draw 3 dots centered
         for i in 0..3i32 {
@@ -322,11 +346,8 @@ impl MainActivity {
 
         // Draw battery percentage on bottom right
         let battery_text = format!("{}%", self.device_status.battery_percent);
-        let battery_style = MonoTextStyle::new(
-            &embedded_graphics::mono_font::ascii::FONT_7X13_BOLD,
-            BinaryColor::On,
-        );
-        let text_width = battery_text.len() as i32 * 7;
+        let battery_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
+        let text_width = battery_text.len() as i32 * ui_font_small_char_width();
         Text::new(
             &battery_text,
             Point::new(DISPLAY_WIDTH as i32 - MARGIN - text_width, dot_y + 4),
@@ -507,15 +528,16 @@ impl LibraryTabContent {
     }
 
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
-        let font = &embedded_graphics::mono_font::ascii::FONT_9X18_BOLD;
-        let text_style = MonoTextStyle::new(font, BinaryColor::On);
+        let title_style = MonoTextStyle::new(ui_font_title(), BinaryColor::On);
+        let body_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
+        let small_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
 
         // Title
-        Text::new("Library", Point::new(MARGIN, MARGIN + 18), text_style).draw(display)?;
+        Text::new("Library", Point::new(MARGIN, HEADER_TEXT_Y), title_style).draw(display)?;
 
         // Hero card area
-        let hero_y = MARGIN + 40;
-        let hero_height = 140;
+        let hero_y = HEADER_TEXT_Y + GAP_MD;
+        let hero_height = HERO_H;
 
         // Hero card border
         Rectangle::new(
@@ -525,101 +547,101 @@ impl LibraryTabContent {
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
         .draw(display)?;
 
-        // "Currently Reading" label
-        let label_style = MonoTextStyle::new(
-            &embedded_graphics::mono_font::ascii::FONT_7X13_BOLD,
-            BinaryColor::On,
-        );
+        // Vertical positions inside hero card (evenly spaced)
+        let hero_line1 = hero_y + GAP_MD + 2; // "Currently Reading" label
+        let hero_line2 = hero_line1 + GAP_LG; // Title / loading text
+        let hero_line3 = hero_line2 + GAP_LG - 5; // Author
+        let hero_line4 = hero_line3 + GAP_LG - 5; // Progress
+
         Text::new(
             "Currently Reading",
-            Point::new(MARGIN + 10, hero_y + 20),
-            label_style,
+            Point::new(MARGIN + INNER_PAD, hero_line1),
+            body_style,
         )
         .draw(display)?;
 
-        // Book info or empty state
-        let content_style = MonoTextStyle::new(
-            &embedded_graphics::mono_font::ascii::FONT_7X13,
-            BinaryColor::On,
-        );
         if self.is_loading {
             Text::new(
                 "Loading...",
-                Point::new(MARGIN + 10, hero_y + 50),
-                content_style,
+                Point::new(MARGIN + INNER_PAD, hero_line2),
+                small_style,
             )
             .draw(display)?;
         } else if self.books.is_empty() {
             Text::new(
                 "No book in progress",
-                Point::new(MARGIN + 10, hero_y + 50),
-                content_style,
+                Point::new(MARGIN + INNER_PAD, hero_line2),
+                small_style,
             )
             .draw(display)?;
         } else if let Some(book) = self.books.first() {
-            // Show the most recent book
             Text::new(
                 &book.title,
-                Point::new(MARGIN + 10, hero_y + 50),
-                label_style,
+                Point::new(MARGIN + INNER_PAD, hero_line2),
+                body_style,
             )
             .draw(display)?;
             if !book.author.is_empty() {
                 Text::new(
                     &book.author,
-                    Point::new(MARGIN + 10, hero_y + 75),
-                    content_style,
+                    Point::new(MARGIN + INNER_PAD, hero_line3),
+                    small_style,
                 )
                 .draw(display)?;
             }
             let progress_text = format!("{}%", book.progress_percent);
             Text::new(
                 &progress_text,
-                Point::new(MARGIN + 10, hero_y + 100),
-                content_style,
+                Point::new(MARGIN + INNER_PAD, hero_line4),
+                small_style,
             )
             .draw(display)?;
         }
 
         // Library section
-        let list_y = hero_y + hero_height + 30;
-        Text::new("Your Books", Point::new(MARGIN, list_y), text_style).draw(display)?;
+        let list_y = hero_y + hero_height + GAP_LG;
+        Text::new("Your Books", Point::new(MARGIN, list_y), title_style).draw(display)?;
 
         if self.is_loading {
             Text::new(
                 "Scanning...",
-                Point::new(MARGIN, list_y + 30),
-                content_style,
+                Point::new(MARGIN, list_y + GAP_LG),
+                small_style,
             )
             .draw(display)?;
         } else if self.books.is_empty() {
             Text::new(
                 "No books found",
-                Point::new(MARGIN, list_y + 30),
-                content_style,
+                Point::new(MARGIN, list_y + GAP_LG),
+                small_style,
             )
             .draw(display)?;
         } else {
-            // List books
-            let start_y = list_y + 30;
-            for (i, book) in self.books.iter().enumerate().take(8) {
-                let y = start_y + (i as i32) * 28;
+            let font_h = ui_font_body().character_size.height as i32;
+            let item_h = font_h + INNER_PAD;
+            let start_y = list_y + GAP_LG;
+            let max_items =
+                layout::max_items(start_y, item_h, DISPLAY_HEIGHT as i32).max(1) as usize;
+            for (i, book) in self.books.iter().enumerate().take(max_items) {
+                let y = start_y + (i as i32) * item_h;
                 if i == self.selected_index {
-                    // Highlight selected
                     Rectangle::new(
-                        Point::new(MARGIN - 5, y - 14),
-                        Size::new(DISPLAY_WIDTH - (MARGIN as u32 * 2) + 10, 24),
+                        Point::new(MARGIN - SELECT_PAD_X, y - font_h),
+                        Size::new(
+                            DISPLAY_WIDTH - (MARGIN as u32 * 2) + (SELECT_PAD_X as u32 * 2),
+                            item_h as u32,
+                        ),
                     )
                     .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                     .draw(display)?;
                     let selected_style = MonoTextStyleBuilder::new()
-                        .font(&embedded_graphics::mono_font::ascii::FONT_7X13)
+                        .font(ui_font_body())
                         .text_color(BinaryColor::Off)
                         .background_color(BinaryColor::On)
                         .build();
                     Text::new(&book.title, Point::new(MARGIN, y), selected_style).draw(display)?;
                 } else {
-                    Text::new(&book.title, Point::new(MARGIN, y), content_style).draw(display)?;
+                    Text::new(&book.title, Point::new(MARGIN, y), body_style).draw(display)?;
                 }
             }
         }
@@ -825,29 +847,29 @@ impl SettingsTabContent {
     }
 
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
-        let font_bold = ui_font_bold();
-        let font_regular = ui_font();
-
-        let title_style = MonoTextStyle::new(font_bold, BinaryColor::On);
-        let label_style = MonoTextStyle::new(font_regular, BinaryColor::On);
-        let value_style = MonoTextStyle::new(
-            &embedded_graphics::mono_font::ascii::FONT_7X13_BOLD,
-            BinaryColor::On,
-        );
+        let title_style = MonoTextStyle::new(ui_font_title(), BinaryColor::On);
+        let label_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
+        let value_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
         let selected_bg_style = MonoTextStyleBuilder::new()
-            .font(font_regular)
+            .font(ui_font_body())
+            .text_color(BinaryColor::Off)
+            .background_color(BinaryColor::On)
+            .build();
+        let selected_value_style = MonoTextStyleBuilder::new()
+            .font(ui_font_small())
             .text_color(BinaryColor::Off)
             .background_color(BinaryColor::On)
             .build();
 
         // Title
-        Text::new("Settings", Point::new(MARGIN, MARGIN + 18), title_style).draw(display)?;
+        Text::new("Settings", Point::new(MARGIN, HEADER_TEXT_Y), title_style).draw(display)?;
 
-        // Settings list
-        let start_y = MARGIN + 40;
-        let item_height = 36i32;
-        let content_height = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_HEIGHT - MARGIN - 40;
-        let max_visible = (content_height / item_height) as usize;
+        // Settings list — derive item height from body font
+        let font_h = ui_font_body().character_size.height as i32;
+        let item_height = font_h + GAP_MD;
+        let start_y = HEADER_TEXT_Y + GAP_MD;
+        let max_visible =
+            layout::max_items(start_y, item_height, DISPLAY_HEIGHT as i32).max(1) as usize;
 
         let scroll_offset = if self.selected_index >= max_visible {
             self.selected_index - max_visible + 1
@@ -855,11 +877,36 @@ impl SettingsTabContent {
             0
         };
 
+        let section_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
+        // Extra vertical offset accumulated for section dividers
+        let mut extra_y = 0i32;
+
         for (i, item) in SettingItem::ALL.iter().enumerate().skip(scroll_offset) {
             let display_idx = i - scroll_offset;
-            let y = start_y + (display_idx as i32) * item_height;
 
-            if y > DISPLAY_HEIGHT as i32 - BOTTOM_BAR_HEIGHT - 10 {
+            // Section divider before the first advanced item
+            if i == SettingItem::ADVANCED_START && display_idx > 0 {
+                let div_y = start_y + (display_idx as i32) * item_height + extra_y;
+                // Separator line
+                Rectangle::new(
+                    Point::new(MARGIN, div_y - font_h / 2),
+                    Size::new(DISPLAY_WIDTH - MARGIN as u32 * 2, 1),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                // "Advanced" label
+                Text::new(
+                    "Advanced",
+                    Point::new(MARGIN, div_y - font_h / 2 + font_h),
+                    section_style,
+                )
+                .draw(display)?;
+                extra_y += item_height;
+            }
+
+            let y = start_y + (display_idx as i32) * item_height + extra_y;
+
+            if y > DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - INNER_PAD {
                 break;
             }
 
@@ -868,10 +915,12 @@ impl SettingsTabContent {
             let value = self.get_setting_value_text(*item);
 
             if is_selected {
-                // Highlight background for selected item
                 Rectangle::new(
-                    Point::new(MARGIN - 5, y - 16),
-                    Size::new(DISPLAY_WIDTH - (MARGIN as u32 * 2) + 10, 28),
+                    Point::new(MARGIN - SELECT_PAD_X, y - font_h),
+                    Size::new(
+                        DISPLAY_WIDTH - (MARGIN as u32 * 2) + (SELECT_PAD_X as u32 * 2),
+                        item_height as u32,
+                    ),
                 )
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)?;
@@ -879,18 +928,18 @@ impl SettingsTabContent {
                 Text::new(label, Point::new(MARGIN, y), selected_bg_style).draw(display)?;
 
                 // Right-align value
-                let value_width = value.len() as i32 * ui_font_char_width();
+                let value_width = value.len() as i32 * ui_font_small_char_width();
                 Text::new(
                     &value,
                     Point::new((DISPLAY_WIDTH as i32) - MARGIN - value_width, y),
-                    selected_bg_style,
+                    selected_value_style,
                 )
                 .draw(display)?;
             } else {
                 Text::new(label, Point::new(MARGIN, y), label_style).draw(display)?;
 
                 // Right-align value
-                let value_width = value.len() as i32 * ui_font_char_width();
+                let value_width = value.len() as i32 * ui_font_small_char_width();
                 Text::new(
                     &value,
                     Point::new((DISPLAY_WIDTH as i32) - MARGIN - value_width, y),

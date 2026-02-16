@@ -9,7 +9,7 @@ extern crate alloc;
 use alloc::format;
 
 use embedded_graphics::{
-    mono_font::{ascii, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -19,7 +19,8 @@ use embedded_graphics::{
 use crate::input::{Button, InputEvent};
 use crate::system_menu_activity::DeviceStatus;
 use crate::ui::helpers::enum_from_index;
-use crate::ui::{Activity, ActivityResult, Theme, FONT_CHAR_WIDTH};
+use crate::ui::theme::{ui_font_body, ui_font_body_char_width, ui_font_title};
+use crate::ui::{Activity, ActivityResult, Theme};
 
 /// Information row label/value pairs
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,9 +266,9 @@ impl InformationActivity {
             BinaryColor::On
         };
 
-        // Label (left side, bold)
+        // Label (left side, title font)
         let label_style = MonoTextStyleBuilder::new()
-            .font(&ascii::FONT_7X13_BOLD)
+            .font(ui_font_title())
             .text_color(text_color)
             .build();
         Text::new(
@@ -277,10 +278,10 @@ impl InformationActivity {
         )
         .draw(display)?;
 
-        // Value (right side)
-        let value_style = MonoTextStyle::new(&ascii::FONT_7X13, text_color);
+        // Value (right side, body font)
+        let value_style = MonoTextStyle::new(ui_font_body(), text_color);
         let value = self.field_value(field);
-        let value_width = value.len() as i32 * FONT_CHAR_WIDTH;
+        let value_width = value.len() as i32 * ui_font_body_char_width();
         Text::new(
             &value,
             Point::new(

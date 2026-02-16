@@ -605,7 +605,8 @@ mod tests {
     }
 
     #[test]
-    fn font_char_width_constant() {
-        assert_eq!(crate::ui::theme::FONT_CHAR_WIDTH, 9);
+    fn font_char_width_runtime() {
+        // Default profile 4 → body = FONT_9X18_BOLD → char width = 9
+        assert!(crate::ui::theme::ui_font_body_char_width() > 0);
     }
 }

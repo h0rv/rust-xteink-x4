@@ -11,7 +11,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_10X20, ascii::FONT_6X10, MonoTextStyle},
+    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -22,6 +22,11 @@ use embedded_text::{alignment::HorizontalAlignment, style::TextBoxStyleBuilder, 
 
 use crate::filesystem::{FileInfo, FileSystem};
 use crate::input::{Button, InputEvent};
+use crate::ui::theme::layout::{
+    ENTRY_H, FOOTER_H, GAP_MD, GAP_SM, HEADER_SEP_Y, HEADER_SUB_Y, HEADER_TEXT_Y, INNER_PAD,
+    MARGIN, PROGRESS_BAR_H, SELECT_BAR_W, SEP_THICKNESS,
+};
+use crate::ui::theme::{ui_font_body, ui_font_small, ui_font_small_char_width, ui_font_title};
 
 /// File browser state
 pub struct FileBrowser {
@@ -35,14 +40,7 @@ pub struct FileBrowser {
 }
 
 impl FileBrowser {
-    /// Number of items visible on screen
     const ITEMS_PER_PAGE: usize = 8;
-    /// Entry height in pixels
-    const ENTRY_HEIGHT: i32 = 44;
-    /// Top margin
-    const TOP_MARGIN: i32 = 44;
-    /// Footer height
-    const FOOTER_HEIGHT: i32 = 24;
 
     /// Create new file browser starting at given path
     pub fn new(start_path: &str) -> Self {
@@ -273,34 +271,45 @@ impl FileBrowser {
         display.clear(BinaryColor::Off)?;
 
         // Header
-        let header_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let subheader_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let header_style = MonoTextStyle::new(ui_font_title(), BinaryColor::On);
+        let subheader_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
         let header_text = if self.current_path == "/" {
             "Library".to_string()
         } else {
             crate::filesystem::basename(&self.current_path).to_string()
         };
-        Text::new(&header_text, Point::new(8, 18), header_style).draw(display)?;
-        Text::new(&self.current_path, Point::new(8, 32), subheader_style).draw(display)?;
-        Rectangle::new(Point::new(0, 36), Size::new(width, 1))
+        Text::new(
+            &header_text,
+            Point::new(MARGIN, HEADER_TEXT_Y),
+            header_style,
+        )
+        .draw(display)?;
+        Text::new(
+            &self.current_path,
+            Point::new(MARGIN, HEADER_SUB_Y),
+            subheader_style,
+        )
+        .draw(display)?;
+        Rectangle::new(Point::new(0, HEADER_SEP_Y), Size::new(width, SEP_THICKNESS))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
         // File list
-        let name_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let meta_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let name_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
+        let meta_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
         let bar_style = PrimitiveStyle::with_fill(BinaryColor::On);
+        let content_y = HEADER_SEP_Y + 2;
 
         let end_index = (self.scroll_offset + self.visible_items).min(self.files.len());
 
         for (i, file) in self.files[self.scroll_offset..end_index].iter().enumerate() {
             let actual_index = self.scroll_offset + i;
-            let y = Self::TOP_MARGIN + (i as i32 * Self::ENTRY_HEIGHT);
+            let y = content_y + (i as i32 * ENTRY_H);
 
             if actual_index == self.selected_index {
                 Rectangle::new(
                     Point::new(0, y - 2),
-                    Size::new(4, Self::ENTRY_HEIGHT as u32),
+                    Size::new(SELECT_BAR_W, ENTRY_H as u32),
                 )
                 .into_styled(bar_style)
                 .draw(display)?;
@@ -329,19 +338,24 @@ impl FileBrowser {
                 format!("FILE  {}", format_size(file.size))
             };
 
-            Text::new(&name, Point::new(10, y + 12), name_style).draw(display)?;
-            Text::new(&meta, Point::new(10, y + 30), meta_style).draw(display)?;
+            Text::new(&name, Point::new(INNER_PAD, y + ENTRY_H / 3), name_style).draw(display)?;
+            Text::new(
+                &meta,
+                Point::new(INNER_PAD, y + ENTRY_H * 3 / 4),
+                meta_style,
+            )
+            .draw(display)?;
 
             Rectangle::new(
-                Point::new(8, y + Self::ENTRY_HEIGHT - 2),
-                Size::new(width.saturating_sub(16), 1),
+                Point::new(MARGIN, y + ENTRY_H - 2),
+                Size::new(width.saturating_sub(MARGIN as u32 * 2), SEP_THICKNESS),
             )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
         }
 
         // Footer hints + position
-        let footer_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let footer_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
         let position = if self.files.is_empty() {
             "0/0".to_string()
         } else {
@@ -349,23 +363,33 @@ impl FileBrowser {
         };
         let footer_text = format!("Vol=Move  OK=Open  Back=Up   {}", position);
         Rectangle::new(
-            Point::new(0, height as i32 - Self::FOOTER_HEIGHT),
-            Size::new(width, 1),
+            Point::new(0, height as i32 - FOOTER_H),
+            Size::new(width, SEP_THICKNESS),
         )
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
         .draw(display)?;
-        Text::new(&footer_text, Point::new(8, height as i32 - 8), footer_style).draw(display)?;
+        Text::new(
+            &footer_text,
+            Point::new(MARGIN, height as i32 - GAP_SM),
+            footer_style,
+        )
+        .draw(display)?;
 
         if let Some(message) = &self.status_message {
-            let bar_height = 16;
-            let bar_top = height as i32 - Self::FOOTER_HEIGHT - bar_height;
-            Rectangle::new(Point::new(0, bar_top), Size::new(width, bar_height as u32))
+            let status_h: i32 = 16;
+            let bar_top = height as i32 - FOOTER_H - status_h;
+            Rectangle::new(Point::new(0, bar_top), Size::new(width, status_h as u32))
                 .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
                 .draw(display)?;
-            Rectangle::new(Point::new(0, bar_top), Size::new(width, bar_height as u32))
+            Rectangle::new(Point::new(0, bar_top), Size::new(width, status_h as u32))
                 .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
                 .draw(display)?;
-            Text::new(message, Point::new(8, bar_top + 12), footer_style).draw(display)?;
+            Text::new(
+                message,
+                Point::new(MARGIN, bar_top + status_h * 3 / 4),
+                footer_style,
+            )
+            .draw(display)?;
         }
 
         Ok(())
@@ -391,11 +415,8 @@ pub struct TextViewer {
 }
 
 impl TextViewer {
-    const TOP_MARGIN: i32 = 44;
-    #[allow(dead_code)]
-    const BOTTOM_MARGIN: i32 = 40;
-    const CONTENT_TOP_MARGIN: i32 = 44;
-    const CONTENT_BOTTOM_MARGIN: i32 = 44;
+    const CONTENT_TOP: i32 = HEADER_SEP_Y + 2;
+    const CONTENT_BOTTOM: i32 = FOOTER_H;
 
     /// Create new text viewer with content
     /// Automatically paginates the content to fit the display
@@ -416,7 +437,7 @@ impl TextViewer {
         // TODO: Use embedded-text to measure actual rendered height
         let lines: Vec<&str> = content.lines().collect();
         let content_height =
-            crate::DISPLAY_HEIGHT as i32 - Self::CONTENT_TOP_MARGIN - Self::CONTENT_BOTTOM_MARGIN;
+            crate::DISPLAY_HEIGHT as i32 - Self::CONTENT_TOP - Self::CONTENT_BOTTOM;
         let lines_per_page = (content_height / 22).max(1) as usize;
 
         let mut pages = Vec::new();
@@ -471,63 +492,81 @@ impl TextViewer {
         let size = display.bounding_box().size;
         let width = size.width.min(size.height);
         let height = size.width.max(size.height);
-        let content_height = height as i32 - Self::CONTENT_TOP_MARGIN - Self::CONTENT_BOTTOM_MARGIN;
+        let content_height = height as i32 - Self::CONTENT_TOP - Self::CONTENT_BOTTOM;
 
         // Clear screen
         display.clear(BinaryColor::Off)?;
 
         // Header
-        let header_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-        let subheader_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let header_style = MonoTextStyle::new(ui_font_title(), BinaryColor::On);
+        let subheader_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
         let truncated_title = if title.len() > 40 {
             format!("{}...", &title[..37])
         } else {
             title.to_string()
         };
-        Text::new(&truncated_title, Point::new(8, 18), header_style).draw(display)?;
+        Text::new(
+            &truncated_title,
+            Point::new(MARGIN, HEADER_TEXT_Y),
+            header_style,
+        )
+        .draw(display)?;
         let progress_text = format!("{}/{}", self.current_page + 1, self.total_pages());
-        let progress_x = width as i32 - (progress_text.len() as i32 * 6) - 8;
-        Text::new(&progress_text, Point::new(progress_x, 18), subheader_style).draw(display)?;
-        Rectangle::new(Point::new(0, 36), Size::new(width, 1))
+        let progress_x =
+            width as i32 - (progress_text.len() as i32 * ui_font_small_char_width()) - MARGIN;
+        Text::new(
+            &progress_text,
+            Point::new(progress_x, HEADER_TEXT_Y),
+            subheader_style,
+        )
+        .draw(display)?;
+        Rectangle::new(Point::new(0, HEADER_SEP_Y), Size::new(width, SEP_THICKNESS))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
 
-        // Use embedded-text TextBox for proper word wrapping
-        let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        // Content area with word wrapping
+        let character_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
         let textbox_style = TextBoxStyleBuilder::new()
             .alignment(HorizontalAlignment::Left)
-            .paragraph_spacing(6)
+            .paragraph_spacing(GAP_SM as u32)
             .build();
 
-        // Define content area (480x710)
         let bounds = Rectangle::new(
-            Point::new(10, Self::TOP_MARGIN),
-            Size::new(width.saturating_sub(20), content_height as u32),
+            Point::new(INNER_PAD, Self::CONTENT_TOP),
+            Size::new(
+                width.saturating_sub(INNER_PAD as u32 * 2),
+                content_height as u32,
+            ),
         );
 
-        // Get current page content
         let page_content = &self.pages[self.current_page];
-
-        // Create and draw text box
         let text_box =
             TextBox::with_textbox_style(page_content, bounds, character_style, textbox_style);
         text_box.draw(display)?;
 
         // Footer (progress bar + hints)
-        let footer_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-        let bar_width = width.saturating_sub(20);
-        let bar_x = 10;
-        let bar_y = height as i32 - 18;
+        let footer_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
+        let bar_width = width.saturating_sub(MARGIN as u32 * 2);
+        let bar_x = MARGIN;
+        let bar_y = height as i32 - GAP_MD;
         let total_pages = self.total_pages().max(1);
         let filled = ((bar_width as usize * (self.current_page + 1)) / total_pages) as u32;
-        Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_width, 6))
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)?;
-        Rectangle::new(Point::new(bar_x, bar_y), Size::new(filled, 6))
+        Rectangle::new(
+            Point::new(bar_x, bar_y),
+            Size::new(bar_width, PROGRESS_BAR_H),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(display)?;
+        Rectangle::new(Point::new(bar_x, bar_y), Size::new(filled, PROGRESS_BAR_H))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
         let footer_text = "Left/Right to turn pages";
-        Text::new(footer_text, Point::new(10, height as i32 - 6), footer_style).draw(display)?;
+        Text::new(
+            footer_text,
+            Point::new(MARGIN, height as i32 - GAP_SM),
+            footer_style,
+        )
+        .draw(display)?;
 
         Ok(())
     }

@@ -24,10 +24,7 @@ use std::thread;
 
 #[cfg(feature = "std")]
 use embedded_graphics::{
-    mono_font::{
-        ascii::{FONT_7X13, FONT_7X13_BOLD, FONT_8X13, FONT_9X18_BOLD},
-        MonoTextStyle,
-    },
+    mono_font::MonoTextStyle,
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
@@ -56,18 +53,19 @@ use crate::filesystem::{basename, dirname, FileSystem};
 use crate::input::{Button, InputEvent};
 use crate::reader_settings_activity::ReaderSettings;
 #[cfg(feature = "std")]
-use crate::ui::theme::ui_text;
+use crate::ui::theme::{layout, ui_font_body, ui_font_small, ui_font_title, ui_text};
 use crate::ui::{Activity, ActivityResult};
 
 #[cfg(feature = "std")]
 mod epub;
 
+// Re-export layout constants under the names used by epub.rs
 #[cfg(feature = "std")]
-pub(super) const EPUB_FOOTER_HEIGHT: i32 = 36;
+pub(super) use crate::ui::theme::layout::EPUB_FOOTER_BOTTOM_PAD as EPUB_FOOTER_BOTTOM_PADDING;
 #[cfg(feature = "std")]
-pub(super) const EPUB_FOOTER_BOTTOM_PADDING: i32 = 12;
+pub(super) use crate::ui::theme::layout::EPUB_FOOTER_H as EPUB_FOOTER_HEIGHT;
 #[cfg(feature = "std")]
-pub(super) const EPUB_FOOTER_TOP_GAP: i32 = 8;
+pub(super) use crate::ui::theme::layout::EPUB_FOOTER_TOP_GAP;
 
 #[derive(Debug, Clone)]
 enum FileBrowserTask {
@@ -1172,13 +1170,19 @@ impl FileBrowserActivity {
         let size = display.bounding_box().size;
         let width = size.width.min(size.height) as i32;
         let height = size.width.max(size.height) as i32;
-        let panel_w = (width - 32).max(120);
+        let panel_w = (width - layout::OVERLAY_PANEL_MARGIN * 2).max(120);
         let panel_h = (height - 110).max(120);
         let panel_x = (width - panel_w) / 2;
-        let panel_y = ((height - panel_h) / 2 - 8).max(8);
+        let panel_y = ((height - panel_h) / 2 - layout::GAP_SM).max(layout::GAP_SM);
         Rectangle::new(
-            Point::new(panel_x - 4, panel_y - 4),
-            Size::new((panel_w + 8) as u32, (panel_h + 8) as u32),
+            Point::new(
+                panel_x - layout::OVERLAY_BORDER_PAD,
+                panel_y - layout::OVERLAY_BORDER_PAD,
+            ),
+            Size::new(
+                (panel_w + layout::OVERLAY_BORDER_PAD * 2) as u32,
+                (panel_h + layout::OVERLAY_BORDER_PAD * 2) as u32,
+            ),
         )
         .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
         .draw(display)?;
@@ -1189,15 +1193,15 @@ impl FileBrowserActivity {
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
 
-        let title_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::On);
-        let body_style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
-        let hint_style = MonoTextStyle::new(&FONT_7X13, BinaryColor::On);
+        let title_style = MonoTextStyle::new(ui_font_title(), BinaryColor::On);
+        let body_style = MonoTextStyle::new(ui_font_body(), BinaryColor::On);
+        let hint_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
 
         match overlay {
             EpubOverlay::QuickMenu { selected } => {
                 Text::new(
                     "Reader Menu",
-                    Point::new(panel_x + 8, panel_y + 22),
+                    Point::new(panel_x + layout::GAP_SM, panel_y + layout::OVERLAY_TITLE_Y),
                     title_style,
                 )
                 .draw(display)?;
@@ -1211,7 +1215,8 @@ impl FileBrowserActivity {
                     "Back to Files",
                 ];
                 for (i, item) in items.iter().enumerate() {
-                    let y = panel_y + 56 + (i as i32 * 22);
+                    let y =
+                        panel_y + layout::OVERLAY_CONTENT_Y + (i as i32 * layout::OVERLAY_ROW_H);
                     let label = match i {
                         4 => format!("{}{}", item, self.reader_settings.footer_density.label()),
                         5 => format!("{}{}", item, self.reader_settings.footer_auto_hide.label()),
@@ -1219,29 +1224,38 @@ impl FileBrowserActivity {
                     };
                     if i == *selected {
                         Rectangle::new(
-                            Point::new(panel_x + 6, y - 16),
-                            Size::new((panel_w - 12) as u32, 22),
+                            Point::new(
+                                panel_x + layout::OVERLAY_SELECT_INSET,
+                                y - layout::OVERLAY_ROW_H + layout::OVERLAY_SELECT_INSET,
+                            ),
+                            Size::new(
+                                (panel_w - layout::OVERLAY_SELECT_INSET * 2) as u32,
+                                layout::OVERLAY_ROW_H as u32,
+                            ),
                         )
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display)?;
                         Text::new(
                             &label,
-                            Point::new(panel_x + 10, y),
-                            MonoTextStyle::new(&FONT_8X13, BinaryColor::Off),
+                            Point::new(panel_x + layout::INNER_PAD, y),
+                            MonoTextStyle::new(ui_font_body(), BinaryColor::Off),
                         )
                         .draw(display)?;
                     } else {
                         Text::new(
                             &label,
-                            Point::new(panel_x + 10, y),
-                            MonoTextStyle::new(&FONT_8X13, BinaryColor::On),
+                            Point::new(panel_x + layout::INNER_PAD, y),
+                            MonoTextStyle::new(ui_font_body(), BinaryColor::On),
                         )
                         .draw(display)?;
                     }
                 }
                 Text::new(
                     "U/D Move  OK Select  Back Close",
-                    Point::new(panel_x + 8, panel_y + panel_h - 14),
+                    Point::new(
+                        panel_x + layout::GAP_SM,
+                        panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM,
+                    ),
                     hint_style,
                 )
                 .draw(display)?;
@@ -1253,7 +1267,7 @@ impl FileBrowserActivity {
             } => {
                 Text::new(
                     "Table of Contents",
-                    Point::new(panel_x + 8, panel_y + 22),
+                    Point::new(panel_x + layout::GAP_SM, panel_y + layout::OVERLAY_TITLE_Y),
                     title_style,
                 )
                 .draw(display)?;
@@ -1264,25 +1278,32 @@ impl FileBrowserActivity {
                         break;
                     }
                     let item = &items[idx];
-                    let y = panel_y + 56 + (row as i32 * 22);
-                    let indent = (item.depth.min(4) as i32) * 10;
+                    let y =
+                        panel_y + layout::OVERLAY_CONTENT_Y + (row as i32 * layout::OVERLAY_ROW_H);
+                    let indent = (item.depth.min(4) as i32) * layout::INNER_PAD;
                     if idx == *selected {
                         Rectangle::new(
-                            Point::new(panel_x + 6, y - 15),
-                            Size::new((panel_w - 12) as u32, 20),
+                            Point::new(
+                                panel_x + layout::OVERLAY_SELECT_INSET,
+                                y - layout::OVERLAY_ROW_H + layout::OVERLAY_SELECT_INSET + 1,
+                            ),
+                            Size::new(
+                                (panel_w - layout::OVERLAY_SELECT_INSET * 2) as u32,
+                                (layout::OVERLAY_ROW_H - 2) as u32,
+                            ),
                         )
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display)?;
                         Text::new(
                             &item.label,
-                            Point::new(panel_x + 10 + indent, y),
-                            MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::Off),
+                            Point::new(panel_x + layout::INNER_PAD + indent, y),
+                            MonoTextStyle::new(ui_font_body(), BinaryColor::Off),
                         )
                         .draw(display)?;
                     } else {
                         Text::new(
                             &item.label,
-                            Point::new(panel_x + 10 + indent, y),
+                            Point::new(panel_x + layout::INNER_PAD + indent, y),
                             body_style,
                         )
                         .draw(display)?;
@@ -1291,13 +1312,16 @@ impl FileBrowserActivity {
                 let pos = format!("{}/{}", selected + 1, items.len());
                 Text::new(
                     &pos,
-                    Point::new(panel_x + panel_w - 72, panel_y + 22),
+                    Point::new(panel_x + panel_w - 72, panel_y + layout::OVERLAY_TITLE_Y),
                     body_style,
                 )
                 .draw(display)?;
                 Text::new(
                     "U/D Move  L/R Pg  OK Jump  Back",
-                    Point::new(panel_x + 8, panel_y + panel_h - 14),
+                    Point::new(
+                        panel_x + layout::GAP_SM,
+                        panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM,
+                    ),
                     hint_style,
                 )
                 .draw(display)?;
@@ -1305,35 +1329,53 @@ impl FileBrowserActivity {
             EpubOverlay::JumpPercent { percent } => {
                 Text::new(
                     "Go to Position",
-                    Point::new(panel_x + 8, panel_y + 22),
+                    Point::new(panel_x + layout::GAP_SM, panel_y + layout::OVERLAY_TITLE_Y),
                     title_style,
                 )
                 .draw(display)?;
                 let pct = format!("{}%", percent);
                 Text::new(
                     &pct,
-                    Point::new(panel_x + panel_w / 2 - 28, panel_y + 64),
-                    MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::On),
+                    Point::new(
+                        panel_x + panel_w / 2 - 28,
+                        panel_y + layout::OVERLAY_CONTENT_Y + layout::GAP_SM,
+                    ),
+                    MonoTextStyle::new(ui_font_title(), BinaryColor::On),
                 )
                 .draw(display)?;
 
-                let bar_x = panel_x + 16;
-                let bar_y = panel_y + 88;
-                let bar_w = panel_w - 32;
-                Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_w as u32, 16))
-                    .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-                    .draw(display)?;
+                let bar_x = panel_x + layout::OVERLAY_PANEL_MARGIN;
+                let bar_y =
+                    panel_y + layout::OVERLAY_CONTENT_Y + layout::OVERLAY_ROW_H + layout::INNER_PAD;
+                let bar_w = panel_w - layout::OVERLAY_PANEL_MARGIN * 2;
+                Rectangle::new(
+                    Point::new(bar_x, bar_y),
+                    Size::new(bar_w as u32, layout::OVERLAY_BAR_H as u32),
+                )
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(display)?;
                 let fill = (bar_w.saturating_sub(4) * (*percent as i32)) / 100;
                 if fill > 0 {
-                    Rectangle::new(Point::new(bar_x + 2, bar_y + 2), Size::new(fill as u32, 12))
-                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                        .draw(display)?;
+                    Rectangle::new(
+                        Point::new(bar_x + 2, bar_y + 2),
+                        Size::new(fill as u32, (layout::OVERLAY_BAR_H - 4) as u32),
+                    )
+                    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                    .draw(display)?;
                 }
                 let chapter = format!("Now: {}%", renderer.book_progress_percent());
-                Text::new(&chapter, Point::new(bar_x, bar_y + 34), body_style).draw(display)?;
+                Text::new(
+                    &chapter,
+                    Point::new(bar_x, bar_y + layout::OVERLAY_BAR_H + layout::GAP_MD),
+                    body_style,
+                )
+                .draw(display)?;
                 Text::new(
                     "L/R 1%  U/D 10%  OK Jump  Back",
-                    Point::new(panel_x + 8, panel_y + panel_h - 14),
+                    Point::new(
+                        panel_x + layout::GAP_SM,
+                        panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM,
+                    ),
                     hint_style,
                 )
                 .draw(display)?;
@@ -1341,19 +1383,25 @@ impl FileBrowserActivity {
             EpubOverlay::Finished => {
                 Text::new(
                     "Finished",
-                    Point::new(panel_x + 8, panel_y + 22),
+                    Point::new(panel_x + layout::GAP_SM, panel_y + layout::OVERLAY_TITLE_Y),
                     title_style,
                 )
                 .draw(display)?;
                 Text::new(
                     "You reached the end of this book.",
-                    Point::new(panel_x + 10, panel_y + 58),
+                    Point::new(
+                        panel_x + layout::INNER_PAD,
+                        panel_y + layout::OVERLAY_CONTENT_Y + 2,
+                    ),
                     body_style,
                 )
                 .draw(display)?;
                 Text::new(
                     "Confirm/Back Exit  Any Nav Continue",
-                    Point::new(panel_x + 8, panel_y + panel_h - 14),
+                    Point::new(
+                        panel_x + layout::GAP_SM,
+                        panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM,
+                    ),
                     hint_style,
                 )
                 .draw(display)?;

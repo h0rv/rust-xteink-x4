@@ -280,30 +280,62 @@ fn reconcile_web_upload_server(
     web_upload_server: &mut Option<WebUploadServer>,
 ) -> bool {
     let was_active = web_upload_server.is_some();
+    let mut restart_requested = false;
+
+    if let Some(mode_ap) = app.take_wifi_mode_request() {
+        let mode = if mode_ap {
+            wifi_manager::WifiMode::AccessPoint
+        } else {
+            wifi_manager::WifiMode::Station
+        };
+        if let Err(err) = wifi_manager.set_mode(mode) {
+            log::warn!("[WIFI] unable to set mode: {}", err);
+        } else {
+            restart_requested = was_active;
+        }
+    }
+
+    if let Some((ssid, password)) = app.take_wifi_ap_config_request() {
+        if let Err(err) = wifi_manager.configure_ap(ssid, password) {
+            log::warn!("[WIFI] unable to configure AP: {}", err);
+        } else {
+            restart_requested = was_active;
+        }
+    }
+
     if let Some(request_start) = app.take_file_transfer_request() {
         if request_start {
-            match wifi_manager.start_transfer_network() {
-                Ok(()) => {
-                    if web_upload_server.is_none() {
-                        match WebUploadServer::start() {
-                            Ok(server) => {
-                                *web_upload_server = Some(server);
-                            }
-                            Err(err) => {
-                                log::warn!("[WEB] upload server start failed: {}", err);
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    log::warn!("[WIFI] unable to start transfer network: {}", err);
-                }
-            }
+            restart_requested = true;
         } else {
             stop_web_upload_server(web_upload_server);
             wifi_manager.stop_transfer_network();
         }
     }
+
+    if restart_requested {
+        if web_upload_server.is_some() {
+            stop_web_upload_server(web_upload_server);
+            wifi_manager.stop_transfer_network();
+        }
+        match wifi_manager.start_transfer_network() {
+            Ok(()) => {
+                if web_upload_server.is_none() {
+                    match WebUploadServer::start() {
+                        Ok(server) => {
+                            *web_upload_server = Some(server);
+                        }
+                        Err(err) => {
+                            log::warn!("[WEB] upload server start failed: {}", err);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                log::warn!("[WIFI] unable to start transfer network: {}", err);
+            }
+        }
+    }
+
     let is_active = web_upload_server.is_some();
     app.set_file_transfer_active(is_active);
     let transfer_info = wifi_manager.transfer_info();

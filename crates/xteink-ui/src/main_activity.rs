@@ -89,7 +89,21 @@ pub struct LibraryTabContent {
     transfer_password_hint: String,
     transfer_url: String,
     transfer_message: String,
+    transfer_menu_index: usize,
+    transfer_editor: Option<TransferEditorKind>,
+    transfer_edit_buffer: String,
+    transfer_edit_cursor: usize,
+    transfer_ap_ssid_value: String,
+    transfer_ap_password_value: String,
+    pending_wifi_mode_ap: Option<bool>,
+    pending_wifi_ap_config: Option<(String, String)>,
     refresh_request: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferEditorKind {
+    ApSsid,
+    ApPassword,
 }
 
 /// Content for Files tab (Tab 1)
@@ -499,6 +513,14 @@ impl LibraryTabContent {
             transfer_password_hint: String::new(),
             transfer_url: String::new(),
             transfer_message: String::new(),
+            transfer_menu_index: 0,
+            transfer_editor: None,
+            transfer_edit_buffer: String::new(),
+            transfer_edit_cursor: 0,
+            transfer_ap_ssid_value: String::from("Xteink-X4"),
+            transfer_ap_password_value: String::from("xteink2026"),
+            pending_wifi_mode_ap: None,
+            pending_wifi_ap_config: None,
             refresh_request: false,
         }
     }
@@ -548,10 +570,24 @@ impl LibraryTabContent {
         self.transfer_password_hint = password_hint;
         self.transfer_url = url;
         self.transfer_message = message;
+        if !self.transfer_ssid.is_empty() {
+            self.transfer_ap_ssid_value = self.transfer_ssid.clone();
+        }
+        if let Some(password) = self.transfer_password_hint.strip_prefix("Password: ") {
+            self.transfer_ap_password_value = password.to_string();
+        }
     }
 
     pub fn take_file_transfer_request(&mut self) -> Option<bool> {
         self.pending_file_transfer_request.take()
+    }
+
+    pub fn take_wifi_mode_request(&mut self) -> Option<bool> {
+        self.pending_wifi_mode_ap.take()
+    }
+
+    pub fn take_wifi_ap_config_request(&mut self) -> Option<(String, String)> {
+        self.pending_wifi_ap_config.take()
     }
 
     pub fn is_transfer_screen_open(&self) -> bool {
@@ -570,17 +606,146 @@ impl LibraryTabContent {
         }
         self.transfer_screen_open = false;
         self.transfer_selected = false;
+        self.transfer_editor = None;
+    }
+
+    fn transfer_charset() -> &'static [u8] {
+        b" abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:/"
+    }
+
+    fn cycle_editor_char(&mut self, step: isize) {
+        let charset = Self::transfer_charset();
+        if charset.is_empty() {
+            return;
+        }
+        if self.transfer_edit_buffer.is_empty() {
+            self.transfer_edit_buffer.push(charset[0] as char);
+            self.transfer_edit_cursor = 0;
+            return;
+        }
+        if self.transfer_edit_cursor >= self.transfer_edit_buffer.len() {
+            self.transfer_edit_cursor = self.transfer_edit_buffer.len().saturating_sub(1);
+        }
+        let mut bytes = self.transfer_edit_buffer.clone().into_bytes();
+        let current = bytes[self.transfer_edit_cursor];
+        let mut idx = charset.iter().position(|ch| *ch == current).unwrap_or(0) as isize;
+        idx = (idx + step).rem_euclid(charset.len() as isize);
+        bytes[self.transfer_edit_cursor] = charset[idx as usize];
+        if let Ok(next) = String::from_utf8(bytes) {
+            self.transfer_edit_buffer = next;
+        }
+    }
+
+    fn begin_transfer_editor(&mut self, kind: TransferEditorKind) {
+        self.transfer_editor = Some(kind);
+        self.transfer_edit_buffer = match kind {
+            TransferEditorKind::ApSsid => self.transfer_ap_ssid_value.clone(),
+            TransferEditorKind::ApPassword => self.transfer_ap_password_value.clone(),
+        };
+        if self.transfer_edit_buffer.is_empty() {
+            self.transfer_edit_buffer.push(' ');
+        }
+        self.transfer_edit_cursor = self.transfer_edit_buffer.len().saturating_sub(1);
+    }
+
+    fn commit_transfer_editor(&mut self) {
+        let Some(kind) = self.transfer_editor else {
+            return;
+        };
+        let trimmed = self.transfer_edit_buffer.trim().to_string();
+        match kind {
+            TransferEditorKind::ApSsid => {
+                if !trimmed.is_empty() {
+                    self.transfer_ap_ssid_value = trimmed;
+                }
+            }
+            TransferEditorKind::ApPassword => {
+                self.transfer_ap_password_value = trimmed;
+            }
+        }
+        self.pending_wifi_ap_config = Some((
+            self.transfer_ap_ssid_value.clone(),
+            self.transfer_ap_password_value.clone(),
+        ));
+        self.transfer_editor = None;
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
         if self.transfer_screen_open {
+            if self.transfer_editor.is_some() {
+                match event {
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                        self.cycle_editor_char(1);
+                        return ActivityResult::Consumed;
+                    }
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                        self.cycle_editor_char(-1);
+                        return ActivityResult::Consumed;
+                    }
+                    InputEvent::Press(Button::Left) => {
+                        self.transfer_edit_cursor = self.transfer_edit_cursor.saturating_sub(1);
+                        return ActivityResult::Consumed;
+                    }
+                    InputEvent::Press(Button::Right) => {
+                        if self.transfer_edit_cursor + 1 < self.transfer_edit_buffer.len() {
+                            self.transfer_edit_cursor += 1;
+                        } else if self.transfer_edit_buffer.len() < 64 {
+                            self.transfer_edit_buffer.push(' ');
+                            self.transfer_edit_cursor = self.transfer_edit_buffer.len() - 1;
+                        }
+                        return ActivityResult::Consumed;
+                    }
+                    InputEvent::Press(Button::Power) => {
+                        if !self.transfer_edit_buffer.is_empty()
+                            && self.transfer_edit_cursor < self.transfer_edit_buffer.len()
+                        {
+                            self.transfer_edit_buffer.remove(self.transfer_edit_cursor);
+                            if self.transfer_edit_buffer.is_empty() {
+                                self.transfer_edit_buffer.push(' ');
+                                self.transfer_edit_cursor = 0;
+                            } else if self.transfer_edit_cursor >= self.transfer_edit_buffer.len() {
+                                self.transfer_edit_cursor =
+                                    self.transfer_edit_buffer.len().saturating_sub(1);
+                            }
+                        }
+                        return ActivityResult::Consumed;
+                    }
+                    InputEvent::Press(Button::Confirm) => {
+                        self.commit_transfer_editor();
+                        return ActivityResult::Consumed;
+                    }
+                    InputEvent::Press(Button::Back) => {
+                        self.transfer_editor = None;
+                        return ActivityResult::Consumed;
+                    }
+                }
+            }
             match event {
-                InputEvent::Press(Button::Back) | InputEvent::Press(Button::Confirm) => {
+                InputEvent::Press(Button::Back) => {
                     self.transfer_screen_open = false;
                     self.transfer_selected = false;
                     self.hero_selected = true;
                     if self.file_transfer_active {
                         self.pending_file_transfer_request = Some(false);
+                    }
+                    return ActivityResult::Consumed;
+                }
+                InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                    self.transfer_menu_index = self.transfer_menu_index.saturating_sub(1);
+                    return ActivityResult::Consumed;
+                }
+                InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                    self.transfer_menu_index = (self.transfer_menu_index + 1).min(4);
+                    return ActivityResult::Consumed;
+                }
+                InputEvent::Press(Button::Confirm) => {
+                    match self.transfer_menu_index {
+                        0 => self.begin_transfer_editor(TransferEditorKind::ApSsid),
+                        1 => self.begin_transfer_editor(TransferEditorKind::ApPassword),
+                        2 => self.pending_wifi_mode_ap = Some(true),
+                        3 => self.pending_wifi_mode_ap = Some(false),
+                        4 => self.pending_file_transfer_request = Some(true),
+                        _ => {}
                     }
                     return ActivityResult::Consumed;
                 }
@@ -845,11 +1010,75 @@ impl LibraryTabContent {
             )
             .draw(display)?;
             Text::new(
-                "Back/Confirm: Exit",
+                "Back: Exit  Confirm: Select",
                 Point::new(MARGIN, DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - 8),
                 small_style,
             )
             .draw(display)?;
+            if let Some(kind) = self.transfer_editor {
+                let overlay_top = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - 92;
+                Rectangle::new(
+                    Point::new(MARGIN - 2, overlay_top),
+                    Size::new(DISPLAY_WIDTH - (MARGIN as u32 * 2) + 4, 84),
+                )
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(display)?;
+                let label = match kind {
+                    TransferEditorKind::ApSsid => "Edit AP SSID",
+                    TransferEditorKind::ApPassword => "Edit AP Password",
+                };
+                Text::new(label, Point::new(MARGIN + 4, overlay_top + 14), small_style)
+                    .draw(display)?;
+                Text::new(
+                    &self.transfer_edit_buffer,
+                    Point::new(MARGIN + 4, overlay_top + 30),
+                    body_style,
+                )
+                .draw(display)?;
+                let cursor_x =
+                    MARGIN + 4 + (self.transfer_edit_cursor as i32 * ui_font_body_char_width());
+                Rectangle::new(
+                    Point::new(cursor_x, overlay_top + 34),
+                    Size::new(ui_font_body_char_width() as u32, 2),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                Text::new(
+                    "U/D:Char L/R:Move P:Del C:Save B:Cancel",
+                    Point::new(MARGIN + 4, overlay_top + 48),
+                    small_style,
+                )
+                .draw(display)?;
+            } else {
+                let menu_top = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - 102;
+                let items = [
+                    "Edit AP SSID",
+                    "Edit AP Password",
+                    "Use Hotspot Mode",
+                    "Use Wi-Fi Mode",
+                    "Start/Restart",
+                ];
+                for (idx, item) in items.iter().enumerate() {
+                    let y = menu_top + (idx as i32 * (small_h + 3));
+                    if idx == self.transfer_menu_index {
+                        Rectangle::new(
+                            Point::new(MARGIN - 2, y - small_h + 1),
+                            Size::new(220, (small_h + 3) as u32),
+                        )
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(display)?;
+                        let selected_small_style = MonoTextStyleBuilder::new()
+                            .font(ui_font_small())
+                            .text_color(BinaryColor::Off)
+                            .background_color(BinaryColor::On)
+                            .build();
+                        Text::new(item, Point::new(MARGIN, y), selected_small_style)
+                            .draw(display)?;
+                    } else {
+                        Text::new(item, Point::new(MARGIN, y), small_style).draw(display)?;
+                    }
+                }
+            }
             return Ok(());
         }
 

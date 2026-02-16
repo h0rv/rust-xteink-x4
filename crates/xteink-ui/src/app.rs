@@ -62,6 +62,8 @@ pub struct App {
     applied_settings: UnifiedSettings,
     filtered_battery_percent: Option<u8>,
     pending_file_transfer_request: Option<bool>,
+    pending_wifi_mode_ap: Option<bool>,
+    pending_wifi_ap_config: Option<(String, String)>,
 }
 
 impl App {
@@ -92,6 +94,8 @@ impl App {
             applied_settings: UnifiedSettings::default(),
             filtered_battery_percent: None,
             pending_file_transfer_request: None,
+            pending_wifi_mode_ap: None,
+            pending_wifi_ap_config: None,
         };
         // Initialize library with loading state
         app.main_activity.library_tab.begin_loading_scan();
@@ -155,6 +159,14 @@ impl App {
         }
         if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
             self.pending_file_transfer_request = Some(request);
+            redraw = true;
+        }
+        if let Some(mode_ap) = self.main_activity.library_tab.take_wifi_mode_request() {
+            self.pending_wifi_mode_ap = Some(mode_ap);
+            redraw = true;
+        }
+        if let Some(config) = self.main_activity.library_tab.take_wifi_ap_config_request() {
+            self.pending_wifi_ap_config = Some(config);
             redraw = true;
         }
 
@@ -331,6 +343,12 @@ impl App {
         }
         if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
             self.pending_file_transfer_request = Some(request);
+        }
+        if let Some(mode_ap) = self.main_activity.library_tab.take_wifi_mode_request() {
+            self.pending_wifi_mode_ap = Some(mode_ap);
+        }
+        if let Some(config) = self.main_activity.library_tab.take_wifi_ap_config_request() {
+            self.pending_wifi_ap_config = Some(config);
         }
         let library_updated = self.process_library_scan(fs);
         let file_browser_updated = self.process_file_browser_tasks(fs);
@@ -749,6 +767,16 @@ impl App {
     /// Take pending file transfer request (true=start, false=stop).
     pub fn take_file_transfer_request(&mut self) -> Option<bool> {
         self.pending_file_transfer_request.take()
+    }
+
+    /// Take pending wifi mode request from transfer UI (true=AP, false=STA).
+    pub fn take_wifi_mode_request(&mut self) -> Option<bool> {
+        self.pending_wifi_mode_ap.take()
+    }
+
+    /// Take pending AP config request from transfer UI.
+    pub fn take_wifi_ap_config_request(&mut self) -> Option<(String, String)> {
+        self.pending_wifi_ap_config.take()
     }
 
     /// Get compact-encoded cover thumbnail for the currently open EPUB, if known.

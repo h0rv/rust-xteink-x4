@@ -221,7 +221,6 @@ impl EpubReadingState {
             page_idx: 0,
         };
         log::info!("[EPUB] reader state allocated (lazy buffers)");
-        state.reserve_working_buffers_early();
         state.register_embedded_fonts();
         log::info!("[EPUB] reader state ready");
         Ok(state)
@@ -297,37 +296,6 @@ impl EpubReadingState {
 
     fn is_buffer_too_small_error(err: &str) -> bool {
         err.to_ascii_lowercase().contains("buffer too small")
-    }
-
-    #[cfg(target_os = "espidf")]
-    fn reserve_working_buffers_early(&mut self) {
-        if self.chapter_buf.capacity() < Self::CHAPTER_BUF_CAPACITY_BYTES {
-            if let Err(err) = self
-                .chapter_buf
-                .try_reserve(Self::CHAPTER_BUF_CAPACITY_BYTES)
-            {
-                log::warn!(
-                    "[EPUB] unable to pre-reserve chapter buffer (target={}): {}",
-                    Self::CHAPTER_BUF_CAPACITY_BYTES,
-                    err
-                );
-            } else {
-                log::info!(
-                    "[EPUB] pre-reserved chapter buffer to {} bytes",
-                    self.chapter_buf.capacity()
-                );
-            }
-        }
-
-        if self.chapter_scratch.read_buf.capacity() < 4096 {
-            let _ = self.chapter_scratch.read_buf.try_reserve(4096);
-        }
-        if self.chapter_scratch.xml_buf.capacity() < 2048 {
-            let _ = self.chapter_scratch.xml_buf.try_reserve(2048);
-        }
-        if self.chapter_scratch.text_buf.capacity() < 2048 {
-            let _ = self.chapter_scratch.text_buf.try_reserve(2048);
-        }
     }
 
     fn grow_chapter_buffer(&mut self) -> Result<bool, String> {

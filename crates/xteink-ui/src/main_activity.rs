@@ -27,6 +27,7 @@ use crate::reader_settings_activity::{
 };
 use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
 use crate::system_menu_activity::DeviceStatus;
+use crate::ui::theme::{set_device_font_profile, ui_font, ui_font_bold, ui_font_char_width};
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::DISPLAY_HEIGHT;
 use crate::DISPLAY_WIDTH;
@@ -156,14 +157,14 @@ impl Default for UnifiedSettings {
         Self {
             font_size: FontSize::Medium,
             font_family: FontFamily::Serif,
-            auto_sleep_duration: AutoSleepDuration::Never,
+            auto_sleep_duration: AutoSleepDuration::TenMinutes,
             line_spacing: LineSpacing::Normal,
             margin_size: MarginSize::Medium,
             text_alignment: TextAlignment::Justified,
             show_page_numbers: true,
             footer_density: FooterDensity::Detailed,
             footer_auto_hide: FooterAutoHide::Off,
-            refresh_frequency: RefreshFrequency::Every10,
+            refresh_frequency: RefreshFrequency::Never,
             invert_colors: false,
             volume_button_action: VolumeButtonAction::Scroll,
             tap_zone_config: TapZoneConfig::LeftNext,
@@ -255,6 +256,7 @@ impl MainActivity {
 
     pub fn apply_settings(&mut self, settings: UnifiedSettings) {
         self.settings_tab.settings = settings;
+        set_device_font_profile(settings.font_size.index(), settings.font_family.index());
         self.files_tab
             .set_reader_settings(settings.to_reader_settings());
     }
@@ -807,7 +809,7 @@ impl SettingsTabContent {
                     "Off".into()
                 }
             }
-            SettingItem::RefreshFrequency => format!("{:?}", self.settings.refresh_frequency),
+            SettingItem::RefreshFrequency => self.settings.refresh_frequency.label().into(),
             SettingItem::InvertColors => {
                 if self.settings.invert_colors {
                     "On".into()
@@ -823,8 +825,8 @@ impl SettingsTabContent {
     }
 
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
-        let font_bold = &embedded_graphics::mono_font::ascii::FONT_9X18_BOLD;
-        let font_regular = &embedded_graphics::mono_font::ascii::FONT_7X13;
+        let font_bold = ui_font_bold();
+        let font_regular = ui_font();
 
         let title_style = MonoTextStyle::new(font_bold, BinaryColor::On);
         let label_style = MonoTextStyle::new(font_regular, BinaryColor::On);
@@ -877,7 +879,7 @@ impl SettingsTabContent {
                 Text::new(label, Point::new(MARGIN, y), selected_bg_style).draw(display)?;
 
                 // Right-align value
-                let value_width = value.len() as i32 * 7;
+                let value_width = value.len() as i32 * ui_font_char_width();
                 Text::new(
                     &value,
                     Point::new((DISPLAY_WIDTH as i32) - MARGIN - value_width, y),
@@ -888,7 +890,7 @@ impl SettingsTabContent {
                 Text::new(label, Point::new(MARGIN, y), label_style).draw(display)?;
 
                 // Right-align value
-                let value_width = value.len() as i32 * 7;
+                let value_width = value.len() as i32 * ui_font_char_width();
                 Text::new(
                     &value,
                     Point::new((DISPLAY_WIDTH as i32) - MARGIN - value_width, y),

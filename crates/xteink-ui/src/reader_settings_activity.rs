@@ -197,20 +197,22 @@ impl TextAlignment {
 pub enum RefreshFrequency {
     Every1,
     Every5,
-    #[default]
     Every10,
     Every15,
     Every30,
+    #[default]
+    Never,
 }
 
 impl RefreshFrequency {
     /// All refresh frequency variants
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Every1,
         Self::Every5,
         Self::Every10,
         Self::Every15,
         Self::Every30,
+        Self::Never,
     ];
 
     /// Get display label
@@ -221,6 +223,7 @@ impl RefreshFrequency {
             Self::Every10 => "Every 10 pages",
             Self::Every15 => "Every 15 pages",
             Self::Every30 => "Every 30 pages",
+            Self::Never => "Off",
         }
     }
 
@@ -232,6 +235,7 @@ impl RefreshFrequency {
             Self::Every10 => 2,
             Self::Every15 => 3,
             Self::Every30 => 4,
+            Self::Never => 5,
         }
     }
 
@@ -246,7 +250,8 @@ impl RefreshFrequency {
             Self::Every5 => Self::Every10,
             Self::Every10 => Self::Every15,
             Self::Every15 => Self::Every30,
-            Self::Every30 => Self::Every1,
+            Self::Every30 => Self::Never,
+            Self::Never => Self::Every1,
         }
     }
 
@@ -257,6 +262,7 @@ impl RefreshFrequency {
             Self::Every10 => Self::Every5,
             Self::Every15 => Self::Every10,
             Self::Every30 => Self::Every15,
+            Self::Never => Self::Every30,
         }
     }
 
@@ -268,6 +274,7 @@ impl RefreshFrequency {
             Self::Every10 => 10,
             Self::Every15 => 15,
             Self::Every30 => 30,
+            Self::Never => 0,
         }
     }
 }
@@ -1234,6 +1241,7 @@ mod tests {
         assert_eq!(RefreshFrequency::Every10.pages(), 10);
         assert_eq!(RefreshFrequency::Every15.pages(), 15);
         assert_eq!(RefreshFrequency::Every30.pages(), 30);
+        assert_eq!(RefreshFrequency::Never.pages(), 0);
     }
 
     #[test]
@@ -1257,7 +1265,7 @@ mod tests {
         assert_eq!(settings.margin_size, MarginSize::Medium);
         assert_eq!(settings.text_alignment, TextAlignment::Justified);
         assert!(settings.show_page_numbers);
-        assert_eq!(settings.refresh_frequency, RefreshFrequency::Every10);
+        assert_eq!(settings.refresh_frequency, RefreshFrequency::Never);
         assert!(!settings.invert_colors);
         assert_eq!(settings.tap_zone_config, TapZoneConfig::LeftNext);
         assert_eq!(settings.volume_button_action, VolumeButtonAction::Scroll);
@@ -1596,7 +1604,7 @@ mod tests {
     #[test]
     fn enum_index_roundtrips() {
         // Test all enums roundtrip correctly through index/from_index
-        for i in 0..4 {
+        for i in 0..FontSize::ALL.len() {
             let size = FontSize::from_index(i).unwrap();
             assert_eq!(size.index(), i);
         }
@@ -1621,7 +1629,7 @@ mod tests {
             assert_eq!(align.index(), i);
         }
 
-        for i in 0..4 {
+        for i in 0..RefreshFrequency::ALL.len() {
             let freq = RefreshFrequency::from_index(i).unwrap();
             assert_eq!(freq.index(), i);
         }

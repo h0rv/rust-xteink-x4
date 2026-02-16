@@ -149,8 +149,8 @@ pub enum FontFamily {
 pub enum AutoSleepDuration {
     OneMinute,
     ThreeMinutes,
-    #[default]
     FiveMinutes,
+    #[default]
     TenMinutes,
     FifteenMinutes,
     ThirtyMinutes,
@@ -872,7 +872,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.font_size, FontSize::Medium);
         assert_eq!(settings.font_family, FontFamily::Serif);
-        assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::FiveMinutes);
+        assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::TenMinutes);
     }
 
     #[test]
@@ -887,7 +887,7 @@ mod tests {
 
         assert_eq!(settings.font_size, FontSize::Medium);
         assert_eq!(settings.font_family, FontFamily::Serif);
-        assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::FiveMinutes);
+        assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::TenMinutes);
     }
 
     #[test]
@@ -1330,7 +1330,7 @@ mod tests {
         assert_eq!(activity.current_row(), SettingRow::AutoSleep);
         assert_eq!(
             activity.settings().auto_sleep_duration,
-            AutoSleepDuration::FiveMinutes
+            AutoSleepDuration::TenMinutes
         );
 
         // Right cycles forward
@@ -1346,7 +1346,7 @@ mod tests {
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(
             activity.settings().auto_sleep_duration,
-            AutoSleepDuration::FiveMinutes
+            AutoSleepDuration::TenMinutes
         );
     }
 }

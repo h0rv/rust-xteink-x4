@@ -65,7 +65,7 @@ pub struct App {
 
 impl App {
     /// Default number of pages between full refreshes
-    const DEFAULT_REFRESH_FREQUENCY: u32 = 10;
+    const DEFAULT_REFRESH_FREQUENCY: u32 = 0;
     const MAX_LIBRARY_BOOKS_PER_TICK: usize = 2;
     const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
     const MAX_LIBRARY_CACHE_BOOKS: usize = 2048;
@@ -174,6 +174,10 @@ impl App {
         if activity_mode == ActivityRefreshMode::Full {
             self.refresh_counter = 0;
             return ActivityRefreshMode::Full;
+        }
+
+        if self.refresh_frequency_pages == 0 {
+            return activity_mode;
         }
 
         self.refresh_counter += 1;

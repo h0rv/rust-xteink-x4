@@ -527,21 +527,34 @@ impl EpubReadingState {
         if chapter_idx >= self.book.chapter_count() {
             return false;
         }
+        let mut target_page_idx = page_idx;
+        if self.chapter_page_counts_exact.contains(&chapter_idx) {
+            let chapter_total = self
+                .chapter_page_counts
+                .get(&chapter_idx)
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            target_page_idx = target_page_idx.min(chapter_total.saturating_sub(1));
+        }
         let prev_chapter = self.chapter_idx;
         let prev_page = self.page_idx;
         self.current_page = None;
 
-        if let Ok(page) = self.load_page(chapter_idx, page_idx) {
+        if let Ok(page) = self.load_page(chapter_idx, target_page_idx) {
             self.chapter_idx = chapter_idx;
-            self.page_idx = page_idx;
+            self.page_idx = target_page_idx;
             self.current_page = Some(page);
             return true;
         }
 
         if self.load_chapter_exact(chapter_idx).is_ok() {
-            if page_idx > 0 {
+            // On-device memory is too constrained for linear page walks from 0..N
+            // after a failed direct restore; this pattern can trigger OOM loops.
+            #[cfg(not(target_os = "espidf"))]
+            if target_page_idx > 0 {
                 let mut idx = 1usize;
-                while idx <= page_idx {
+                while idx <= target_page_idx {
                     if let Ok(page) = self.load_page(chapter_idx, idx) {
                         self.page_idx = idx;
                         self.current_page = Some(page);

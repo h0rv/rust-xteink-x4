@@ -50,6 +50,18 @@ fn battery_percent_from_adc(raw: i32) -> u8 {
     (((clamped - BATTERY_ADC_EMPTY) * 100) / span) as u8
 }
 
+fn is_repeatable_nav_button(btn: Button) -> bool {
+    matches!(
+        btn,
+        Button::Left
+            | Button::Right
+            | Button::Up
+            | Button::Down
+            | Button::VolumeUp
+            | Button::VolumeDown
+    )
+}
+
 fn apply_update<I, D>(
     strategy: UpdateStrategy,
     display: &mut EinkDisplay<I>,
@@ -401,13 +413,22 @@ fn main() {
     log::info!("Hold POWER for 2 seconds to sleep...");
     log::info!("CLI: connect via USB-Serial/JTAG @ 115200 (type 'help')");
 
-    let mut last_button: Option<Button> = None;
     let mut power_press_counter: u32 = 0;
     let mut is_power_pressed: bool = false;
     let mut long_press_triggered: bool = false;
+    let mut held_button: Option<Button> = None;
+    let mut held_button_ticks: u32 = 0;
+    let mut next_repeat_tick: u32 = 0;
     const DEBUG_ADC: bool = false;
     const DEBUG_INPUT: bool = true;
-    const POWER_LONG_PRESS_ITERATIONS: u32 = POWER_LONG_PRESS_MS / 50;
+    const LOOP_DELAY_MS: u32 = 20;
+    const POWER_LONG_PRESS_ITERATIONS: u32 = POWER_LONG_PRESS_MS / LOOP_DELAY_MS;
+    const BUTTON_REPEAT_INITIAL_MS: u32 = 220;
+    const BUTTON_REPEAT_INTERVAL_MS: u32 = 120;
+    const BUTTON_REPEAT_INITIAL_TICKS: u32 =
+        (BUTTON_REPEAT_INITIAL_MS + LOOP_DELAY_MS - 1) / LOOP_DELAY_MS;
+    const BUTTON_REPEAT_INTERVAL_TICKS: u32 =
+        (BUTTON_REPEAT_INTERVAL_MS + LOOP_DELAY_MS - 1) / LOOP_DELAY_MS;
     const ENABLE_CLI: bool = false;
     let mut cli = if ENABLE_CLI {
         Some(SerialCli::new())
@@ -421,7 +442,6 @@ fn main() {
     let mut inactivity_ms: u32 = 0;
     let mut sleep_warning_shown: bool = false;
     let mut power_line_high_stable_ms: u32 = 0;
-    const LOOP_DELAY_MS: u32 = 50;
     const SLEEP_WARNING_MS: u32 = 10_000; // Show warning 10 seconds before sleep
     const POWER_LINE_STABLE_BEFORE_SLEEP_MS: u32 = 2_000;
 
@@ -461,12 +481,12 @@ fn main() {
                 let adc1_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_1);
                 let adc2_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_2);
                 log::info!(
-                    "INPUT: power={} adc1={} adc2={} decoded={:?} last={:?}",
+                    "INPUT: power={} adc1={} adc2={} decoded={:?} held={:?}",
                     power_pressed,
                     adc1_value,
                     adc2_value,
                     button,
-                    last_button
+                    held_button
                 );
             }
         }
@@ -512,27 +532,24 @@ fn main() {
             }
         } else {
             if is_power_pressed && !long_press_triggered {
-                if last_button != Some(Button::Power) {
-                    log::info!("Power button short press");
-                    append_diag("power_short_press");
-                    last_button = Some(Button::Power);
+                log::info!("Power button short press");
+                append_diag("power_short_press");
 
-                    if app.handle_input(InputEvent::Press(Button::Power)) {
-                        log::info!("UI: redraw after power short press");
-                        buffered_display.clear();
-                        app.render(&mut buffered_display).ok();
+                if app.handle_input(InputEvent::Press(Button::Power)) {
+                    log::info!("UI: redraw after power short press");
+                    buffered_display.clear();
+                    app.render(&mut buffered_display).ok();
 
-                        let refresh_mode = app.get_refresh_mode();
-                        log::info!("UI: using refresh mode {:?}", refresh_mode);
-                        apply_update_with_mode(
-                            refresh_mode,
-                            &mut display,
-                            &mut delay,
-                            buffered_display.buffer(),
-                        );
-                    } else {
-                        log::info!("UI: no redraw after power short press");
-                    }
+                    let refresh_mode = app.get_refresh_mode();
+                    log::info!("UI: using refresh mode {:?}", refresh_mode);
+                    apply_update_with_mode(
+                        refresh_mode,
+                        &mut display,
+                        &mut delay,
+                        buffered_display.buffer(),
+                    );
+                } else {
+                    log::info!("UI: no redraw after power short press");
                 }
             }
             is_power_pressed = false;
@@ -540,10 +557,35 @@ fn main() {
         }
 
         if let Some(btn) = button {
-            if btn != Button::Power && last_button != Some(btn) {
+            if btn != Button::Power {
+                let mut emit_press = false;
+                if is_repeatable_nav_button(btn) {
+                    if held_button == Some(btn) {
+                        held_button_ticks = held_button_ticks.saturating_add(1);
+                        if held_button_ticks >= next_repeat_tick {
+                            emit_press = true;
+                            next_repeat_tick = next_repeat_tick
+                                .saturating_add(BUTTON_REPEAT_INTERVAL_TICKS.max(1));
+                        }
+                    } else {
+                        held_button = Some(btn);
+                        held_button_ticks = 0;
+                        next_repeat_tick = BUTTON_REPEAT_INITIAL_TICKS.max(1);
+                        emit_press = true;
+                    }
+                } else {
+                    emit_press = held_button != Some(btn);
+                    if emit_press {
+                        held_button = Some(btn);
+                    }
+                }
+
+                if !emit_press {
+                    FreeRtos::delay_ms(LOOP_DELAY_MS);
+                    continue;
+                }
+
                 log::info!("Button pressed: {:?}", btn);
-                append_diag(&format!("button {:?}", btn));
-                last_button = Some(btn);
                 log_heap("before_handle_input");
 
                 if app.handle_input(InputEvent::Press(btn)) {
@@ -582,7 +624,9 @@ fn main() {
                 }
             }
         } else if !power_pressed {
-            last_button = None;
+            held_button = None;
+            held_button_ticks = 0;
+            next_repeat_tick = 0;
         }
 
         if app.process_deferred_tasks(&mut fs) {

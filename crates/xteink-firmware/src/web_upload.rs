@@ -6,8 +6,9 @@ use std::io::Write as IoWrite;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 
 use esp_idf_svc::http::server::{Configuration, EspHttpServer};
-use esp_idf_svc::http::{Headers, Method};
+use esp_idf_svc::http::Method;
 use esp_idf_svc::io::{EspIOError, Read, Write};
+use esp_idf_svc::sys::{self, EspError};
 
 const SERVER_STACK_SIZE: usize = 10 * 1024;
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -43,6 +44,7 @@ pub struct WebUploadServer {
 
 impl WebUploadServer {
     pub fn start() -> Result<Self, EspIOError> {
+        ensure_tcpip_ready()?;
         let mut server = EspHttpServer::new(&Configuration {
             stack_size: SERVER_STACK_SIZE,
             max_uri_handlers: 12,
@@ -144,17 +146,37 @@ impl WebUploadServer {
     }
 }
 
+fn ensure_tcpip_ready() -> Result<(), EspIOError> {
+    unsafe {
+        let netif_err = sys::esp_netif_init();
+        if netif_err != sys::ESP_OK && netif_err != sys::ESP_ERR_INVALID_STATE {
+            return Err(EspError::from(netif_err)
+                .unwrap_or(EspError::from_infallible::<{ sys::ESP_FAIL }>())
+                .into());
+        }
+        let event_err = sys::esp_event_loop_create_default();
+        if event_err != sys::ESP_OK && event_err != sys::ESP_ERR_INVALID_STATE {
+            return Err(EspError::from(event_err)
+                .unwrap_or(EspError::from_infallible::<{ sys::ESP_FAIL }>())
+                .into());
+        }
+    }
+    Ok(())
+}
+
 fn handle_upload(
     mut req: esp_idf_svc::http::server::Request<&mut esp_idf_svc::http::server::EspHttpConnection>,
     upload_tx: &SyncSender<UploadEvent>,
 ) -> Result<(), ()> {
-    let Some(content_len) = req.content_len() else {
+    let Some(content_len) = req
+        .header("Content-Length")
+        .and_then(|value| value.trim().parse::<usize>().ok())
+    else {
         if let Ok(mut resp) = req.into_status_response(411) {
             let _ = resp.write_all(b"{\"ok\":false,\"error\":\"Content-Length required\"}");
         }
         return Ok(());
     };
-    let content_len = content_len as usize;
     if content_len == 0 {
         if let Ok(mut resp) = req.into_status_response(400) {
             let _ = resp.write_all(b"{\"ok\":false,\"error\":\"Empty body\"}");

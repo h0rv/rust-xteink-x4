@@ -1,5 +1,7 @@
 use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::sys;
+use std::fs;
+use std::path::Path;
 
 const EPUB_WORKER_THREAD_STACK_BYTES: usize = 72 * 1024;
 
@@ -38,4 +40,30 @@ pub fn configure_pthread_defaults() {
             config.priority
         );
     }
+}
+
+const DIAG_LOG_PATH: &str = "/sd/.xteink/logs/runtime.log";
+const DIAG_LOG_MAX_BYTES: usize = 32 * 1024;
+const DIAG_LOG_KEEP_TAIL_BYTES: usize = 16 * 1024;
+
+pub fn append_diag(event: &str) {
+    let path = Path::new(DIAG_LOG_PATH);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let now_ms = unsafe { sys::esp_timer_get_time() / 1_000 };
+    let mut line = String::new();
+    line.push_str(&now_ms.to_string());
+    line.push('\t');
+    line.push_str(event);
+    line.push('\n');
+
+    let mut content = fs::read(path).unwrap_or_default();
+    content.extend_from_slice(line.as_bytes());
+    if content.len() > DIAG_LOG_MAX_BYTES {
+        let keep = DIAG_LOG_KEEP_TAIL_BYTES.min(content.len());
+        let start = content.len().saturating_sub(keep);
+        content = content[start..].to_vec();
+    }
+    let _ = fs::write(path, content);
 }

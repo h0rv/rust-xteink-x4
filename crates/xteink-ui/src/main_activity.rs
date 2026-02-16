@@ -22,8 +22,8 @@ use crate::filesystem::FileSystem;
 use crate::input::{Button, InputEvent};
 use crate::library_activity::BookInfo;
 use crate::reader_settings_activity::{
-    LineSpacing, MarginSize, ReaderSettings, RefreshFrequency, TapZoneConfig, TextAlignment,
-    VolumeButtonAction,
+    FooterAutoHide, FooterDensity, LineSpacing, MarginSize, ReaderSettings, RefreshFrequency,
+    TapZoneConfig, TextAlignment, VolumeButtonAction,
 };
 use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
 use crate::system_menu_activity::DeviceStatus;
@@ -143,6 +143,8 @@ pub struct UnifiedSettings {
     pub margin_size: MarginSize,
     pub text_alignment: TextAlignment,
     pub show_page_numbers: bool,
+    pub footer_density: FooterDensity,
+    pub footer_auto_hide: FooterAutoHide,
     pub refresh_frequency: RefreshFrequency,
     pub invert_colors: bool,
     pub volume_button_action: VolumeButtonAction,
@@ -159,6 +161,8 @@ impl Default for UnifiedSettings {
             margin_size: MarginSize::Medium,
             text_alignment: TextAlignment::Justified,
             show_page_numbers: true,
+            footer_density: FooterDensity::Detailed,
+            footer_auto_hide: FooterAutoHide::Off,
             refresh_frequency: RefreshFrequency::Every10,
             invert_colors: false,
             volume_button_action: VolumeButtonAction::Scroll,
@@ -176,6 +180,8 @@ impl UnifiedSettings {
             margin_size: self.margin_size,
             text_alignment: self.text_alignment,
             show_page_numbers: self.show_page_numbers,
+            footer_density: self.footer_density,
+            footer_auto_hide: self.footer_auto_hide,
             refresh_frequency: self.refresh_frequency,
             invert_colors: self.invert_colors,
             tap_zone_config: self.tap_zone_config,
@@ -480,6 +486,16 @@ impl LibraryTabContent {
                 ActivityResult::Consumed
             }
             InputEvent::Press(Button::Power) => {
+                // Quick resume: open most recent book from hero card in one press.
+                if let Some(book) = self.books.first() {
+                    self.pending_open_path = Some(book.path.clone());
+                } else {
+                    self.refresh_request = true;
+                    self.begin_loading_scan();
+                }
+                ActivityResult::Consumed
+            }
+            InputEvent::Press(Button::Back) => {
                 self.refresh_request = true;
                 self.begin_loading_scan();
                 ActivityResult::Consumed
@@ -655,6 +671,11 @@ impl FilesTabContent {
 
     pub fn epub_position(&self) -> Option<(usize, usize, usize, usize)> {
         self.file_browser.epub_position()
+    }
+
+    #[cfg(feature = "std")]
+    pub fn active_epub_path(&self) -> Option<&str> {
+        self.file_browser.active_epub_path()
     }
 
     fn on_enter(&mut self) {

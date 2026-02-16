@@ -22,7 +22,7 @@ use crate::filesystem::{basename, dirname, join_path, FileSystem};
 use crate::input::{Button, InputEvent};
 use crate::ui::theme::{ui_font, ui_font_bold, ui_font_char_width};
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult, Modal, Theme, ThemeMetrics};
-use crate::DISPLAY_HEIGHT;
+use crate::{DISPLAY_HEIGHT, DISPLAY_WIDTH};
 
 /// Book information structure
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +36,10 @@ pub struct BookInfo {
 }
 
 impl BookInfo {
+    #[cfg(feature = "std")]
+    const MAX_COMPACT_COVER_CHARS: usize =
+        ((DISPLAY_WIDTH as usize) * (DISPLAY_HEIGHT as usize)).div_ceil(8) * 2 + 16;
+
     /// Create a new book info
     pub fn new(
         title: impl Into<String>,
@@ -76,6 +80,9 @@ impl BookInfo {
 
     #[cfg(feature = "std")]
     pub(crate) fn set_cover_thumbnail_from_compact(&mut self, encoded: &str) -> bool {
+        if encoded.len() > Self::MAX_COMPACT_COVER_CHARS {
+            return false;
+        }
         let Some((dims, hex)) = encoded.split_once(':') else {
             return false;
         };
@@ -135,7 +142,7 @@ struct CoverThumbnail {
 
 impl CoverThumbnail {
     fn new(width: u32, height: u32) -> Option<Self> {
-        if width == 0 || height == 0 {
+        if width == 0 || height == 0 || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT {
             return None;
         }
         let len = (width as usize)
@@ -250,6 +257,8 @@ impl LibraryActivity {
     const COVER_MAX_HEIGHT: u32 = 44;
     const MAX_BMP_PIXELS: u32 = 1_500_000;
     const MAX_BMP_BYTES: usize = 2_000_000;
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    const MAX_JPEG_BYTES: usize = 2_000_000;
 
     /// Create a new library activity with empty book list
     pub fn new() -> Self {
@@ -338,9 +347,7 @@ impl LibraryActivity {
         }
 
         let mut book = BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None);
-        if !extension.eq_ignore_ascii_case("epub") && !extension.eq_ignore_ascii_case("epu") {
-            book.cover_thumbnail = Self::load_sidecar_cover_thumbnail(fs, path);
-        }
+        book.cover_thumbnail = Self::load_sidecar_cover_thumbnail(fs, path);
         book
     }
 
@@ -427,6 +434,11 @@ impl LibraryActivity {
         book_path: &str,
     ) -> Option<CoverThumbnail> {
         for candidate in Self::sidecar_cover_candidates(book_path) {
+            if let Ok(info) = fs.file_info(&candidate) {
+                if info.size > Self::MAX_BMP_BYTES as u64 {
+                    continue;
+                }
+            }
             let data = match fs.read_file_bytes(&candidate) {
                 Ok(bytes) => bytes,
                 Err(_) => continue,
@@ -724,6 +736,10 @@ impl LibraryActivity {
         use image::ImageDecoder;
         use std::io::Cursor;
 
+        if data.len() > Self::MAX_JPEG_BYTES {
+            return None;
+        }
+
         let cursor = Cursor::new(data);
         let decoder = JpegDecoder::new(cursor).ok()?;
         let (width, height) = decoder.dimensions();
@@ -732,7 +748,11 @@ impl LibraryActivity {
         }
 
         let color_type = decoder.color_type();
-        let mut raw = vec![0u8; decoder.total_bytes() as usize];
+        let total_bytes = decoder.total_bytes() as usize;
+        if total_bytes > Self::MAX_BMP_BYTES {
+            return None;
+        }
+        let mut raw = vec![0u8; total_bytes];
         decoder.read_image(&mut raw).ok()?;
 
         let channels = color_type.channel_count() as usize;
@@ -2152,5 +2172,36 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|path| path == "/books/Author/Book (123)/cover.jpeg"));
+    }
+
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[test]
+    fn discover_books_loads_calibre_cover_jpg_sidecar() {
+        use image::codecs::jpeg::JpegEncoder;
+
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/books");
+        fs.add_directory("/books/Author");
+        fs.add_directory("/books/Author/Book (123)");
+        fs.add_file(
+            "/books/Author/Book (123)/Book - Author.epub",
+            b"not-an-epub",
+        );
+
+        let rgb: [u8; 12] = [0, 0, 0, 255, 255, 255, 255, 255, 255, 0, 0, 0];
+        let mut jpeg = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, 80);
+        encoder
+            .encode(&rgb, 2, 2, image::ExtendedColorType::Rgb8)
+            .expect("test jpeg encode should succeed");
+        fs.add_file("/books/Author/Book (123)/cover.jpg", &jpeg);
+
+        let books = LibraryActivity::discover_books(&mut fs, "/books");
+        let book = books
+            .iter()
+            .find(|book| book.path.ends_with("Book - Author.epub"))
+            .expect("calibre-style book should exist");
+        assert!(book.cover_thumbnail.is_some());
     }
 }

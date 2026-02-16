@@ -81,6 +81,8 @@ enum FileBrowserTask {
     },
     #[cfg(all(feature = "std", target_os = "espidf"))]
     FinalizeEpubOpen,
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    RestoreEpubPosition,
 }
 
 enum BrowserMode {
@@ -260,6 +262,8 @@ pub struct FileBrowserActivity {
     mode: BrowserMode,
     reader_settings: ReaderSettings,
     battery_percent: u8,
+    ui_tick: u32,
+    last_epub_interaction_tick: u32,
     #[cfg(feature = "std")]
     epub_overlay: Option<EpubOverlay>,
     #[cfg(feature = "std")]
@@ -318,7 +322,7 @@ impl FileBrowserActivity {
         match &mut self.mode {
             BrowserMode::ReadingEpub { renderer } => match &mut overlay {
                 EpubOverlay::QuickMenu { selected } => {
-                    const COUNT: usize = 5;
+                    const COUNT: usize = 7;
                     match event {
                         InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
                             if *selected == 0 {
@@ -366,6 +370,16 @@ impl FileBrowserActivity {
                                     put_back = false;
                                 }
                                 4 => {
+                                    self.reader_settings.footer_density =
+                                        self.reader_settings.footer_density.next_wrapped();
+                                    self.set_reader_settings(self.reader_settings);
+                                }
+                                5 => {
+                                    self.reader_settings.footer_auto_hide =
+                                        self.reader_settings.footer_auto_hide.next_wrapped();
+                                    self.set_reader_settings(self.reader_settings);
+                                }
+                                6 => {
                                     exit_to_files = true;
                                     put_back = false;
                                 }
@@ -477,6 +491,8 @@ impl FileBrowserActivity {
             mode: BrowserMode::Browsing,
             reader_settings: ReaderSettings::default(),
             battery_percent: 100,
+            ui_tick: 0,
+            last_epub_interaction_tick: 0,
             #[cfg(feature = "std")]
             epub_overlay: None,
             #[cfg(feature = "std")]
@@ -572,8 +588,14 @@ impl FileBrowserActivity {
         None
     }
 
+    #[cfg(feature = "std")]
+    pub fn active_epub_path(&self) -> Option<&str> {
+        self.active_epub_path.as_deref()
+    }
+
     #[inline(never)]
     pub fn process_pending_task(&mut self, fs: &mut dyn FileSystem) -> bool {
+        self.ui_tick = self.ui_tick.saturating_add(1);
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         let mut updated = self.poll_epub_open_result();
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -594,6 +616,8 @@ impl FileBrowserActivity {
             FileBrowserTask::OpenEpubFile { path } => self.process_open_epub_file_task(fs, &path),
             #[cfg(all(feature = "std", target_os = "espidf"))]
             FileBrowserTask::FinalizeEpubOpen => self.process_finalize_epub_open_task(),
+            #[cfg(all(feature = "std", target_os = "espidf"))]
+            FileBrowserTask::RestoreEpubPosition => self.process_restore_epub_position_task(),
         };
         updated |= task_updated;
         updated
@@ -771,6 +795,7 @@ impl FileBrowserActivity {
 
                 if let Some(action) = action {
                     if let EpubInputAction::OpenSettings = action {
+                        self.last_epub_interaction_tick = self.ui_tick;
                         self.epub_overlay = Some(EpubOverlay::QuickMenu { selected: 0 });
                         return ActivityResult::Consumed;
                     }
@@ -801,6 +826,7 @@ impl FileBrowserActivity {
                         if let (Some((chapter_idx, page_idx)), Some(path)) =
                             (advanced_position, self.active_epub_path.as_ref())
                         {
+                            self.last_epub_interaction_tick = self.ui_tick;
                             let _ = Self::persist_epub_position_for_path(
                                 path,
                                 chapter_idx,
@@ -818,6 +844,7 @@ impl FileBrowserActivity {
                                 if self.epub_navigation_pending.is_some() {
                                     return ActivityResult::Consumed;
                                 }
+                                self.last_epub_interaction_tick = self.ui_tick;
                                 let renderer = Arc::clone(renderer);
                                 match Self::spawn_epub_navigation_worker(renderer, direction) {
                                     Ok(receiver) => {
@@ -849,6 +876,7 @@ impl FileBrowserActivity {
                                         "No more chapters in this direction".to_string(),
                                     );
                                 }
+                                self.last_epub_interaction_tick = self.ui_tick;
                                 ActivityResult::Consumed
                             }
                             EpubInputAction::OpenSettings => ActivityResult::Ignored,
@@ -966,7 +994,9 @@ impl Activity for FileBrowserActivity {
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 renderer.render(display)?;
-                self.render_epub_footer(display, &renderer)?;
+                if self.should_show_epub_footer() {
+                    self.render_epub_footer(display, &renderer)?;
+                }
                 self.render_epub_overlay(display, &renderer)
             }
         }
@@ -984,6 +1014,20 @@ impl Default for FileBrowserActivity {
 }
 
 impl FileBrowserActivity {
+    #[cfg(feature = "std")]
+    fn should_show_epub_footer(&self) -> bool {
+        if self.epub_overlay.is_some() {
+            return true;
+        }
+        let hide_ms = self.reader_settings.footer_auto_hide.milliseconds();
+        if hide_ms == 0 {
+            return true;
+        }
+        let elapsed_ticks = self.ui_tick.saturating_sub(self.last_epub_interaction_tick);
+        let elapsed_ms = elapsed_ticks.saturating_mul(50);
+        elapsed_ms < hide_ms
+    }
+
     #[cfg(feature = "std")]
     fn render_epub_footer<D: DrawTarget<Color = BinaryColor>>(
         &self,
@@ -1011,12 +1055,23 @@ impl FileBrowserActivity {
         let battery_x = (width as i32 - 6 - battery_width).max(6);
         Text::new(&battery_text, Point::new(battery_x, y + 27), metrics_style).draw(display)?;
 
-        let mut info = format!(
-            "{}  {}  {}%",
-            renderer.page_progress_label(),
-            renderer.chapter_progress_label(),
-            renderer.book_progress_percent(),
-        );
+        let mut info = match self.reader_settings.footer_density {
+            crate::reader_settings_activity::FooterDensity::Minimal => {
+                format!(
+                    "{}  {}%",
+                    renderer.page_progress_label(),
+                    renderer.book_progress_percent()
+                )
+            }
+            crate::reader_settings_activity::FooterDensity::Detailed => {
+                format!(
+                    "{}  {}  {}%",
+                    renderer.page_progress_label(),
+                    renderer.chapter_progress_label(),
+                    renderer.book_progress_percent(),
+                )
+            }
+        };
         let available_info_px = (battery_x - 12).max(0);
         let max_info_chars = (available_info_px / 7).max(0) as usize;
         if max_info_chars > 0 && info.chars().count() > max_info_chars {
@@ -1080,10 +1135,17 @@ impl FileBrowserActivity {
                     "Table of Contents",
                     "Go to Position",
                     "Reader Settings",
+                    "Footer: ",
+                    "Footer Hide: ",
                     "Back to Files",
                 ];
                 for (i, item) in items.iter().enumerate() {
-                    let y = panel_y + 56 + (i as i32 * 28);
+                    let y = panel_y + 56 + (i as i32 * 22);
+                    let label = match i {
+                        4 => format!("{}{}", item, self.reader_settings.footer_density.label()),
+                        5 => format!("{}{}", item, self.reader_settings.footer_auto_hide.label()),
+                        _ => item.to_string(),
+                    };
                     if i == *selected {
                         Rectangle::new(
                             Point::new(panel_x + 6, y - 16),
@@ -1092,14 +1154,14 @@ impl FileBrowserActivity {
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display)?;
                         Text::new(
-                            item,
+                            &label,
                             Point::new(panel_x + 10, y),
                             MonoTextStyle::new(&FONT_8X13, BinaryColor::Off),
                         )
                         .draw(display)?;
                     } else {
                         Text::new(
-                            item,
+                            &label,
                             Point::new(panel_x + 10, y),
                             MonoTextStyle::new(&FONT_8X13, BinaryColor::On),
                         )

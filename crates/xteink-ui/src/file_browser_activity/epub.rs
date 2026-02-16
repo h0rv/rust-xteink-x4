@@ -29,6 +29,7 @@ impl EpubReadingState {
     #[cfg(not(target_os = "espidf"))]
     const MAX_CHAPTER_BUF_CAPACITY_BYTES: usize = 512 * 1024;
     const MAX_CHAPTER_BUF_GROW_RETRIES: usize = 8;
+    const PAGE_LOAD_MAX_RETRIES: usize = 2;
     #[cfg(target_os = "espidf")]
     const EPUB_TEMP_DIR: &'static str = "/sd/.tmp";
     #[cfg(target_os = "espidf")]
@@ -367,6 +368,12 @@ impl EpubReadingState {
         }
     }
 
+    pub(super) fn prewarm_next_page(&mut self) {
+        let chapter = self.chapter_idx;
+        let next_page = self.page_idx.saturating_add(1);
+        let _ = self.load_page_with_retries(chapter, next_page, 1);
+    }
+
     pub(super) fn position_indices(&self) -> (usize, usize) {
         (self.chapter_idx, self.page_idx)
     }
@@ -556,7 +563,9 @@ impl EpubReadingState {
         self.chapter_page_counts.clear();
         self.chapter_page_counts_exact.clear();
 
-        if let Ok(page) = self.load_page(current_chapter, current_page) {
+        if let Ok(page) =
+            self.load_page_with_retries(current_chapter, current_page, Self::PAGE_LOAD_MAX_RETRIES)
+        {
             self.chapter_idx = current_chapter;
             self.page_idx = current_page;
             self.current_page = Some(page);
@@ -575,7 +584,9 @@ impl EpubReadingState {
         // maximize contiguous heap on constrained devices.
         self.current_page = None;
         let next_idx = self.page_idx + 1;
-        if let Ok(page) = self.load_page(self.chapter_idx, next_idx) {
+        if let Ok(page) =
+            self.load_page_with_retries(self.chapter_idx, next_idx, Self::PAGE_LOAD_MAX_RETRIES)
+        {
             self.page_idx = next_idx;
             self.current_page = Some(page);
             return true;
@@ -590,7 +601,11 @@ impl EpubReadingState {
             self.chapter_page_counts_exact.insert(previous_chapter);
             return true;
         }
-        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+        if let Ok(page) = self.load_page_with_retries(
+            previous_chapter,
+            previous_page,
+            Self::PAGE_LOAD_MAX_RETRIES,
+        ) {
             self.chapter_idx = previous_chapter;
             self.page_idx = previous_page;
             self.current_page = Some(page);
@@ -611,7 +626,9 @@ impl EpubReadingState {
         self.current_page = None;
         if self.page_idx > 0 {
             let prev_idx = self.page_idx - 1;
-            if let Ok(page) = self.load_page(self.chapter_idx, prev_idx) {
+            if let Ok(page) =
+                self.load_page_with_retries(self.chapter_idx, prev_idx, Self::PAGE_LOAD_MAX_RETRIES)
+            {
                 self.page_idx = prev_idx;
                 self.current_page = Some(page);
                 return true;
@@ -632,13 +649,21 @@ impl EpubReadingState {
                     return true;
                 }
                 self.page_idx = total_prev.saturating_sub(1);
-                if let Ok(page) = self.load_page(self.chapter_idx, self.page_idx) {
+                if let Ok(page) = self.load_page_with_retries(
+                    self.chapter_idx,
+                    self.page_idx,
+                    Self::PAGE_LOAD_MAX_RETRIES,
+                ) {
                     self.current_page = Some(page);
                     return true;
                 }
             }
         }
-        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+        if let Ok(page) = self.load_page_with_retries(
+            previous_chapter,
+            previous_page,
+            Self::PAGE_LOAD_MAX_RETRIES,
+        ) {
             self.chapter_idx = previous_chapter;
             self.page_idx = previous_page;
             self.current_page = Some(page);
@@ -664,7 +689,11 @@ impl EpubReadingState {
             return true;
         }
 
-        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+        if let Ok(page) = self.load_page_with_retries(
+            previous_chapter,
+            previous_page,
+            Self::PAGE_LOAD_MAX_RETRIES,
+        ) {
             self.chapter_idx = previous_chapter;
             self.page_idx = previous_page;
             self.current_page = Some(page);
@@ -685,7 +714,11 @@ impl EpubReadingState {
             return true;
         }
 
-        if let Ok(page) = self.load_page(previous_chapter, previous_page) {
+        if let Ok(page) = self.load_page_with_retries(
+            previous_chapter,
+            previous_page,
+            Self::PAGE_LOAD_MAX_RETRIES,
+        ) {
             self.chapter_idx = previous_chapter;
             self.page_idx = previous_page;
             self.current_page = Some(page);
@@ -705,9 +738,62 @@ impl EpubReadingState {
     }
 
     fn load_current_page(&mut self) -> Result<(), String> {
-        let page = self.load_page(self.chapter_idx, self.page_idx)?;
+        let page = self.load_page_with_retries(
+            self.chapter_idx,
+            self.page_idx,
+            Self::PAGE_LOAD_MAX_RETRIES,
+        )?;
         self.current_page = Some(page);
         Ok(())
+    }
+
+    fn is_retryable_page_error(err: &str) -> bool {
+        let lower = err.to_ascii_lowercase();
+        lower.contains("buffer too small")
+            || lower.contains("allocate")
+            || lower.contains("alloc")
+            || lower.contains("out of memory")
+            || lower.contains("unable to stream epub chapter")
+            || lower.contains("unable to layout epub chapter")
+    }
+
+    fn recover_after_page_load_failure(&mut self) {
+        self.current_page = None;
+        self.page_cache.clear();
+        self.chapter_scratch.read_buf.clear();
+        self.chapter_scratch.xml_buf.clear();
+        self.chapter_scratch.text_buf.clear();
+        self.chapter_buf.shrink_to(Self::CHAPTER_BUF_CAPACITY_BYTES);
+    }
+
+    fn load_page_with_retries(
+        &mut self,
+        chapter_idx: usize,
+        page_idx: usize,
+        retries: usize,
+    ) -> Result<RenderPage, String> {
+        let mut attempt = 0usize;
+        loop {
+            match self.load_page(chapter_idx, page_idx) {
+                Ok(page) => return Ok(page),
+                Err(err) => {
+                    if attempt >= retries || !Self::is_retryable_page_error(&err) {
+                        return Err(err);
+                    }
+                    attempt = attempt.saturating_add(1);
+                    log::warn!(
+                        "[EPUB] retryable load failure ch={} pg={} attempt={}/{} err={}",
+                        chapter_idx,
+                        page_idx,
+                        attempt,
+                        retries,
+                        err
+                    );
+                    self.recover_after_page_load_failure();
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+        }
     }
 
     fn load_page(&mut self, chapter_idx: usize, page_idx: usize) -> Result<RenderPage, String> {
@@ -1128,6 +1214,9 @@ impl FileBrowserActivity {
                 self.epub_navigation_pending = None;
                 let renderer = Arc::new(Mutex::new(renderer));
                 self.restore_active_epub_position(&renderer);
+                if let Ok(mut guard) = renderer.lock() {
+                    guard.prewarm_next_page();
+                }
                 self.mode = BrowserMode::ReadingEpub { renderer };
                 true
             }
@@ -1208,8 +1297,8 @@ impl FileBrowserActivity {
 
         match init_result {
             Ok(()) => {
-                self.restore_active_epub_position(&renderer);
                 self.mode = BrowserMode::ReadingEpub { renderer };
+                self.queue_task(FileBrowserTask::RestoreEpubPosition);
             }
             Err(error) => {
                 self.mode = BrowserMode::Browsing;
@@ -1218,6 +1307,19 @@ impl FileBrowserActivity {
             }
         }
 
+        true
+    }
+
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    pub(super) fn process_restore_epub_position_task(&mut self) -> bool {
+        let renderer = match &self.mode {
+            BrowserMode::ReadingEpub { renderer } => Arc::clone(renderer),
+            _ => return false,
+        };
+        self.restore_active_epub_position(&renderer);
+        if let Ok(mut guard) = renderer.lock() {
+            guard.prewarm_next_page();
+        }
         true
     }
 
@@ -1334,6 +1436,13 @@ impl FileBrowserActivity {
         "/sd/.xteink/reader_state.tsv"
     } else {
         "/tmp/.xteink/reader_state.tsv"
+    };
+
+    #[cfg(feature = "std")]
+    const EPUB_LAST_SESSION_FILE: &'static str = if cfg!(target_os = "espidf") {
+        "/sd/.xteink/last_session.tsv"
+    } else {
+        "/tmp/.xteink/last_session.tsv"
     };
 
     #[cfg(feature = "std")]
@@ -1484,7 +1593,37 @@ impl FileBrowserActivity {
             out.push_str(&Self::encode_chapter_counts(&saved.chapter_counts));
             out.push('\n');
         }
-        std::fs::write(Self::EPUB_STATE_FILE, out).map_err(|e| e.to_string())
+        std::fs::write(Self::EPUB_STATE_FILE, out).map_err(|e| e.to_string())?;
+        Self::persist_last_active_epub_path(path, chapter_idx, page_idx)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_last_active_epub_path(
+        path: &str,
+        chapter_idx: usize,
+        page_idx: usize,
+    ) -> Result<(), String> {
+        let mut out = String::new();
+        out.push_str(path);
+        out.push('\t');
+        out.push_str(&chapter_idx.to_string());
+        out.push('\t');
+        out.push_str(&page_idx.to_string());
+        out.push('\n');
+        std::fs::write(Self::EPUB_LAST_SESSION_FILE, out).map_err(|e| e.to_string())
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn load_last_active_epub_path() -> Option<String> {
+        let raw = std::fs::read_to_string(Self::EPUB_LAST_SESSION_FILE).ok()?;
+        let mut fields = raw.lines().next()?.split('\t');
+        let path = fields.next()?.trim();
+        if path.is_empty() {
+            None
+        } else {
+            Some(path.to_string())
+        }
     }
 
     #[cfg(feature = "std")]

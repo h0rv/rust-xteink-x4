@@ -15,7 +15,8 @@ use crate::library_activity::BookInfo;
 use crate::main_activity::{MainActivity, UnifiedSettings};
 #[cfg(feature = "std")]
 use crate::reader_settings_activity::{
-    LineSpacing, MarginSize, RefreshFrequency, TapZoneConfig, TextAlignment, VolumeButtonAction,
+    FooterAutoHide, FooterDensity, LineSpacing, MarginSize, RefreshFrequency, TapZoneConfig,
+    TextAlignment, VolumeButtonAction,
 };
 #[cfg(feature = "std")]
 use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
@@ -59,6 +60,7 @@ pub struct App {
     pending_library_scan: Option<PendingLibraryScan>,
     device_status: DeviceStatus,
     applied_settings: UnifiedSettings,
+    filtered_battery_percent: Option<u8>,
 }
 
 impl App {
@@ -66,6 +68,9 @@ impl App {
     const DEFAULT_REFRESH_FREQUENCY: u32 = 10;
     const MAX_LIBRARY_BOOKS_PER_TICK: usize = 2;
     const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
+    const MAX_LIBRARY_CACHE_BOOKS: usize = 2048;
+    const MAX_COMPACT_COVER_CHARS: usize =
+        ((crate::DISPLAY_WIDTH as usize) * (crate::DISPLAY_HEIGHT as usize)).div_ceil(8) * 2 + 16;
 
     /// Create a new App with MainActivity.
     pub fn new() -> Self {
@@ -82,6 +87,7 @@ impl App {
             pending_library_scan: None,
             device_status: DeviceStatus::default(),
             applied_settings: UnifiedSettings::default(),
+            filtered_battery_percent: None,
         };
         // Initialize library with loading state
         app.main_activity.library_tab.begin_loading_scan();
@@ -100,14 +106,33 @@ impl App {
             app.main_activity.library_tab.set_books(snapshot);
             app.main_activity.library_tab.finish_loading_scan();
         }
+        #[cfg(feature = "std")]
+        if let Some(path) =
+            crate::file_browser_activity::FileBrowserActivity::load_last_active_epub_path()
+        {
+            app.main_activity.files_tab.request_open_path(path);
+            app.main_activity
+                .switch_to_tab(crate::main_activity::Tab::Files);
+        }
         app.main_activity.on_enter();
         app
     }
 
     /// Set device status (battery, etc.)
     pub fn set_device_status(&mut self, status: DeviceStatus) {
-        self.device_status = status;
-        self.main_activity.set_device_status(status);
+        let raw = status.battery_percent.min(100);
+        let filtered = match self.filtered_battery_percent {
+            Some(prev) => {
+                // Simple low-pass filter: 80% previous, 20% new.
+                (((prev as u16) * 4 + (raw as u16)) / 5) as u8
+            }
+            None => raw,
+        };
+        self.filtered_battery_percent = Some(filtered);
+        let mut filtered_status = status;
+        filtered_status.battery_percent = filtered;
+        self.device_status = filtered_status;
+        self.main_activity.set_device_status(filtered_status);
     }
 
     /// Handle input event. Returns true if a redraw is needed.
@@ -401,6 +426,9 @@ impl App {
 
         let mut books = Vec::new();
         for line in lines {
+            if books.len() >= Self::MAX_LIBRARY_CACHE_BOOKS {
+                break;
+            }
             let mut parts = line.split('\t');
             if parts.next()? != "b" {
                 continue;
@@ -418,8 +446,12 @@ impl App {
             });
             let mut book = BookInfo::new(title, author, path, progress, last_read);
             if let Some(cover_raw) = parts.next() {
-                let cover = Self::unescape_cache_field(cover_raw);
-                let _ = book.set_cover_thumbnail_from_compact(&cover);
+                if cover_raw.len() <= Self::MAX_COMPACT_COVER_CHARS {
+                    let cover = Self::unescape_cache_field(cover_raw);
+                    if cover.len() <= Self::MAX_COMPACT_COVER_CHARS {
+                        let _ = book.set_cover_thumbnail_from_compact(&cover);
+                    }
+                }
             }
             books.push(book);
         }
@@ -444,6 +476,9 @@ impl App {
 
         let mut books = Vec::new();
         for line in lines {
+            if books.len() >= Self::MAX_LIBRARY_CACHE_BOOKS {
+                break;
+            }
             let mut parts = line.split('\t');
             if parts.next()? != "b" {
                 continue;
@@ -461,8 +496,12 @@ impl App {
             });
             let mut book = BookInfo::new(title, author, path, progress, last_read);
             if let Some(cover_raw) = parts.next() {
-                let cover = Self::unescape_cache_field(cover_raw);
-                let _ = book.set_cover_thumbnail_from_compact(&cover);
+                if cover_raw.len() <= Self::MAX_COMPACT_COVER_CHARS {
+                    let cover = Self::unescape_cache_field(cover_raw);
+                    if cover.len() <= Self::MAX_COMPACT_COVER_CHARS {
+                        let _ = book.set_cover_thumbnail_from_compact(&cover);
+                    }
+                }
             }
             books.push(book);
         }
@@ -497,7 +536,7 @@ impl App {
         out.push_str(&format!("{fingerprint:016x}"));
         out.push('\n');
 
-        for book in books {
+        for book in books.iter().take(Self::MAX_LIBRARY_CACHE_BOOKS) {
             out.push_str("b\t");
             out.push_str(&Self::escape_cache_field(&book.title));
             out.push('\t');
@@ -550,6 +589,8 @@ impl App {
         let margin_size = MarginSize::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let text_alignment = TextAlignment::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let show_page_numbers = fields.next()? == "1";
+        let footer_density = FooterDensity::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let footer_auto_hide = FooterAutoHide::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let refresh_frequency =
             RefreshFrequency::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let invert_colors = fields.next()? == "1";
@@ -564,6 +605,8 @@ impl App {
             margin_size,
             text_alignment,
             show_page_numbers,
+            footer_density,
+            footer_auto_hide,
             refresh_frequency,
             invert_colors,
             volume_button_action,
@@ -583,7 +626,7 @@ impl App {
             let _ = std::fs::create_dir_all(parent);
         }
         let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             settings.font_size.index(),
             settings.font_family.index(),
             settings.auto_sleep_duration.index(),
@@ -591,6 +634,8 @@ impl App {
             settings.margin_size.index(),
             settings.text_alignment.index(),
             if settings.show_page_numbers { 1 } else { 0 },
+            settings.footer_density.index(),
+            settings.footer_auto_hide.index(),
             settings.refresh_frequency.index(),
             if settings.invert_colors { 1 } else { 0 },
             settings.volume_button_action.index(),
@@ -628,6 +673,38 @@ impl App {
     /// Get current EPUB reading position.
     pub fn file_browser_epub_position(&self) -> Option<(usize, usize, usize, usize)> {
         self.main_activity.files_tab.epub_position()
+    }
+
+    /// Get compact-encoded cover thumbnail for the currently open EPUB, if known.
+    #[cfg(feature = "std")]
+    pub fn active_book_cover_thumbnail_compact(&self) -> Option<String> {
+        let path = self.main_activity.files_tab.active_epub_path()?;
+        self.find_cover_thumbnail_compact_for_path(path)
+    }
+
+    #[cfg(feature = "std")]
+    fn find_cover_thumbnail_compact_for_path(&self, path: &str) -> Option<String> {
+        if let Some(books) = self.library_cache.as_ref() {
+            if let Some(cover) = books
+                .iter()
+                .find(|book| book.path == path)
+                .and_then(|book| book.cover_thumbnail_compact())
+            {
+                return Some(cover);
+            }
+        }
+
+        Self::load_latest_library_snapshot(&self.library_root).and_then(|books| {
+            books
+                .iter()
+                .find(|book| book.path == path)
+                .and_then(|book| book.cover_thumbnail_compact())
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn active_book_cover_thumbnail_compact(&self) -> Option<String> {
+        None
     }
 
     /// Get auto-sleep duration in milliseconds.

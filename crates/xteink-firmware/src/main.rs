@@ -16,14 +16,14 @@ use esp_idf_svc::sys;
 
 use xteink_ui::ui::ActivityRefreshMode;
 use xteink_ui::{
-    App, BufferedDisplay, Builder, Button, Dimensions, DisplayInterface, EinkDisplay,
+    App, BufferedDisplay, Builder, Button, DeviceStatus, Dimensions, DisplayInterface, EinkDisplay,
     EinkInterface, InputEvent, RamXAddressing, RefreshMode, Rotation,
 };
 
 use cli::SerialCli;
 use cli_commands::handle_cli_command;
-use input::{init_adc, read_adc, read_buttons};
-use runtime_diagnostics::{configure_pthread_defaults, log_heap};
+use input::{init_adc, read_adc, read_battery_raw, read_buttons};
+use runtime_diagnostics::{append_diag, configure_pthread_defaults, log_heap};
 use sdcard::SdCardFs;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,6 +40,15 @@ const DISPLAY_COLS: u16 = 480;
 const DISPLAY_ROWS: u16 = 800;
 
 const POWER_LONG_PRESS_MS: u32 = 2000;
+const BATTERY_SAMPLE_INTERVAL_MS: u32 = 2000;
+const BATTERY_ADC_EMPTY: i32 = 2100;
+const BATTERY_ADC_FULL: i32 = 3200;
+
+fn battery_percent_from_adc(raw: i32) -> u8 {
+    let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
+    let span = (BATTERY_ADC_FULL - BATTERY_ADC_EMPTY).max(1);
+    (((clamped - BATTERY_ADC_EMPTY) * 100) / span) as u8
+}
 
 fn apply_update<I, D>(
     strategy: UpdateStrategy,
@@ -112,7 +121,125 @@ fn apply_update_with_mode<I, D>(
     }
 }
 
+struct CompactCover {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>, // bit-packed, 1 bit set = black
+}
+
+const MAX_COMPACT_COVER_WIDTH: u32 = xteink_ui::DISPLAY_WIDTH;
+const MAX_COMPACT_COVER_HEIGHT: u32 = xteink_ui::DISPLAY_HEIGHT;
+const MAX_COMPACT_COVER_PACKED_BYTES: usize =
+    ((xteink_ui::DISPLAY_WIDTH as usize) * (xteink_ui::DISPLAY_HEIGHT as usize) + 7) / 8;
+
+fn decode_compact_cover(encoded: &str) -> Option<CompactCover> {
+    let (dims, hex) = encoded.split_once(':')?;
+    let (w, h) = dims.split_once('x')?;
+    let width = w.parse::<u32>().ok()?;
+    let height = h.parse::<u32>().ok()?;
+    if width == 0
+        || height == 0
+        || width > MAX_COMPACT_COVER_WIDTH
+        || height > MAX_COMPACT_COVER_HEIGHT
+    {
+        return None;
+    }
+    let pixel_count = (width as usize).checked_mul(height as usize)?;
+    let packed_len = pixel_count.checked_add(7)? / 8;
+    if packed_len > MAX_COMPACT_COVER_PACKED_BYTES {
+        return None;
+    }
+    if hex.len() != packed_len * 2 {
+        return None;
+    }
+    let mut pixels = vec![0u8; packed_len];
+    for (idx, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+        let hi = hex_value(chunk[0] as char)?;
+        let lo = hex_value(chunk[1] as char)?;
+        pixels[idx] = (hi << 4) | lo;
+    }
+    Some(CompactCover {
+        width,
+        height,
+        pixels,
+    })
+}
+
+fn hex_value(ch: char) -> Option<u8> {
+    match ch {
+        '0'..='9' => Some((ch as u8) - b'0'),
+        'a'..='f' => Some((ch as u8) - b'a' + 10),
+        'A'..='F' => Some((ch as u8) - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn cover_pixel_is_black(cover: &CompactCover, x: u32, y: u32) -> bool {
+    let idx = (y as usize)
+        .saturating_mul(cover.width as usize)
+        .saturating_add(x as usize);
+    let byte = cover.pixels.get(idx / 8).copied().unwrap_or(0);
+    (byte & (1 << (7 - (idx % 8)))) != 0
+}
+
+fn render_sleep_cover_on_buffer(buffered_display: &mut BufferedDisplay, cover: &CompactCover) {
+    let display_w = xteink_ui::DISPLAY_WIDTH;
+    let display_h = xteink_ui::DISPLAY_HEIGHT;
+
+    let scale_x = display_w / cover.width;
+    let scale_y = display_h / cover.height;
+    let scale = scale_x.min(scale_y).max(1);
+    let render_w = cover.width.saturating_mul(scale);
+    let render_h = cover.height.saturating_mul(scale);
+    let origin_x = ((display_w.saturating_sub(render_w)) / 2) as i32;
+    let origin_y = ((display_h.saturating_sub(render_h)) / 2) as i32;
+
+    for src_y in 0..cover.height {
+        for src_x in 0..cover.width {
+            if !cover_pixel_is_black(cover, src_x, src_y) {
+                continue;
+            }
+            let dst_x = origin_x + (src_x * scale) as i32;
+            let dst_y = origin_y + (src_y * scale) as i32;
+            for oy in 0..scale {
+                for ox in 0..scale {
+                    let x = dst_x + ox as i32;
+                    let y = dst_y + oy as i32;
+                    if x >= 0 && y >= 0 {
+                        buffered_display.set_pixel(
+                            x as u32,
+                            y as u32,
+                            embedded_graphics::pixelcolor::BinaryColor::On,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn show_sleep_screen_with_cover<I, D>(
+    app: &App,
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    buffered_display: &mut BufferedDisplay,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    buffered_display.clear();
+    if let Some(compact) = app.active_book_cover_thumbnail_compact() {
+        if let Some(cover) = decode_compact_cover(&compact) {
+            render_sleep_cover_on_buffer(buffered_display, &cover);
+        }
+    }
+    display
+        .update_with_mode(buffered_display.buffer(), &[], RefreshMode::Full, delay)
+        .ok();
+}
+
 fn enter_deep_sleep(power_btn_pin: i32) {
+    append_diag("deep_sleep_enter");
     log::info!("Entering deep sleep...");
     unsafe {
         sys::esp_deep_sleep_enable_gpio_wakeup(
@@ -133,6 +260,10 @@ fn main() {
         reset_reason,
         wake_cause
     );
+    append_diag(&format!(
+        "boot reset={:?} wake={:?}",
+        reset_reason, wake_cause
+    ));
     configure_pthread_defaults();
     log_heap("startup");
 
@@ -212,9 +343,13 @@ fn main() {
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
     let mut fs = match SdCardFs::new(spi.host() as i32, 12) {
-        Ok(fs) => fs,
+        Ok(fs) => {
+            append_diag("sd_mount_ok");
+            fs
+        }
         Err(err) => {
             log::warn!("SD card mount failed: {}", err);
+            append_diag(&format!("sd_mount_failed: {}", err));
             SdCardFs::unavailable(err.to_string())
         }
     };
@@ -222,6 +357,14 @@ fn main() {
     // Initialize app and render initial screen
     let mut app = App::new();
     let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
+    let mut device_status = DeviceStatus::default();
+    let initial_battery_raw = read_battery_raw();
+    device_status.battery_percent = battery_percent_from_adc(initial_battery_raw);
+    app.set_device_status(device_status);
+    append_diag(&format!(
+        "battery_init raw={} pct={}",
+        initial_battery_raw, device_status.battery_percent
+    ));
     log_heap("before_app_init");
     // Prime deferred work (library cache/load scan) before the first paint to
     // avoid a guaranteed second full-screen refresh immediately after boot.
@@ -268,6 +411,7 @@ fn main() {
         None
     };
     let mut input_debug_ticks: u32 = 0;
+    let mut battery_sample_elapsed_ms: u32 = 0;
 
     // Auto-sleep tracking
     let mut inactivity_ms: u32 = 0;
@@ -323,32 +467,36 @@ fn main() {
             }
         }
 
+        battery_sample_elapsed_ms = battery_sample_elapsed_ms.saturating_add(LOOP_DELAY_MS);
+        if battery_sample_elapsed_ms >= BATTERY_SAMPLE_INTERVAL_MS {
+            battery_sample_elapsed_ms = 0;
+            let battery_raw = read_battery_raw();
+            let battery_percent = battery_percent_from_adc(battery_raw);
+            device_status.battery_percent = battery_percent;
+            app.set_device_status(device_status);
+        }
+
         if power_pressed {
             if !is_power_pressed {
                 power_press_counter = 0;
                 is_power_pressed = true;
                 long_press_triggered = false;
                 log::info!("Power button pressed...");
+                append_diag("power_press");
             } else if !long_press_triggered {
                 power_press_counter += 1;
                 if power_press_counter >= POWER_LONG_PRESS_ITERATIONS {
                     log::info!("Power button held for 2s - powering off!");
+                    append_diag("power_long_press");
                     long_press_triggered = true;
 
-                    // Show "Powering off..." message
-                    buffered_display.clear();
-                    // TODO: Render "Powering off..." text here when we have text rendering
-                    // For now, just clear to white
-                    display
-                        .update_with_mode(
-                            buffered_display.buffer(),
-                            &[],
-                            RefreshMode::Full,
-                            &mut delay,
-                        )
-                        .ok();
-
-                    log::info!("Display cleared for power off");
+                    show_sleep_screen_with_cover(
+                        &app,
+                        &mut display,
+                        &mut delay,
+                        &mut buffered_display,
+                    );
+                    log::info!("Displayed centered cover for power off");
 
                     while power_btn.is_low() {
                         FreeRtos::delay_ms(50);
@@ -361,6 +509,7 @@ fn main() {
             if is_power_pressed && !long_press_triggered {
                 if last_button != Some(Button::Power) {
                     log::info!("Power button short press");
+                    append_diag("power_short_press");
                     last_button = Some(Button::Power);
 
                     if app.handle_input(InputEvent::Press(Button::Power)) {
@@ -388,6 +537,7 @@ fn main() {
         if let Some(btn) = button {
             if btn != Button::Power && last_button != Some(btn) {
                 log::info!("Button pressed: {:?}", btn);
+                append_diag(&format!("button {:?}", btn));
                 last_button = Some(btn);
                 log_heap("before_handle_input");
 
@@ -486,6 +636,7 @@ fn main() {
                     "Auto-sleep: entering deep sleep after {}ms of inactivity",
                     inactivity_ms
                 );
+                append_diag(&format!("auto_sleep_enter inactivity_ms={}", inactivity_ms));
 
                 // Require the wake line to be stably high before sleeping. This avoids
                 // immediate wake/reboot loops on noisy or floating button lines.
@@ -510,16 +661,7 @@ fn main() {
                     continue;
                 }
 
-                // Clear display before sleep
-                buffered_display.clear();
-                display
-                    .update_with_mode(
-                        buffered_display.buffer(),
-                        &[],
-                        RefreshMode::Full,
-                        &mut delay,
-                    )
-                    .ok();
+                show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
 
                 enter_deep_sleep(3);
             }

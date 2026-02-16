@@ -362,6 +362,104 @@ impl VolumeButtonAction {
     }
 }
 
+/// Footer density options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FooterDensity {
+    Minimal,
+    #[default]
+    Detailed,
+}
+
+impl FooterDensity {
+    pub const ALL: [Self; 2] = [Self::Minimal, Self::Detailed];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Minimal => "Minimal",
+            Self::Detailed => "Detailed",
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Minimal => 0,
+            Self::Detailed => 1,
+        }
+    }
+
+    pub const fn from_index(index: usize) -> Option<Self> {
+        enum_from_index(&Self::ALL, index)
+    }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Minimal => Self::Detailed,
+            Self::Detailed => Self::Minimal,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        self.next_wrapped()
+    }
+}
+
+/// Footer auto-hide duration options
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FooterAutoHide {
+    #[default]
+    Off,
+    Seconds3,
+    Seconds8,
+}
+
+impl FooterAutoHide {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Seconds3, Self::Seconds8];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Seconds3 => "3s",
+            Self::Seconds8 => "8s",
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Seconds3 => 1,
+            Self::Seconds8 => 2,
+        }
+    }
+
+    pub const fn from_index(index: usize) -> Option<Self> {
+        enum_from_index(&Self::ALL, index)
+    }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Off => Self::Seconds3,
+            Self::Seconds3 => Self::Seconds8,
+            Self::Seconds8 => Self::Off,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::Off => Self::Seconds8,
+            Self::Seconds3 => Self::Off,
+            Self::Seconds8 => Self::Seconds3,
+        }
+    }
+
+    pub const fn milliseconds(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::Seconds3 => 3_000,
+            Self::Seconds8 => 8_000,
+        }
+    }
+}
+
 /// Reader settings data container
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReaderSettings {
@@ -373,6 +471,8 @@ pub struct ReaderSettings {
     pub margin_size: MarginSize,
     pub text_alignment: TextAlignment,
     pub show_page_numbers: bool,
+    pub footer_density: FooterDensity,
+    pub footer_auto_hide: FooterAutoHide,
     // Display
     pub refresh_frequency: RefreshFrequency,
     pub invert_colors: bool,
@@ -390,6 +490,8 @@ impl Default for ReaderSettings {
             margin_size: MarginSize::default(),
             text_alignment: TextAlignment::default(),
             show_page_numbers: true,
+            footer_density: FooterDensity::default(),
+            footer_auto_hide: FooterAutoHide::default(),
             refresh_frequency: RefreshFrequency::default(),
             invert_colors: false,
             tap_zone_config: TapZoneConfig::default(),
@@ -414,6 +516,8 @@ pub enum SettingItem {
     MarginSize,
     TextAlignment,
     ShowPageNumbers,
+    FooterDensity,
+    FooterAutoHide,
     RefreshFrequency,
     InvertColors,
     TapZoneConfig,
@@ -423,13 +527,15 @@ pub enum SettingItem {
 
 impl SettingItem {
     /// All setting items in display order
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::FontSize,
         Self::FontFamily,
         Self::LineSpacing,
         Self::MarginSize,
         Self::TextAlignment,
         Self::ShowPageNumbers,
+        Self::FooterDensity,
+        Self::FooterAutoHide,
         Self::RefreshFrequency,
         Self::InvertColors,
         Self::TapZoneConfig,
@@ -441,7 +547,11 @@ impl SettingItem {
     pub const fn section(self) -> &'static str {
         match self {
             Self::FontSize | Self::FontFamily | Self::LineSpacing => "Font",
-            Self::MarginSize | Self::TextAlignment | Self::ShowPageNumbers => "Margins & Layout",
+            Self::MarginSize
+            | Self::TextAlignment
+            | Self::ShowPageNumbers
+            | Self::FooterDensity
+            | Self::FooterAutoHide => "Margins & Layout",
             Self::RefreshFrequency | Self::InvertColors => "Display",
             Self::TapZoneConfig | Self::VolumeButtonAction => "Navigation",
             Self::SaveButton => "",
@@ -457,6 +567,8 @@ impl SettingItem {
             Self::MarginSize => "Margins",
             Self::TextAlignment => "Alignment",
             Self::ShowPageNumbers => "Page Numbers",
+            Self::FooterDensity => "Footer",
+            Self::FooterAutoHide => "Footer Hide",
             Self::RefreshFrequency => "Refresh",
             Self::InvertColors => "Invert",
             Self::TapZoneConfig => "Tap Zone",
@@ -674,6 +786,17 @@ impl ReaderSettingsActivity {
                 };
                 self.show_toast(format!("Page numbers: {}", status));
             }
+            SettingItem::FooterDensity => {
+                self.settings.footer_density = self.settings.footer_density.next_wrapped();
+                self.show_toast(format!("Footer: {}", self.settings.footer_density.label()));
+            }
+            SettingItem::FooterAutoHide => {
+                self.settings.footer_auto_hide = self.settings.footer_auto_hide.next_wrapped();
+                self.show_toast(format!(
+                    "Footer hide: {}",
+                    self.settings.footer_auto_hide.label()
+                ));
+            }
             SettingItem::RefreshFrequency => {
                 self.settings.refresh_frequency = self.settings.refresh_frequency.next_wrapped();
                 self.show_toast(format!(
@@ -725,6 +848,8 @@ impl ReaderSettingsActivity {
                     "[ ]".into()
                 }
             }
+            SettingItem::FooterDensity => self.settings.footer_density.label().into(),
+            SettingItem::FooterAutoHide => self.settings.footer_auto_hide.label().into(),
             SettingItem::RefreshFrequency => self.settings.refresh_frequency.label().into(),
             SettingItem::InvertColors => {
                 if self.settings.invert_colors {

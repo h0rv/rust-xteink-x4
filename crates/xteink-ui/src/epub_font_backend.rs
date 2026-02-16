@@ -6,7 +6,6 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
@@ -80,7 +79,10 @@ struct BackendState {
 
 impl BackendState {
     fn new() -> Self {
+        #[cfg(not(target_os = "espidf"))]
         let mut runtime_cache = FontCache::new();
+        #[cfg(target_os = "espidf")]
+        let runtime_cache = FontCache::new();
         #[cfg(not(target_os = "espidf"))]
         {
             let _ = runtime_cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR_TTF);
@@ -188,7 +190,8 @@ impl FontBackend for BookerlyFontBackend {
         let mut accepted = 0usize;
         for (index, face) in faces.iter().enumerate() {
             let resolved_id = (index as u32) + 1;
-            let runtime_name = format!(
+            #[cfg(not(target_os = "espidf"))]
+            let runtime_name = alloc::format!(
                 "epub-face-{}-{}-{}-{}",
                 resolved_id,
                 face.family,
@@ -246,7 +249,13 @@ impl FontBackend for BookerlyFontBackend {
     }
 
     fn metrics(&self, font_id: FontId) -> FontMetrics {
+        #[cfg(not(target_os = "espidf"))]
         let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        #[cfg(target_os = "espidf")]
+        let state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };

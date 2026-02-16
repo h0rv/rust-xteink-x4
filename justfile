@@ -121,27 +121,32 @@ check:
 
 # Check firmware (requires esp toolchain)
 check-firmware:
-    cargo check -p xteink-firmware
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo check -p xteink-firmware
 
 # Build firmware
 build-firmware:
-    cargo build -p xteink-firmware --release
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
 
 # Build firmware and enforce app-partition size gate.
 test-firmware-size:
-    cargo build -p xteink-firmware --release
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
     just size-check
 
 # Flash firmware to device (incremental build)
 flash:
-    cargo build -p xteink-firmware --release
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
     cargo clean -p xteink-firmware
-    cargo build -p xteink-firmware --release
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
@@ -149,7 +154,8 @@ flash-monitor:
 flash-clean:
     cargo clean -p xteink-firmware
     rm -rf target/riscv32imc-esp-espidf/release/build/esp-idf-sys-*
-    cargo build -p xteink-firmware --release
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 

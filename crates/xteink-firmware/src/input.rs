@@ -14,11 +14,16 @@ pub fn init_adc() {
         sys::adc1_config_width(ADC_WIDTH_BIT_12);
         sys::adc1_config_channel_atten(sys::adc_channel_t_ADC_CHANNEL_1, ADC_ATTEN_DB_11);
         sys::adc1_config_channel_atten(sys::adc_channel_t_ADC_CHANNEL_2, ADC_ATTEN_DB_11);
+        sys::adc1_config_channel_atten(sys::adc_channel_t_ADC_CHANNEL_3, ADC_ATTEN_DB_11);
     }
 }
 
 pub fn read_adc(channel: sys::adc_channel_t) -> i32 {
     unsafe { sys::adc1_get_raw(channel) as i32 }
+}
+
+pub fn read_battery_raw() -> i32 {
+    read_adc(sys::adc_channel_t_ADC_CHANNEL_3)
 }
 
 fn get_button_from_adc(adc_value: i32, ranges: &[i32], num_buttons: usize) -> i32 {

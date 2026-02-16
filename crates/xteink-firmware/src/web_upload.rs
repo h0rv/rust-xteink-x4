@@ -5,10 +5,9 @@ use std::fs;
 use std::io::Write as IoWrite;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 
-use embedded_svc::http::{Headers, Method};
-use embedded_svc::io::{Read, Write};
 use esp_idf_svc::http::server::{Configuration, EspHttpServer};
-use esp_idf_svc::sys::EspError;
+use esp_idf_svc::http::{Headers, Method};
+use esp_idf_svc::io::{EspIOError, Read, Write};
 
 const SERVER_STACK_SIZE: usize = 10 * 1024;
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -43,7 +42,7 @@ pub struct WebUploadServer {
 }
 
 impl WebUploadServer {
-    pub fn start() -> Result<Self, EspError> {
+    pub fn start() -> Result<Self, EspIOError> {
         let mut server = EspHttpServer::new(&Configuration {
             stack_size: SERVER_STACK_SIZE,
             max_uri_handlers: 12,

@@ -312,7 +312,7 @@ impl EpubReadingState {
             .iter()
             .filter(|idx| **idx < self.chapter_idx)
             .count();
-        self.chapter_idx + 1 - skipped_before
+        Self::compute_current_chapter(self.chapter_idx, skipped_before)
     }
 
     pub(super) fn total_chapters(&self) -> usize {
@@ -336,15 +336,15 @@ impl EpubReadingState {
     pub(super) fn page_progress_label(&self) -> String {
         let current = self.current_page_number();
         let total = self.total_pages().max(current);
-        if self.chapter_page_counts_exact.contains(&self.chapter_idx) {
-            format!("p{}/{}", current, total)
-        } else {
-            format!("p{}", current)
-        }
+        Self::format_page_progress_label(
+            current,
+            total,
+            self.chapter_page_counts_exact.contains(&self.chapter_idx),
+        )
     }
 
     pub(super) fn chapter_progress_label(&self) -> String {
-        format!("c{}/{}", self.current_chapter(), self.total_chapters())
+        Self::format_chapter_progress_label(self.current_chapter(), self.total_chapters())
     }
 
     pub(super) fn exact_chapter_page_counts(&self) -> Vec<(usize, usize)> {
@@ -379,25 +379,53 @@ impl EpubReadingState {
     }
 
     pub(super) fn book_progress_percent(&self) -> u8 {
-        let total_chapters = self.total_chapters().max(1);
-        let chapter_zero_based = self
-            .current_chapter()
-            .saturating_sub(1)
-            .min(total_chapters - 1);
+        Self::compute_book_progress_percent(
+            self.current_chapter(),
+            self.total_chapters(),
+            self.page_idx,
+            self.total_pages(),
+            self.chapter_page_counts_exact.contains(&self.chapter_idx),
+        )
+    }
+
+    fn compute_current_chapter(chapter_idx: usize, skipped_before: usize) -> usize {
+        chapter_idx + 1 - skipped_before
+    }
+
+    fn format_page_progress_label(current: usize, total: usize, has_exact_total: bool) -> String {
+        if has_exact_total {
+            format!("p{}/{}", current, total.max(current))
+        } else {
+            format!("p{}", current)
+        }
+    }
+
+    fn format_chapter_progress_label(current_chapter: usize, total_chapters: usize) -> String {
+        format!("c{}/{}", current_chapter, total_chapters.max(1))
+    }
+
+    fn compute_book_progress_percent(
+        current_chapter: usize,
+        total_chapters: usize,
+        page_idx: usize,
+        total_pages: usize,
+        has_exact_current_total: bool,
+    ) -> u8 {
+        let total_chapters = total_chapters.max(1);
+        let chapter_zero_based = current_chapter.saturating_sub(1).min(total_chapters - 1);
         let is_last_chapter = chapter_zero_based + 1 >= total_chapters;
-        let total_pages = self.total_pages().max(1);
-        let at_last_page = self.chapter_page_counts_exact.contains(&self.chapter_idx)
-            && self.current_page_number() >= total_pages;
+        let total_pages = total_pages.max(1);
+        let at_last_page = has_exact_current_total && page_idx + 1 >= total_pages;
         if is_last_chapter && at_last_page {
             return 100;
         }
 
-        let page_portion = if self.chapter_page_counts_exact.contains(&self.chapter_idx) {
-            (self.page_idx as f32 / total_pages as f32) / total_chapters as f32
+        let page_portion = if has_exact_current_total {
+            (page_idx as f32 / total_pages as f32) / total_chapters as f32
         } else {
             // Unknown chapter total: make progress monotonic while avoiding
             // overconfident percentages from temporary 1/1 placeholders.
-            (self.page_idx as f32 / (self.page_idx + 2) as f32) / total_chapters as f32
+            (page_idx as f32 / (page_idx + 2) as f32) / total_chapters as f32
         };
         let chapter_portion = chapter_zero_based as f32 / total_chapters as f32;
         ((chapter_portion + page_portion) * 100.0).clamp(0.0, 99.0) as u8
@@ -412,17 +440,35 @@ impl EpubReadingState {
             Ok(chapter) => chapter.href,
             Err(_) => return fallback,
         };
-        let mut title = href
-            .rsplit('/')
-            .next()
-            .unwrap_or(href.as_str())
-            .split('#')
-            .next()
-            .unwrap_or(href.as_str())
-            .split('.')
-            .next()
-            .unwrap_or(href.as_str())
-            .replace(['_', '-'], " ");
+        let href_key = Self::normalize_href_key(&href);
+
+        let mut title = self
+            .book
+            .navigation()
+            .and_then(|nav| {
+                nav.toc_flat().into_iter().find_map(|(_, point)| {
+                    let key = Self::normalize_href_key(&point.href);
+                    if key == href_key {
+                        Some(point.label.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or_else(|| {
+                href.rsplit('/')
+                    .next()
+                    .unwrap_or(href.as_str())
+                    .split('#')
+                    .next()
+                    .unwrap_or(href.as_str())
+                    .split('.')
+                    .next()
+                    .unwrap_or(href.as_str())
+                    .replace(['_', '-'], " ")
+            });
+
+        title = Self::normalize_chapter_title_text(&title);
         if title.is_empty() {
             title = fallback;
         }
@@ -439,6 +485,43 @@ impl EpubReadingState {
         } else {
             out
         }
+    }
+
+    fn normalize_href_key(href: &str) -> String {
+        let mut key = href
+            .split('#')
+            .next()
+            .unwrap_or(href)
+            .rsplit('/')
+            .next()
+            .unwrap_or(href)
+            .to_ascii_lowercase();
+        if let Some(dot) = key.rfind('.') {
+            key.truncate(dot);
+        }
+        key
+    }
+
+    fn normalize_chapter_title_text(title: &str) -> String {
+        let mut out = String::with_capacity(title.len());
+        let mut prev_ws = false;
+        for ch in title.chars() {
+            let normalized = match ch {
+                '_' | '-' => ' ',
+                c => c,
+            };
+            if normalized.is_whitespace() {
+                if !prev_ws {
+                    out.push(' ');
+                }
+                prev_ws = true;
+            } else {
+                out.push(normalized);
+                prev_ws = false;
+            }
+        }
+        out.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace())
+            .to_string()
     }
 
     pub(super) fn jump_to_chapter(&mut self, chapter_idx: usize) -> bool {
@@ -1190,6 +1273,68 @@ impl EpubReadingState {
                 registrations.len()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EpubReadingState;
+
+    #[test]
+    fn current_chapter_skips_non_renderable_before_current() {
+        assert_eq!(EpubReadingState::compute_current_chapter(0, 0), 1);
+        assert_eq!(EpubReadingState::compute_current_chapter(1, 0), 2);
+        assert_eq!(EpubReadingState::compute_current_chapter(3, 1), 3);
+        assert_eq!(EpubReadingState::compute_current_chapter(5, 2), 4);
+    }
+
+    #[test]
+    fn page_progress_label_respects_exact_vs_estimated_totals() {
+        assert_eq!(
+            EpubReadingState::format_page_progress_label(3, 10, true),
+            "p3/10"
+        );
+        assert_eq!(
+            EpubReadingState::format_page_progress_label(3, 10, false),
+            "p3"
+        );
+    }
+
+    #[test]
+    fn chapter_progress_label_uses_current_and_total() {
+        assert_eq!(
+            EpubReadingState::format_chapter_progress_label(2, 7),
+            "c2/7"
+        );
+        assert_eq!(
+            EpubReadingState::format_chapter_progress_label(1, 0),
+            "c1/1"
+        );
+    }
+
+    #[test]
+    fn book_progress_percent_hits_100_only_on_known_final_page() {
+        let p = EpubReadingState::compute_book_progress_percent(5, 5, 9, 10, true);
+        assert_eq!(p, 100);
+
+        let p = EpubReadingState::compute_book_progress_percent(5, 5, 8, 10, true);
+        assert!(p < 100);
+
+        let p = EpubReadingState::compute_book_progress_percent(5, 5, 99, 1, false);
+        assert!(p < 100);
+    }
+
+    #[test]
+    fn book_progress_percent_monotonic_inside_chapter() {
+        let p0 = EpubReadingState::compute_book_progress_percent(2, 5, 0, 10, true);
+        let p1 = EpubReadingState::compute_book_progress_percent(2, 5, 3, 10, true);
+        let p2 = EpubReadingState::compute_book_progress_percent(2, 5, 9, 10, true);
+        assert!(p0 <= p1 && p1 <= p2);
+
+        let u0 = EpubReadingState::compute_book_progress_percent(2, 5, 0, 1, false);
+        let u1 = EpubReadingState::compute_book_progress_percent(2, 5, 2, 1, false);
+        let u2 = EpubReadingState::compute_book_progress_percent(2, 5, 8, 1, false);
+        assert!(u0 <= u1 && u1 <= u2);
     }
 }
 

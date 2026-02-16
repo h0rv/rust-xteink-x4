@@ -158,6 +158,7 @@ impl EpubReadingState {
             non_renderable_chapters: BTreeSet::new(),
             chapter_idx: 0,
             page_idx: 0,
+            last_next_page_reached_end: false,
         };
         state.register_embedded_fonts();
         state.load_chapter_forward(0)?;
@@ -219,6 +220,7 @@ impl EpubReadingState {
             non_renderable_chapters: BTreeSet::new(),
             chapter_idx: 0,
             page_idx: 0,
+            last_next_page_reached_end: false,
         };
         log::info!("[EPUB] reader state allocated (lazy buffers)");
         state.register_embedded_fonts();
@@ -400,6 +402,10 @@ impl EpubReadingState {
         let chapter = self.chapter_idx;
         let next_page = self.page_idx.saturating_add(1);
         let _ = self.load_page_with_retries(chapter, next_page, 1);
+    }
+
+    pub(super) fn take_last_next_page_reached_end(&mut self) -> bool {
+        core::mem::take(&mut self.last_next_page_reached_end)
     }
 
     pub(super) fn position_indices(&self) -> (usize, usize) {
@@ -859,28 +865,48 @@ impl EpubReadingState {
     }
 
     pub(super) fn next_page(&mut self) -> bool {
+        self.last_next_page_reached_end = false;
         let previous_chapter = self.chapter_idx;
         let previous_page = self.page_idx;
         // Free the currently rendered page before loading the next one to
         // maximize contiguous heap on constrained devices.
         self.current_page = None;
         let next_idx = self.page_idx + 1;
-        if let Ok(page) =
-            self.load_page_with_retries(self.chapter_idx, next_idx, Self::PAGE_LOAD_MAX_RETRIES)
-        {
+        let next_page_result =
+            self.load_page_with_retries(self.chapter_idx, next_idx, Self::PAGE_LOAD_MAX_RETRIES);
+        if let Ok(page) = next_page_result {
             self.page_idx = next_idx;
             self.current_page = Some(page);
             return true;
         }
-        if self.chapter_idx + 1 < self.book.chapter_count()
-            && self.load_chapter_forward(self.chapter_idx + 1).is_ok()
-        {
-            self.chapter_page_counts
-                .entry(previous_chapter)
-                .and_modify(|count| *count = (*count).max(previous_page + 1))
-                .or_insert(previous_page + 1);
-            self.chapter_page_counts_exact.insert(previous_chapter);
-            return true;
+        let next_page_err = next_page_result
+            .err()
+            .unwrap_or_else(|| "Unknown EPUB pagination error".to_string());
+        let reached_end = if self.chapter_idx + 1 < self.book.chapter_count() {
+            match self.load_chapter_forward(self.chapter_idx + 1) {
+                Ok(()) => {
+                    self.chapter_page_counts
+                        .entry(previous_chapter)
+                        .and_modify(|count| *count = (*count).max(previous_page + 1))
+                        .or_insert(previous_page + 1);
+                    self.chapter_page_counts_exact.insert(previous_chapter);
+                    return true;
+                }
+                Err(err) => {
+                    Self::is_out_of_range_error(&next_page_err)
+                        && err == "No renderable pages found in remaining chapters"
+                }
+            }
+        } else {
+            Self::is_out_of_range_error(&next_page_err)
+        };
+        self.last_next_page_reached_end = reached_end;
+        if reached_end {
+            log::info!(
+                "[EPUB] reached end of book at chapter={} page={}",
+                previous_chapter,
+                previous_page
+            );
         }
         if let Ok(page) = self.load_page_with_retries(
             previous_chapter,
@@ -892,9 +918,10 @@ impl EpubReadingState {
             self.current_page = Some(page);
         }
         log::warn!(
-            "[EPUB] next_page failed at chapter={} page={}",
+            "[EPUB] next_page failed at chapter={} page={} err={}",
             previous_chapter,
-            previous_page
+            previous_page,
+            next_page_err
         );
         false
     }
@@ -916,28 +943,70 @@ impl EpubReadingState {
             }
         }
         if self.chapter_idx > 0 {
-            let prev_chapter = self.chapter_idx - 1;
-            if self.load_chapter_backward(prev_chapter).is_ok() {
-                let total_prev = self
-                    .chapter_page_counts
-                    .get(&prev_chapter)
-                    .copied()
-                    .unwrap_or(1);
-                if total_prev <= 1 {
-                    // `load_chapter_backward` already loaded page 0 for this chapter.
-                    // Avoid re-loading the same page, which needlessly re-streams the
-                    // chapter and can trigger allocation failures on constrained heaps.
-                    return true;
+            // Walk backward until we find a renderable chapter. This handles
+            // skipped/non-renderable chapters directly adjacent to the current one.
+            let mut idx = self.chapter_idx as i32 - 1;
+            while idx >= 0 {
+                let candidate = idx as usize;
+                match self.load_chapter_exact(candidate) {
+                    Ok(()) => {
+                        // `load_chapter_exact` loads page 0. If we know an exact chapter
+                        // total, jump to its final page; otherwise keep page 0.
+                        let loaded_chapter = self.chapter_idx;
+                        let total_prev = self
+                            .chapter_page_counts
+                            .get(&loaded_chapter)
+                            .copied()
+                            .unwrap_or(1)
+                            .max(1);
+                        if total_prev <= 1 {
+                            return true;
+                        }
+                        self.page_idx = total_prev.saturating_sub(1);
+                        match self.load_page_with_retries(
+                            loaded_chapter,
+                            self.page_idx,
+                            Self::PAGE_LOAD_MAX_RETRIES,
+                        ) {
+                            Ok(page) => {
+                                self.current_page = Some(page);
+                                return true;
+                            }
+                            Err(err) => {
+                                // Persisted "exact" chapter totals can become stale after
+                                // typography changes; downgrade to estimated and keep page 0.
+                                if Self::is_out_of_range_error(&err) {
+                                    self.chapter_page_counts_exact.remove(&loaded_chapter);
+                                    self.chapter_page_counts.insert(loaded_chapter, 1);
+                                }
+                            }
+                        }
+                        // Keep already-loaded page 0 instead of failing hard.
+                        self.page_idx = 0;
+                        if self.chapter_idx == loaded_chapter && self.current_page.is_some() {
+                            return true;
+                        }
+                        if let Ok(page) = self.load_page_with_retries(
+                            loaded_chapter,
+                            0,
+                            Self::PAGE_LOAD_MAX_RETRIES,
+                        ) {
+                            self.current_page = Some(page);
+                            return true;
+                        }
+                    }
+                    Err(err) if Self::is_non_renderable_chapter_error(&err) => {
+                        self.non_renderable_chapters.insert(candidate);
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "[EPUB] prev_page candidate chapter={} failed: {}",
+                            candidate,
+                            err
+                        );
+                    }
                 }
-                self.page_idx = total_prev.saturating_sub(1);
-                if let Ok(page) = self.load_page_with_retries(
-                    self.chapter_idx,
-                    self.page_idx,
-                    Self::PAGE_LOAD_MAX_RETRIES,
-                ) {
-                    self.current_page = Some(page);
-                    return true;
-                }
+                idx -= 1;
             }
         }
         if let Ok(page) = self.load_page_with_retries(
@@ -1653,19 +1722,23 @@ impl FileBrowserActivity {
         };
 
         match recv_result {
-            Ok(Ok(advanced)) => {
+            Ok(Ok(outcome)) => {
                 let direction = self
                     .epub_navigation_pending
                     .as_ref()
-                    .map(|pending| pending.direction.label())
-                    .unwrap_or("page");
+                    .map(|pending| pending.direction)
+                    .unwrap_or(EpubNavigationDirection::Next);
                 self.epub_navigation_pending = None;
-                if !advanced {
-                    log::warn!("[EPUB] unable to advance {} page", direction);
+                if !outcome.advanced {
+                    if matches!(direction, EpubNavigationDirection::Next) && outcome.reached_end {
+                        self.epub_overlay = Some(EpubOverlay::Finished);
+                    } else {
+                        log::warn!("[EPUB] unable to advance {} page", direction.label());
+                    }
                 } else {
                     self.persist_active_epub_position();
                 }
-                advanced
+                outcome.advanced || outcome.reached_end
             }
             Ok(Err(error)) => {
                 log::warn!("[EPUB] page turn worker failed: {}", error);
@@ -1800,7 +1873,7 @@ impl FileBrowserActivity {
     pub(super) fn spawn_epub_navigation_worker(
         renderer: Arc<Mutex<EpubReadingState>>,
         direction: EpubNavigationDirection,
-    ) -> Result<Receiver<Result<bool, String>>, String> {
+    ) -> Result<Receiver<Result<EpubNavigationOutcome, String>>, String> {
         log::info!(
             "[EPUB] spawn nav worker stack={}B direction={}",
             Self::EPUB_NAV_WORKER_STACK_BYTES,
@@ -1812,10 +1885,20 @@ impl FileBrowserActivity {
             .stack_size(Self::EPUB_NAV_WORKER_STACK_BYTES);
         builder
             .spawn(move || {
-                let advanced = match renderer.lock() {
+                let outcome = match renderer.lock() {
                     Ok(mut renderer) => match direction {
-                        EpubNavigationDirection::Next => renderer.next_page(),
-                        EpubNavigationDirection::Prev => renderer.prev_page(),
+                        EpubNavigationDirection::Next => {
+                            let advanced = renderer.next_page();
+                            let reached_end = renderer.take_last_next_page_reached_end();
+                            EpubNavigationOutcome {
+                                advanced,
+                                reached_end,
+                            }
+                        }
+                        EpubNavigationDirection::Prev => EpubNavigationOutcome {
+                            advanced: renderer.prev_page(),
+                            reached_end: false,
+                        },
                     },
                     Err(_) => {
                         let _ = tx.send(Err(
@@ -1824,7 +1907,7 @@ impl FileBrowserActivity {
                         return;
                     }
                 };
-                let _ = tx.send(Ok(advanced));
+                let _ = tx.send(Ok(outcome));
             })
             .map_err(|e| format!("Unable to start EPUB navigation worker: {}", e))?;
         Ok(rx)

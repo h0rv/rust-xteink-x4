@@ -122,6 +122,7 @@ enum EpubOverlay {
     JumpPercent {
         percent: u8,
     },
+    Finished,
 }
 
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -137,8 +138,15 @@ struct PendingEpubOpen {
 
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 struct PendingEpubNavigation {
-    receiver: Receiver<Result<bool, String>>,
+    receiver: Receiver<Result<EpubNavigationOutcome, String>>,
     direction: EpubNavigationDirection,
+}
+
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[derive(Clone, Copy, Debug, Default)]
+struct EpubNavigationOutcome {
+    advanced: bool,
+    reached_end: bool,
 }
 
 #[cfg(feature = "std")]
@@ -252,6 +260,7 @@ struct EpubReadingState {
     non_renderable_chapters: BTreeSet<usize>,
     chapter_idx: usize,
     page_idx: usize,
+    last_next_page_reached_end: bool,
 }
 
 #[cfg(all(feature = "std", feature = "fontdue"))]
@@ -488,6 +497,23 @@ impl FileBrowserActivity {
                         put_back = false;
                     }
                     _ => {}
+                },
+                EpubOverlay::Finished => match event {
+                    InputEvent::Press(Button::Confirm) | InputEvent::Press(Button::Back) => {
+                        exit_to_files = true;
+                        put_back = false;
+                    }
+                    InputEvent::Press(Button::Left)
+                    | InputEvent::Press(Button::Right)
+                    | InputEvent::Press(Button::Up)
+                    | InputEvent::Press(Button::Down)
+                    | InputEvent::Press(Button::VolumeUp)
+                    | InputEvent::Press(Button::VolumeDown) => {
+                        put_back = false;
+                    }
+                    InputEvent::Press(Button::Power) => {
+                        overlay = EpubOverlay::QuickMenu { selected: 0 };
+                    }
                 },
             },
             _ => {
@@ -849,8 +875,15 @@ impl FileBrowserActivity {
                             EpubInputAction::OpenSettings => false,
                         };
                         let mut exact_chapter_counts: Vec<(usize, usize)> = Vec::new();
+                        let reached_end =
+                            matches!(action, EpubInputAction::Page(EpubNavigationDirection::Next))
+                                && renderer.take_last_next_page_reached_end();
                         if !advanced {
-                            log::warn!("[EPUB] unable to handle epub action");
+                            if reached_end {
+                                self.epub_overlay = Some(EpubOverlay::Finished);
+                            } else {
+                                log::warn!("[EPUB] unable to handle epub action");
+                            }
                         } else {
                             advanced_position = Some(renderer.position_indices());
                             exact_chapter_counts = renderer.exact_chapter_page_counts();
@@ -1300,6 +1333,26 @@ impl FileBrowserActivity {
                 Text::new(&chapter, Point::new(bar_x, bar_y + 34), body_style).draw(display)?;
                 Text::new(
                     "L/R 1%  U/D 10%  OK Jump  Back",
+                    Point::new(panel_x + 8, panel_y + panel_h - 14),
+                    hint_style,
+                )
+                .draw(display)?;
+            }
+            EpubOverlay::Finished => {
+                Text::new(
+                    "Finished",
+                    Point::new(panel_x + 8, panel_y + 22),
+                    title_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    "You reached the end of this book.",
+                    Point::new(panel_x + 10, panel_y + 58),
+                    body_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    "Confirm/Back Exit  Any Nav Continue",
                     Point::new(panel_x + 8, panel_y + panel_h - 14),
                     hint_style,
                 )

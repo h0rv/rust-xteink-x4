@@ -164,6 +164,25 @@ impl BackendState {
                 m.advance_width > 0.0
             })
     }
+
+    fn measure_text_for_slot(&mut self, slot: &FontSlotKey, text: &str) -> f32 {
+        #[cfg(not(target_os = "espidf"))]
+        {
+            self.runtime_cache.set_font_size(slot.size_px());
+            if self.runtime_font_available(&slot.font_name, slot.size_px()) {
+                return self
+                    .runtime_cache
+                    .measure_text(text, &slot.font_name)
+                    .max(0.0);
+            }
+        }
+
+        self.bitmap_cache.set_font(&slot.font_name);
+        self.bitmap_cache.set_font_size(slot.size_px());
+        self.bitmap_cache
+            .measure_text(text, &slot.font_name)
+            .max(0.0)
+    }
 }
 
 /// Font backend that renders with embedded Bookerly bitmap fonts.
@@ -334,18 +353,10 @@ impl FontBackend for BookerlyFontBackend {
         const BASELINE_SAFETY_PX: i32 = 2;
         let top_y = origin.y;
         #[cfg(not(target_os = "espidf"))]
-        {
-            state.runtime_cache.set_font_size(slot.size_px());
-        }
-        #[cfg(not(target_os = "espidf"))]
         if state.runtime_font_available(&slot.font_name, slot.size_px()) {
             let baseline_y =
                 top_y + state.runtime_cache.baseline_offset(&slot.font_name) + BASELINE_SAFETY_PX;
-            let width = state
-                .runtime_cache
-                .measure_text(text, &slot.font_name)
-                .round()
-                .max(0.0) as i32;
+            let width = state.measure_text_for_slot(&slot, text).round().max(0.0) as i32;
             state.runtime_cache.render_text(
                 display,
                 text,
@@ -361,11 +372,7 @@ impl FontBackend for BookerlyFontBackend {
         let baseline_y =
             top_y + state.bitmap_cache.baseline_offset(&slot.font_name) + BASELINE_SAFETY_PX;
 
-        let width = state
-            .bitmap_cache
-            .measure_text(text, &slot.font_name)
-            .round()
-            .max(0.0) as i32;
+        let width = state.measure_text_for_slot(&slot, text).round().max(0.0) as i32;
         state
             .bitmap_cache
             .render_text(display, text, &slot.font_name, origin.x, baseline_y)?;
@@ -387,49 +394,73 @@ impl TextMeasurer for BookerlyFontBackend {
         if text.is_empty() {
             return 0.0;
         }
+        let selection = <Self as FontBackend>::resolve_font(self, style, style.font_id);
         let mut state = match self.state.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let chosen_name = if let Some(id) = style.font_id {
-            state
-                .resolved_font_names_by_id
-                .get(&id)
-                .cloned()
-                .unwrap_or_else(|| BackendState::default_font_name_for_style(style).to_string())
-        } else {
-            BackendState::default_font_name_for_style(style).to_string()
-        };
-        let selection = FontSelection {
-            font_id: state.ensure_slot_for(FontSlotKey::new(chosen_name, style.size_px)),
-            fallback_reason: None,
-        };
         let slot = state.slot_key_for_id(selection.font_id);
-        #[cfg(not(target_os = "espidf"))]
-        {
-            state.runtime_cache.set_font_size(slot.size_px());
-            if state.runtime_font_available(&slot.font_name, slot.size_px()) {
-                return state
-                    .runtime_cache
-                    .measure_text(text, &slot.font_name)
-                    .max(0.0);
-            }
+        state.measure_text_for_slot(&slot, text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor};
+    use mu_epub::BlockRole;
+    use mu_epub_render::JustifyMode;
+
+    use super::*;
+
+    fn body_style() -> ResolvedTextStyle {
+        ResolvedTextStyle {
+            font_id: None,
+            family: "serif".to_string(),
+            weight: 400,
+            italic: false,
+            size_px: 18.0,
+            line_height: 1.3,
+            letter_spacing: 0.0,
+            role: BlockRole::Body,
+            justify_mode: JustifyMode::None,
         }
-        EmbeddedFontRegistry::get_font_nearest(&slot.font_name, slot.size_px() as u32)
-            .map(|font| {
-                text.chars()
-                    .map(|ch| font.glyph(ch).map(|g| g.advance_width).unwrap_or(0) as f32)
-                    .sum::<f32>()
-            })
-            .unwrap_or_else(|| {
-                let approx = state
-                    .runtime_cache
-                    .metrics(&slot.font_name, 'n')
-                    .or_else(|| state.runtime_cache.metrics(&slot.font_name, 'a'))
-                    .map(|m| m.advance_width)
-                    .unwrap_or(8.0)
-                    .max(1.0);
-                approx * text.chars().count() as f32
-            })
+    }
+
+    #[test]
+    fn text_measurer_matches_draw_width_for_same_font_path() {
+        let backend = BookerlyFontBackend::default();
+        let style = body_style();
+        let text = "Layout parity across glyph widths";
+
+        let measured = backend.measure_text_px(text, &style).round() as i32;
+        let resolved = backend.resolve_font(&style, style.font_id);
+        let mut display: MockDisplay<BinaryColor> = MockDisplay::new();
+        display.set_allow_overdraw(true);
+        display.set_allow_out_of_bounds_drawing(true);
+        let drawn = backend
+            .draw_text_run(&mut display, resolved.font_id, text, Point::new(0, 0))
+            .expect("draw_text_run should succeed");
+
+        assert_eq!(measured, drawn);
+    }
+
+    #[test]
+    fn text_measurer_uses_same_fallback_resolution_as_draw_path() {
+        let backend = BookerlyFontBackend::default();
+        let mut style = body_style();
+        style.family = "unknown-family".to_string();
+        style.font_id = Some(9999);
+        let text = "Fallback still needs stable widths";
+
+        let measured = backend.measure_text_px(text, &style).round() as i32;
+        let resolved = backend.resolve_font(&style, style.font_id);
+        let mut display: MockDisplay<BinaryColor> = MockDisplay::new();
+        display.set_allow_overdraw(true);
+        display.set_allow_out_of_bounds_drawing(true);
+        let drawn = backend
+            .draw_text_run(&mut display, resolved.font_id, text, Point::new(0, 0))
+            .expect("draw_text_run should succeed");
+
+        assert_eq!(measured, drawn);
     }
 }

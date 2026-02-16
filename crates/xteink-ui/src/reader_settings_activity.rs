@@ -1284,8 +1284,8 @@ mod tests {
             invert_colors: true,
             tap_zone_config: TapZoneConfig::RightNext,
             volume_button_action: VolumeButtonAction::PageTurn,
-            footer_density: FooterDensity::Compact,
-            footer_auto_hide: FooterAutoHide::After5s,
+            footer_density: FooterDensity::Minimal,
+            footer_auto_hide: FooterAutoHide::Seconds8,
         };
 
         settings.reset_to_defaults();

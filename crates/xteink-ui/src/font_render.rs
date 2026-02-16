@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
-#[cfg(all(feature = "fontdue", test))]
+#[cfg(all(feature = "fontdue", feature = "std", test))]
 use fontdue::OutlineBounds;
 #[cfg(feature = "fontdue")]
 use fontdue::{Font, FontSettings, Metrics};

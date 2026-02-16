@@ -9,19 +9,17 @@ use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{
-    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
 };
 
 use crate::input::{Button, InputEvent};
 use crate::ui::helpers::{
     enum_from_index, handle_two_button_modal_input, TwoButtonModalInputResult,
 };
-use crate::ui::theme::{ui_font, ui_font_bold};
-use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
+use crate::ui::theme::ui_text;
+use crate::ui::{Activity, ActivityResult, Modal, Theme, Toast};
 
 /// Font size options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -140,8 +138,8 @@ impl FontSize {
 /// Font family options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FontFamily {
-    #[default]
     Monospace,
+    #[default]
     Serif,
     SansSerif,
 }
@@ -511,7 +509,6 @@ impl SettingsActivity {
                 y += theme.metrics.spacing_double() as i32;
 
                 let height = theme.metrics.button_height;
-                let text_y = theme.metrics.button_text_y();
 
                 // Background
                 let bg_color = if is_selected {
@@ -535,21 +532,21 @@ impl SettingsActivity {
                     BinaryColor::On
                 };
                 let label = row.label();
-                let label_width = ThemeMetrics::text_width(label.len());
+                let label_width = ui_text::width(label, Some(ui_text::DEFAULT_SIZE)) as i32;
                 let label_x = x + (content_width as i32 - label_width) / 2;
-                Text::new(
+                ui_text::draw_colored(
+                    display,
                     label,
-                    Point::new(label_x, y + text_y),
-                    MonoTextStyle::new(ui_font_bold(), text_color),
-                )
-                .draw(display)?;
+                    label_x,
+                    y + ui_text::center_y(height, Some(ui_text::DEFAULT_SIZE)),
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
 
                 y += height as i32;
             } else {
                 // Value row: label on left, < Value > on right
                 let height = theme.metrics.list_item_height;
-                let text_y = theme.metrics.item_text_y();
-
                 // Background
                 let bg_color = if is_selected {
                     BinaryColor::On
@@ -567,25 +564,29 @@ impl SettingsActivity {
                 };
 
                 // Label on left
-                Text::new(
+                ui_text::draw_colored(
+                    display,
                     row.label(),
-                    Point::new(x + theme.metrics.side_padding as i32, y + text_y),
-                    MonoTextStyle::new(ui_font(), text_color),
-                )
-                .draw(display)?;
+                    x + theme.metrics.side_padding as i32,
+                    y + ui_text::center_y(height, Some(ui_text::DEFAULT_SIZE)),
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
 
                 // < Value > on right
                 let value = self.get_value_label(row);
                 let value_text = format!("< {} >", value);
-                let value_width = ThemeMetrics::text_width(value_text.len());
+                let value_width = ui_text::width(&value_text, Some(ui_text::DEFAULT_SIZE)) as i32;
                 let value_x =
                     x + content_width as i32 - value_width - theme.metrics.side_padding as i32;
-                Text::new(
+                ui_text::draw_colored(
+                    display,
                     &value_text,
-                    Point::new(value_x, y + text_y),
-                    MonoTextStyle::new(ui_font(), text_color),
-                )
-                .draw(display)?;
+                    value_x,
+                    y + ui_text::center_y(height, Some(ui_text::DEFAULT_SIZE)),
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
 
                 y += height as i32;
 
@@ -870,7 +871,7 @@ mod tests {
     fn settings_defaults() {
         let settings = Settings::default();
         assert_eq!(settings.font_size, FontSize::Medium);
-        assert_eq!(settings.font_family, FontFamily::Monospace);
+        assert_eq!(settings.font_family, FontFamily::Serif);
         assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::FiveMinutes);
     }
 
@@ -885,7 +886,7 @@ mod tests {
         settings.reset_to_defaults();
 
         assert_eq!(settings.font_size, FontSize::Medium);
-        assert_eq!(settings.font_family, FontFamily::Monospace);
+        assert_eq!(settings.font_family, FontFamily::Serif);
         assert_eq!(settings.auto_sleep_duration, AutoSleepDuration::FiveMinutes);
     }
 
@@ -999,29 +1000,29 @@ mod tests {
         // Navigate to FontFamily row
         activity.handle_input(InputEvent::Press(Button::Down));
         assert_eq!(activity.current_row(), SettingRow::FontFamily);
-        assert_eq!(activity.settings().font_family, FontFamily::Monospace);
+        assert_eq!(activity.settings().font_family, FontFamily::Serif);
 
         // Right cycles forward
         let result = activity.handle_input(InputEvent::Press(Button::Right));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.settings().font_family, FontFamily::Serif);
+        assert_eq!(activity.settings().font_family, FontFamily::SansSerif);
 
         // Right again
         activity.handle_input(InputEvent::Press(Button::Right));
-        assert_eq!(activity.settings().font_family, FontFamily::SansSerif);
+        assert_eq!(activity.settings().font_family, FontFamily::Monospace);
 
         // Right wraps to beginning
         activity.handle_input(InputEvent::Press(Button::Right));
-        assert_eq!(activity.settings().font_family, FontFamily::Monospace);
+        assert_eq!(activity.settings().font_family, FontFamily::Serif);
 
         // Left cycles backward (wraps)
         let result = activity.handle_input(InputEvent::Press(Button::Left));
         assert_eq!(result, ActivityResult::Consumed);
-        assert_eq!(activity.settings().font_family, FontFamily::SansSerif);
+        assert_eq!(activity.settings().font_family, FontFamily::Monospace);
 
         // Left again
         activity.handle_input(InputEvent::Press(Button::Left));
-        assert_eq!(activity.settings().font_family, FontFamily::Serif);
+        assert_eq!(activity.settings().font_family, FontFamily::SansSerif);
     }
 
     #[test]

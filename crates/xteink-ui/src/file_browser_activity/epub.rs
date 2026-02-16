@@ -3,6 +3,14 @@ use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
 
 #[cfg(feature = "std")]
+#[derive(Clone)]
+struct PersistedEpubState {
+    chapter_idx: usize,
+    page_idx: usize,
+    chapter_counts: Vec<(usize, usize)>,
+}
+
+#[cfg(feature = "std")]
 impl EpubReadingState {
     const MAX_ZIP_ENTRY_BYTES: usize = 8 * 1024 * 1024;
     const MAX_MIMETYPE_BYTES: usize = 1024;
@@ -45,7 +53,8 @@ impl EpubReadingState {
         layout.margin_right = side_margin;
         // Keep a safety band at the top so ascenders/diacritics never clip on page starts.
         layout.margin_top = 14;
-        layout.margin_bottom = 24;
+        layout.margin_bottom =
+            (EPUB_FOOTER_HEIGHT + EPUB_FOOTER_BOTTOM_PADDING + EPUB_FOOTER_TOP_GAP).max(24);
         layout.first_line_indent_px = 0;
         layout.paragraph_gap_px = match settings.line_spacing {
             crate::reader_settings_activity::LineSpacing::Compact => 6,
@@ -335,6 +344,27 @@ impl EpubReadingState {
 
     pub(super) fn chapter_progress_label(&self) -> String {
         format!("c{}/{}", self.current_chapter(), self.total_chapters())
+    }
+
+    pub(super) fn exact_chapter_page_counts(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for chapter_idx in self.chapter_page_counts_exact.iter().copied() {
+            if let Some(count) = self.chapter_page_counts.get(&chapter_idx).copied() {
+                out.push((chapter_idx, count.max(1)));
+            }
+        }
+        out
+    }
+
+    pub(super) fn apply_exact_chapter_page_counts(&mut self, counts: &[(usize, usize)]) {
+        for (chapter_idx, count) in counts.iter().copied() {
+            if chapter_idx >= self.book.chapter_count() {
+                continue;
+            }
+            let normalized = count.max(1);
+            self.chapter_page_counts.insert(chapter_idx, normalized);
+            self.chapter_page_counts_exact.insert(chapter_idx);
+        }
     }
 
     pub(super) fn position_indices(&self) -> (usize, usize) {
@@ -1308,6 +1338,8 @@ impl FileBrowserActivity {
 
     #[cfg(feature = "std")]
     const EPUB_STATE_MAX_BOOKS: usize = 256;
+    #[cfg(feature = "std")]
+    const EPUB_STATE_MAX_CHAPTER_COUNTS: usize = 512;
 
     #[cfg(feature = "std")]
     pub(super) fn persist_active_epub_position(&mut self) {
@@ -1321,7 +1353,13 @@ impl FileBrowserActivity {
             Ok(guard) => guard.position_indices(),
             Err(poisoned) => poisoned.into_inner().position_indices(),
         };
-        if let Err(err) = Self::persist_epub_position_for_path(&path, chapter_idx, page_idx) {
+        let chapter_counts = match renderer.lock() {
+            Ok(guard) => guard.exact_chapter_page_counts(),
+            Err(poisoned) => poisoned.into_inner().exact_chapter_page_counts(),
+        };
+        if let Err(err) =
+            Self::persist_epub_position_for_path(&path, chapter_idx, page_idx, &chapter_counts)
+        {
             log::warn!("[EPUB] unable to persist reading position: {}", err);
         }
     }
@@ -1331,28 +1369,32 @@ impl FileBrowserActivity {
         let Some(path) = self.active_epub_path.as_ref() else {
             return;
         };
-        let Some((chapter_idx, page_idx)) = Self::load_epub_position_for_path(path) else {
+        let Some(saved) = Self::load_epub_state_for_path(path) else {
             return;
         };
         let restored = match renderer.lock() {
-            Ok(mut guard) => guard.restore_position(chapter_idx, page_idx),
+            Ok(mut guard) => {
+                guard.apply_exact_chapter_page_counts(&saved.chapter_counts);
+                guard.restore_position(saved.chapter_idx, saved.page_idx)
+            }
             Err(poisoned) => {
                 let mut guard = poisoned.into_inner();
-                guard.restore_position(chapter_idx, page_idx)
+                guard.apply_exact_chapter_page_counts(&saved.chapter_counts);
+                guard.restore_position(saved.chapter_idx, saved.page_idx)
             }
         };
         if restored {
             log::info!(
                 "[EPUB] restored position path={} chapter={} page={}",
                 path,
-                chapter_idx,
-                page_idx
+                saved.chapter_idx,
+                saved.page_idx
             );
         }
     }
 
     #[cfg(feature = "std")]
-    fn load_epub_position_for_path(path: &str) -> Option<(usize, usize)> {
+    fn load_epub_state_for_path(path: &str) -> Option<PersistedEpubState> {
         let raw = std::fs::read_to_string(Self::EPUB_STATE_FILE).ok()?;
         for line in raw.lines() {
             let mut fields = line.split('\t');
@@ -1364,7 +1406,15 @@ impl FileBrowserActivity {
             }
             let chapter_idx = fields.next().and_then(|v| v.parse::<usize>().ok())?;
             let page_idx = fields.next().and_then(|v| v.parse::<usize>().ok())?;
-            return Some((chapter_idx, page_idx));
+            let chapter_counts = fields
+                .next()
+                .map(Self::decode_chapter_counts)
+                .unwrap_or_default();
+            return Some(PersistedEpubState {
+                chapter_idx,
+                page_idx,
+                chapter_counts,
+            });
         }
         None
     }
@@ -1374,9 +1424,10 @@ impl FileBrowserActivity {
         path: &str,
         chapter_idx: usize,
         page_idx: usize,
+        chapter_counts: &[(usize, usize)],
     ) -> Result<(), String> {
         std::fs::create_dir_all(Self::EPUB_STATE_DIR).map_err(|e| e.to_string())?;
-        let mut state: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut state: BTreeMap<String, PersistedEpubState> = BTreeMap::new();
         if let Ok(raw) = std::fs::read_to_string(Self::EPUB_STATE_FILE) {
             for line in raw.lines() {
                 let mut fields = line.split('\t');
@@ -1390,10 +1441,32 @@ impl FileBrowserActivity {
                 let Some(saved_page) = fields.next().and_then(|v| v.parse::<usize>().ok()) else {
                     continue;
                 };
-                state.insert(saved_path.to_string(), (saved_chapter, saved_page));
+                let saved_counts = fields
+                    .next()
+                    .map(Self::decode_chapter_counts)
+                    .unwrap_or_default();
+                state.insert(
+                    saved_path.to_string(),
+                    PersistedEpubState {
+                        chapter_idx: saved_chapter,
+                        page_idx: saved_page,
+                        chapter_counts: saved_counts,
+                    },
+                );
             }
         }
-        state.insert(path.to_string(), (chapter_idx, page_idx));
+        state.insert(
+            path.to_string(),
+            PersistedEpubState {
+                chapter_idx,
+                page_idx,
+                chapter_counts: chapter_counts
+                    .iter()
+                    .copied()
+                    .take(Self::EPUB_STATE_MAX_CHAPTER_COUNTS)
+                    .collect(),
+            },
+        );
         while state.len() > Self::EPUB_STATE_MAX_BOOKS {
             let Some(oldest_key) = state.keys().next().cloned() else {
                 break;
@@ -1401,15 +1474,47 @@ impl FileBrowserActivity {
             state.remove(&oldest_key);
         }
         let mut out = String::new();
-        for (saved_path, (saved_chapter, saved_page)) in state {
+        for (saved_path, saved) in state {
             out.push_str(&saved_path);
             out.push('\t');
-            out.push_str(&saved_chapter.to_string());
+            out.push_str(&saved.chapter_idx.to_string());
             out.push('\t');
-            out.push_str(&saved_page.to_string());
+            out.push_str(&saved.page_idx.to_string());
+            out.push('\t');
+            out.push_str(&Self::encode_chapter_counts(&saved.chapter_counts));
             out.push('\n');
         }
         std::fs::write(Self::EPUB_STATE_FILE, out).map_err(|e| e.to_string())
+    }
+
+    #[cfg(feature = "std")]
+    fn encode_chapter_counts(counts: &[(usize, usize)]) -> String {
+        let mut out = String::new();
+        for (idx, (chapter_idx, count)) in counts.iter().copied().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            out.push_str(&chapter_idx.to_string());
+            out.push(':');
+            out.push_str(&count.max(1).to_string());
+        }
+        out
+    }
+
+    #[cfg(feature = "std")]
+    fn decode_chapter_counts(raw: &str) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for item in raw.split(',') {
+            let mut parts = item.split(':');
+            let Some(chapter_idx) = parts.next().and_then(|v| v.parse::<usize>().ok()) else {
+                continue;
+            };
+            let Some(count) = parts.next().and_then(|v| v.parse::<usize>().ok()) else {
+                continue;
+            };
+            out.push((chapter_idx, count.max(1)));
+        }
+        out
     }
 
     #[cfg(feature = "std")]

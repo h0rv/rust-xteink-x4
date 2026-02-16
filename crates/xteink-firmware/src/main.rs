@@ -126,6 +126,13 @@ fn enter_deep_sleep(power_btn_pin: i32) {
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    let reset_reason = unsafe { sys::esp_reset_reason() };
+    let wake_cause = unsafe { sys::esp_sleep_get_wakeup_cause() };
+    log::info!(
+        "Boot reason: reset={:?} wake_cause={:?}",
+        reset_reason,
+        wake_cause
+    );
     configure_pthread_defaults();
     log_heap("startup");
 
@@ -216,6 +223,23 @@ fn main() {
     let mut app = App::new();
     let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
     log_heap("before_app_init");
+    // Prime deferred work (library cache/load scan) before the first paint to
+    // avoid a guaranteed second full-screen refresh immediately after boot.
+    const STARTUP_DEFERRED_MAX_TICKS: usize = 1024;
+    let mut startup_deferred_ticks = 0usize;
+    while startup_deferred_ticks < STARTUP_DEFERRED_MAX_TICKS && app.process_deferred_tasks(&mut fs)
+    {
+        startup_deferred_ticks += 1;
+        if startup_deferred_ticks % 32 == 0 {
+            FreeRtos::delay_ms(1);
+        }
+    }
+    if startup_deferred_ticks >= STARTUP_DEFERRED_MAX_TICKS {
+        log::warn!(
+            "Startup deferred pre-pass reached tick cap ({}), continuing boot",
+            STARTUP_DEFERRED_MAX_TICKS
+        );
+    }
     buffered_display.clear();
     app.render(&mut buffered_display).ok();
     log_heap("before_first_render");
@@ -248,8 +272,10 @@ fn main() {
     // Auto-sleep tracking
     let mut inactivity_ms: u32 = 0;
     let mut sleep_warning_shown: bool = false;
+    let mut power_line_high_stable_ms: u32 = 0;
     const LOOP_DELAY_MS: u32 = 50;
     const SLEEP_WARNING_MS: u32 = 10_000; // Show warning 10 seconds before sleep
+    const POWER_LINE_STABLE_BEFORE_SLEEP_MS: u32 = 2_000;
 
     loop {
         if let Some(cli) = cli.as_mut() {
@@ -268,6 +294,11 @@ fn main() {
         }
 
         let (button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
+        if power_pressed {
+            power_line_high_stable_ms = 0;
+        } else {
+            power_line_high_stable_ms = power_line_high_stable_ms.saturating_add(LOOP_DELAY_MS);
+        }
 
         // Reset inactivity timer on any button press
         if button.is_some() || power_pressed {
@@ -455,6 +486,29 @@ fn main() {
                     "Auto-sleep: entering deep sleep after {}ms of inactivity",
                     inactivity_ms
                 );
+
+                // Require the wake line to be stably high before sleeping. This avoids
+                // immediate wake/reboot loops on noisy or floating button lines.
+                if power_line_high_stable_ms < POWER_LINE_STABLE_BEFORE_SLEEP_MS {
+                    log::warn!(
+                        "Auto-sleep postponed: power line not stable-high long enough ({}ms)",
+                        power_line_high_stable_ms
+                    );
+                    inactivity_ms = auto_sleep_duration_ms.saturating_sub(SLEEP_WARNING_MS);
+                    FreeRtos::delay_ms(100);
+                    continue;
+                }
+
+                // If wake button line is already low, entering deep sleep can cause
+                // immediate wake/reboot cycles that look like crash loops.
+                if power_btn.is_low() {
+                    log::warn!(
+                        "Auto-sleep postponed: power button line is low (preventing wake loop)"
+                    );
+                    inactivity_ms = auto_sleep_duration_ms.saturating_sub(SLEEP_WARNING_MS);
+                    FreeRtos::delay_ms(100);
+                    continue;
+                }
 
                 // Clear display before sleep
                 buffered_display.clear();

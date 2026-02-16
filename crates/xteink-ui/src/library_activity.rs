@@ -62,6 +62,68 @@ impl BookInfo {
             &self.title[..max_chars]
         }
     }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn cover_thumbnail_compact(&self) -> Option<String> {
+        let thumb = self.cover_thumbnail.as_ref()?;
+        let mut out = format!("{}x{}:", thumb.width, thumb.height);
+        for byte in &thumb.pixels {
+            out.push(Self::hex_digit((byte >> 4) & 0x0f));
+            out.push(Self::hex_digit(byte & 0x0f));
+        }
+        Some(out)
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn set_cover_thumbnail_from_compact(&mut self, encoded: &str) -> bool {
+        let Some((dims, hex)) = encoded.split_once(':') else {
+            return false;
+        };
+        let Some((w, h)) = dims.split_once('x') else {
+            return false;
+        };
+        let Some(width) = w.parse::<u32>().ok() else {
+            return false;
+        };
+        let Some(height) = h.parse::<u32>().ok() else {
+            return false;
+        };
+        let Some(mut thumb) = CoverThumbnail::new(width, height) else {
+            return false;
+        };
+        if hex.len() != thumb.pixels.len() * 2 {
+            return false;
+        }
+        for (idx, chunk) in hex.as_bytes().chunks(2).enumerate() {
+            let Some(hi) = Self::hex_value(chunk[0] as char) else {
+                return false;
+            };
+            let Some(lo) = Self::hex_value(chunk[1] as char) else {
+                return false;
+            };
+            thumb.pixels[idx] = (hi << 4) | lo;
+        }
+        self.cover_thumbnail = Some(thumb);
+        true
+    }
+
+    #[cfg(feature = "std")]
+    fn hex_digit(value: u8) -> char {
+        match value & 0x0f {
+            0..=9 => (b'0' + (value & 0x0f)) as char,
+            v => (b'a' + (v - 10)) as char,
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn hex_value(ch: char) -> Option<u8> {
+        match ch {
+            '0'..='9' => Some((ch as u8) - b'0'),
+            'a'..='f' => Some((ch as u8) - b'a' + 10),
+            'A'..='F' => Some((ch as u8) - b'A' + 10),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,7 +331,8 @@ impl LibraryActivity {
         if extension.eq_ignore_ascii_case("epub") || extension.eq_ignore_ascii_case("epu") {
             if let Some((title, author, cover_thumbnail)) = Self::extract_epub_book_info(fs, path) {
                 let mut book = BookInfo::new(title, author, path, 0, None);
-                book.cover_thumbnail = cover_thumbnail;
+                book.cover_thumbnail =
+                    cover_thumbnail.or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
                 return book;
             }
         }
@@ -363,17 +426,50 @@ impl LibraryActivity {
         fs: &mut dyn FileSystem,
         book_path: &str,
     ) -> Option<CoverThumbnail> {
-        let sidecar_path = Self::sidecar_bmp_path(book_path);
-        let data = fs.read_file_bytes(&sidecar_path).ok()?;
-        Self::decode_bmp_thumbnail(&data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT)
+        for candidate in Self::sidecar_cover_candidates(book_path) {
+            let data = match fs.read_file_bytes(&candidate) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let lower = candidate.to_ascii_lowercase();
+            if lower.ends_with(".bmp") {
+                if let Some(thumb) =
+                    Self::decode_bmp_thumbnail(&data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT)
+                {
+                    return Some(thumb);
+                }
+                continue;
+            }
+            #[cfg(not(target_os = "espidf"))]
+            {
+                if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+                    if let Some(thumb) = Self::decode_jpeg_thumbnail(
+                        &data,
+                        Self::COVER_WIDTH,
+                        Self::COVER_MAX_HEIGHT,
+                    ) {
+                        return Some(thumb);
+                    }
+                }
+            }
+        }
+        None
     }
 
-    fn sidecar_bmp_path(book_path: &str) -> String {
+    fn sidecar_cover_candidates(book_path: &str) -> [String; 6] {
         let stem = book_path
             .rsplit_once('.')
             .map(|(name, _)| name)
             .unwrap_or(book_path);
-        format!("{stem}.bmp")
+        let parent = dirname(book_path);
+        [
+            format!("{stem}.bmp"),
+            format!("{stem}.jpg"),
+            format!("{stem}.jpeg"),
+            join_path(parent, "cover.bmp"),
+            join_path(parent, "cover.jpg"),
+            join_path(parent, "cover.jpeg"),
+        ]
     }
 
     /// Convert filename to title (remove extension, replace underscores/hyphens with spaces)
@@ -616,6 +712,76 @@ impl LibraryActivity {
             height,
             pixels,
         })
+    }
+
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    fn decode_jpeg_thumbnail(
+        data: &[u8],
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<CoverThumbnail> {
+        use image::codecs::jpeg::JpegDecoder;
+        use image::ImageDecoder;
+        use std::io::Cursor;
+
+        let cursor = Cursor::new(data);
+        let decoder = JpegDecoder::new(cursor).ok()?;
+        let (width, height) = decoder.dimensions();
+        if width == 0 || height == 0 || width.saturating_mul(height) > Self::MAX_BMP_PIXELS {
+            return None;
+        }
+
+        let color_type = decoder.color_type();
+        let mut raw = vec![0u8; decoder.total_bytes() as usize];
+        decoder.read_image(&mut raw).ok()?;
+
+        let channels = color_type.channel_count() as usize;
+        if channels == 0 {
+            return None;
+        }
+        let pixels_len = (width as usize).checked_mul(height as usize)?;
+        if raw.len() < pixels_len.checked_mul(channels)? {
+            return None;
+        }
+
+        let mut pixels = vec![0u8; pixels_len];
+        match channels {
+            1 => pixels.copy_from_slice(&raw[..pixels_len]),
+            2 => {
+                for (idx, dst) in pixels.iter_mut().enumerate() {
+                    *dst = raw[idx * 2];
+                }
+            }
+            3 => {
+                for (idx, dst) in pixels.iter_mut().enumerate() {
+                    let base = idx * 3;
+                    let r = raw[base];
+                    let g = raw[base + 1];
+                    let b = raw[base + 2];
+                    *dst = Self::luma_from_bgr(b, g, r);
+                }
+            }
+            4 => {
+                for (idx, dst) in pixels.iter_mut().enumerate() {
+                    let base = idx * 4;
+                    let r = raw[base];
+                    let g = raw[base + 1];
+                    let b = raw[base + 2];
+                    *dst = Self::luma_from_bgr(b, g, r);
+                }
+            }
+            _ => return None,
+        }
+
+        let decoded = LumaImage {
+            width,
+            height,
+            pixels,
+        };
+        Self::scale_luma_to_binary_thumbnail(
+            &decoded, max_width, max_height,
+            128, // pragmatic fixed threshold for e-ink list thumbnails
+        )
     }
 
     fn scale_luma_to_binary_thumbnail(
@@ -1972,5 +2138,19 @@ mod tests {
             .find(|book| book.path.ends_with("notes.txt"))
             .expect("sidecar test book should exist");
         assert!(notes.cover_thumbnail.is_some());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn sidecar_cover_candidates_include_calibre_cover_jpg() {
+        let candidates = LibraryActivity::sidecar_cover_candidates(
+            "/books/Author/Book (123)/Book - Author.epub",
+        );
+        assert!(candidates
+            .iter()
+            .any(|path| path == "/books/Author/Book (123)/cover.jpg"));
+        assert!(candidates
+            .iter()
+            .any(|path| path == "/books/Author/Book (123)/cover.jpeg"));
     }
 }

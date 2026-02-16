@@ -9,11 +9,9 @@ extern crate alloc;
 use alloc::format;
 
 use embedded_graphics::{
-    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
 };
 
 use crate::app::AppScreen;
@@ -21,7 +19,7 @@ use crate::input::{Button, InputEvent};
 use crate::ui::helpers::{
     enum_from_index, handle_two_button_modal_input, TwoButtonModalInputResult,
 };
-use crate::ui::theme::ui_font;
+use crate::ui::theme::ui_text;
 use crate::ui::{Activity, ActivityResult, Modal, Theme};
 
 /// Menu item types for the system menu
@@ -332,8 +330,6 @@ impl SystemMenuActivity {
         item: MenuItem,
         is_selected: bool,
     ) -> Result<(), D::Error> {
-        let text_y = y + theme.metrics.item_text_y();
-
         // Clean background - only fill if selected
         if is_selected {
             Rectangle::new(Point::new(x, y), Size::new(width, height))
@@ -348,13 +344,14 @@ impl SystemMenuActivity {
         };
 
         // Label (clean, text-only)
-        let label_style = MonoTextStyle::new(ui_font(), text_color);
-        Text::new(
+        ui_text::draw_colored(
+            display,
             item.label(),
-            Point::new(x + theme.metrics.side_padding as i32, text_y),
-            label_style,
-        )
-        .draw(display)?;
+            x + theme.metrics.side_padding as i32,
+            y + ui_text::center_y(height, Some(ui_text::DEFAULT_SIZE)),
+            Some(ui_text::DEFAULT_SIZE),
+            text_color,
+        )?;
 
         // Subtle bottom divider (except for selected)
         if !is_selected {

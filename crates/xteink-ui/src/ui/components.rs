@@ -12,14 +12,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
 };
 
-use crate::ui::theme::{ui_font, ui_font_bold, ui_text, Theme, ThemeMetrics};
+use crate::ui::theme::{ui_text, Theme};
 
 /// Button component with focus state
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,16 +109,18 @@ impl Button {
             BinaryColor::On
         };
 
-        let character_style = MonoTextStyle::new(ui_font(), text_color);
-        let label_text = Text::new(
+        let text_width = ui_text::width(&self.label, Some(ui_text::DEFAULT_SIZE)) as i32;
+        let text_x = self.x + (self.width as i32 - text_width) / 2;
+        let text_y =
+            self.y + ui_text::center_y(theme.metrics.button_height, Some(ui_text::DEFAULT_SIZE));
+        ui_text::draw_colored(
+            display,
             &self.label,
-            Point::new(
-                self.x + (self.width as i32) / 2,
-                self.y + theme.metrics.button_text_y(),
-            ),
-            character_style,
-        );
-        label_text.draw(display)?;
+            text_x,
+            text_y,
+            Some(ui_text::DEFAULT_SIZE),
+            text_color,
+        )?;
 
         Ok(())
     }
@@ -199,7 +199,6 @@ impl List {
         theme: &Theme,
     ) -> Result<(), D::Error> {
         let item_height = self.item_height(theme) as i32;
-        let text_y = theme.metrics.item_text_y();
 
         for (i, item) in self
             .items
@@ -229,13 +228,15 @@ impl List {
             } else {
                 BinaryColor::On
             };
-            let character_style = MonoTextStyle::new(ui_font(), text_color);
-            Text::new(
+            let text_y = y + ui_text::center_y(item_height as u32, Some(ui_text::DEFAULT_SIZE));
+            ui_text::draw_colored(
+                display,
                 item,
-                Point::new(self.x + theme.metrics.side_padding as i32, y + text_y),
-                character_style,
-            )
-            .draw(display)?;
+                self.x + theme.metrics.side_padding as i32,
+                text_y,
+                Some(ui_text::DEFAULT_SIZE),
+                text_color,
+            )?;
 
             // Subtle bottom divider (only for non-selected items)
             if !is_selected && i < self.visible_count - 1 {
@@ -337,16 +338,13 @@ impl Modal {
             .draw(display)?;
 
         // Title
-        let title_style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
-            .text_color(BinaryColor::On)
-            .build();
-        Text::new(
+        ui_text::draw(
+            display,
             &self.title,
-            Point::new(x + theme.metrics.side_padding as i32, y + 20),
-            title_style,
-        )
-        .draw(display)?;
+            x + theme.metrics.side_padding as i32,
+            y + ui_text::center_y(40, Some(ui_text::HEADER_SIZE)),
+            Some(ui_text::HEADER_SIZE),
+        )?;
 
         // Separator line
         Rectangle::new(Point::new(x, y + 30), Size::new(modal_width, 1))
@@ -354,13 +352,13 @@ impl Modal {
             .draw(display)?;
 
         // Message
-        let message_style = MonoTextStyle::new(ui_font(), BinaryColor::On);
-        Text::new(
+        ui_text::draw(
+            display,
             &self.message,
-            Point::new(x + theme.metrics.side_padding as i32, y + 50),
-            message_style,
-        )
-        .draw(display)?;
+            x + theme.metrics.side_padding as i32,
+            y + 30 + ui_text::center_y(40, Some(ui_text::SMALL_SIZE)),
+            Some(ui_text::SMALL_SIZE),
+        )?;
 
         // Buttons
         if !self.buttons.is_empty() {
@@ -370,7 +368,8 @@ impl Modal {
             let button_y = y + modal_height as i32
                 - theme.metrics.button_height as i32
                 - theme.metrics.spacing as i32;
-            let btn_text_y = theme.metrics.button_text_y();
+            let btn_text_y =
+                ui_text::center_y(theme.metrics.button_height, Some(ui_text::DEFAULT_SIZE));
 
             for (i, button_label) in self.buttons.iter().enumerate() {
                 let button_x = x
@@ -402,17 +401,15 @@ impl Modal {
                 } else {
                     BinaryColor::On
                 };
-                let text_style = MonoTextStyle::new(ui_font(), text_color);
-                let label_width = ThemeMetrics::text_width(button_label.len());
-                Text::new(
+                let label_width = ui_text::width(button_label, Some(ui_text::DEFAULT_SIZE)) as i32;
+                ui_text::draw_colored(
+                    display,
                     button_label,
-                    Point::new(
-                        button_x + (button_width as i32 - label_width) / 2,
-                        button_y + btn_text_y,
-                    ),
-                    text_style,
-                )
-                .draw(display)?;
+                    button_x + (button_width as i32 - label_width) / 2,
+                    button_y + btn_text_y,
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
             }
         }
 
@@ -471,16 +468,14 @@ impl Toast {
         .draw(display)?;
 
         // Text (inverted for contrast)
-        let character_style = MonoTextStyle::new(ui_font(), BinaryColor::Off);
-        Text::new(
+        ui_text::draw_colored(
+            display,
             &self.message,
-            Point::new(
-                self.x + 15,
-                self.y + ThemeMetrics::text_y_offset(self.height()),
-            ),
-            character_style,
-        )
-        .draw(display)?;
+            self.x + 15,
+            self.y + ui_text::center_y(self.height(), Some(ui_text::SMALL_SIZE)),
+            Some(ui_text::SMALL_SIZE),
+            BinaryColor::Off,
+        )?;
 
         Ok(())
     }
@@ -611,6 +606,6 @@ mod tests {
 
     #[test]
     fn font_char_width_constant() {
-        assert_eq!(crate::ui::theme::FONT_CHAR_WIDTH, 7);
+        assert_eq!(crate::ui::theme::FONT_CHAR_WIDTH, 9);
     }
 }

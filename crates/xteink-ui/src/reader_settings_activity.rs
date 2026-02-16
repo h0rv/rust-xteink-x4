@@ -10,11 +10,9 @@ use alloc::format;
 use alloc::string::String;
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
-    text::Text,
 };
 
 use crate::input::{Button, InputEvent};
@@ -22,7 +20,8 @@ use crate::settings_activity::{FontFamily, FontSize};
 use crate::ui::helpers::{
     enum_from_index, handle_two_button_modal_input, TwoButtonModalInputResult,
 };
-use crate::ui::{Activity, ActivityResult, Modal, Theme, ThemeMetrics, Toast};
+use crate::ui::theme::ui_text;
+use crate::ui::{Activity, ActivityResult, Modal, Theme, Toast};
 
 /// Line spacing options
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -478,7 +477,7 @@ impl SettingItem {
 }
 
 /// Section header height in pixels
-const SECTION_HEADER_HEIGHT: i32 = 25;
+const SECTION_HEADER_HEIGHT: i32 = 40;
 
 /// Reader Settings Activity implementing the Activity trait
 #[derive(Debug, Clone)]
@@ -758,8 +757,6 @@ impl ReaderSettingsActivity {
         display: &mut D,
         theme: &Theme,
     ) -> Result<(), D::Error> {
-        use crate::ui::theme::{ui_font, ui_font_bold};
-
         let display_width = display.bounding_box().size.width;
         let content_width = theme.metrics.content_width(display_width);
         let x = theme.metrics.side_padding as i32;
@@ -793,8 +790,6 @@ impl ReaderSettingsActivity {
             } else {
                 theme.metrics.list_item_height
             };
-            let text_y = ThemeMetrics::text_y_offset(item_height);
-
             // Background
             let bg_color = if is_selected {
                 BinaryColor::On
@@ -822,22 +817,26 @@ impl ReaderSettingsActivity {
             if item.is_save() {
                 // Center the save button text
                 let label = item.label();
-                let label_width = ThemeMetrics::text_width(label.len());
+                let label_width = ui_text::width(label, Some(ui_text::DEFAULT_SIZE)) as i32;
                 let label_x = x + (content_width as i32 - label_width) / 2;
-                Text::new(
+                ui_text::draw_colored(
+                    display,
                     label,
-                    Point::new(label_x, y + text_y),
-                    MonoTextStyle::new(ui_font_bold(), text_color),
-                )
-                .draw(display)?;
+                    label_x,
+                    y + ui_text::center_y(item_height, Some(ui_text::DEFAULT_SIZE)),
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
             } else {
                 // Label on left
-                Text::new(
+                ui_text::draw_colored(
+                    display,
                     item.label(),
-                    Point::new(x + theme.metrics.side_padding as i32, y + text_y),
-                    MonoTextStyle::new(ui_font(), text_color),
-                )
-                .draw(display)?;
+                    x + theme.metrics.side_padding as i32,
+                    y + ui_text::center_y(item_height, Some(ui_text::DEFAULT_SIZE)),
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
 
                 // Value on right with [>] indicator
                 let value_label = self.get_value_label(item);
@@ -846,16 +845,18 @@ impl ReaderSettingsActivity {
                 } else {
                     format!("{} >", value_label)
                 };
-                let value_width = ThemeMetrics::text_width(value_text.len());
+                let value_width = ui_text::width(&value_text, Some(ui_text::DEFAULT_SIZE)) as i32;
                 let value_x =
                     x + content_width as i32 - value_width - theme.metrics.side_padding as i32;
 
-                Text::new(
+                ui_text::draw_colored(
+                    display,
                     &value_text,
-                    Point::new(value_x, y + text_y),
-                    MonoTextStyle::new(ui_font(), text_color),
-                )
-                .draw(display)?;
+                    value_x,
+                    y + ui_text::center_y(item_height, Some(ui_text::DEFAULT_SIZE)),
+                    Some(ui_text::DEFAULT_SIZE),
+                    text_color,
+                )?;
             }
 
             y += item_height as i32;
@@ -872,14 +873,13 @@ impl ReaderSettingsActivity {
         y: i32,
         title: &str,
     ) -> Result<(), D::Error> {
-        use crate::ui::theme::ui_font_bold;
-
-        let title_style = MonoTextStyleBuilder::new()
-            .font(ui_font_bold())
-            .text_color(BinaryColor::On)
-            .build();
-
-        Text::new(title, Point::new(x, y + 15), title_style).draw(display)?;
+        ui_text::draw(
+            display,
+            title,
+            x,
+            y + ui_text::center_y(SECTION_HEADER_HEIGHT as u32, Some(ui_text::SMALL_SIZE)),
+            Some(ui_text::SMALL_SIZE),
+        )?;
 
         Ok(())
     }

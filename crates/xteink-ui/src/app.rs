@@ -12,7 +12,13 @@ use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
 use crate::input::InputEvent;
 use crate::library_activity::BookInfo;
-use crate::main_activity::MainActivity;
+use crate::main_activity::{MainActivity, UnifiedSettings};
+#[cfg(feature = "std")]
+use crate::reader_settings_activity::{
+    LineSpacing, MarginSize, RefreshFrequency, TapZoneConfig, TextAlignment, VolumeButtonAction,
+};
+#[cfg(feature = "std")]
+use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
 use crate::system_menu_activity::DeviceStatus;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::FileSystem;
@@ -52,6 +58,7 @@ pub struct App {
     library_force_rescan: bool,
     pending_library_scan: Option<PendingLibraryScan>,
     device_status: DeviceStatus,
+    applied_settings: UnifiedSettings,
 }
 
 impl App {
@@ -74,9 +81,25 @@ impl App {
             library_force_rescan: false,
             pending_library_scan: None,
             device_status: DeviceStatus::default(),
+            applied_settings: UnifiedSettings::default(),
         };
         // Initialize library with loading state
         app.main_activity.library_tab.begin_loading_scan();
+        if let Some(settings) = Self::load_persisted_settings() {
+            app.main_activity.apply_settings(settings);
+            app.refresh_frequency_pages = settings.refresh_frequency.pages() as u32;
+            app.applied_settings = settings;
+        } else {
+            let settings = app.main_activity.settings();
+            app.main_activity.apply_settings(settings);
+            app.refresh_frequency_pages = settings.refresh_frequency.pages() as u32;
+            app.applied_settings = settings;
+        }
+        if let Some(snapshot) = Self::load_latest_library_snapshot(&app.library_root) {
+            app.library_cache = Some(snapshot.clone());
+            app.main_activity.library_tab.set_books(snapshot);
+            app.main_activity.library_tab.finish_loading_scan();
+        }
         app.main_activity.on_enter();
         app
     }
@@ -91,6 +114,7 @@ impl App {
     pub fn handle_input(&mut self, event: InputEvent) -> bool {
         let result = self.main_activity.handle_input(event);
         let mut redraw = self.process_result(result);
+        redraw |= self.sync_runtime_settings();
 
         // Check if library wants to open a book
         if let Some(path) = self.main_activity.library_tab.take_open_request() {
@@ -264,12 +288,25 @@ impl App {
 
     /// Run all deferred app tasks.
     pub fn process_deferred_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
+        let settings_updated = self.sync_runtime_settings();
         if self.main_activity.library_tab.take_refresh_request() {
             self.force_rescan_library();
         }
         let library_updated = self.process_library_scan(fs);
         let file_browser_updated = self.process_file_browser_tasks(fs);
-        library_updated || file_browser_updated
+        settings_updated || library_updated || file_browser_updated
+    }
+
+    fn sync_runtime_settings(&mut self) -> bool {
+        let settings = self.main_activity.settings();
+        if settings == self.applied_settings {
+            return false;
+        }
+        self.main_activity.apply_settings(settings);
+        self.refresh_frequency_pages = settings.refresh_frequency.pages() as u32;
+        self.applied_settings = settings;
+        Self::persist_settings(settings);
+        true
     }
 
     fn compute_scan_fingerprint(fs: &mut dyn FileSystem, paths: &[String]) -> u64 {
@@ -379,9 +416,66 @@ impl App {
                     v.parse::<u64>().ok()
                 }
             });
-            books.push(BookInfo::new(title, author, path, progress, last_read));
+            let mut book = BookInfo::new(title, author, path, progress, last_read);
+            if let Some(cover_raw) = parts.next() {
+                let cover = Self::unescape_cache_field(cover_raw);
+                let _ = book.set_cover_thumbnail_from_compact(&cover);
+            }
+            books.push(book);
         }
         Some(books)
+    }
+
+    #[cfg(feature = "std")]
+    fn load_latest_library_snapshot(root: &str) -> Option<Vec<BookInfo>> {
+        let raw = std::fs::read_to_string(Self::cache_file_path()).ok()?;
+        let mut lines = raw.lines();
+        let header = lines.next()?;
+        let mut header_parts = header.split('\t');
+        let version = header_parts.next()?;
+        let root_raw = header_parts.next()?;
+        if version != "v1" {
+            return None;
+        }
+        let cached_root = Self::unescape_cache_field(root_raw);
+        if cached_root != root {
+            return None;
+        }
+
+        let mut books = Vec::new();
+        for line in lines {
+            let mut parts = line.split('\t');
+            if parts.next()? != "b" {
+                continue;
+            }
+            let title = Self::unescape_cache_field(parts.next()?);
+            let author = Self::unescape_cache_field(parts.next()?);
+            let path = Self::unescape_cache_field(parts.next()?);
+            let progress = parts.next().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
+            let last_read = parts.next().and_then(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    v.parse::<u64>().ok()
+                }
+            });
+            let mut book = BookInfo::new(title, author, path, progress, last_read);
+            if let Some(cover_raw) = parts.next() {
+                let cover = Self::unescape_cache_field(cover_raw);
+                let _ = book.set_cover_thumbnail_from_compact(&cover);
+            }
+            books.push(book);
+        }
+        if books.is_empty() {
+            None
+        } else {
+            Some(books)
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn load_latest_library_snapshot(_root: &str) -> Option<Vec<BookInfo>> {
+        None
     }
 
     #[cfg(not(feature = "std"))]
@@ -416,6 +510,10 @@ impl App {
             if let Some(last_read) = book.last_read {
                 out.push_str(&last_read.to_string());
             }
+            out.push('\t');
+            if let Some(cover) = book.cover_thumbnail_compact() {
+                out.push_str(&Self::escape_cache_field(&cover));
+            }
             out.push('\n');
         }
 
@@ -424,6 +522,88 @@ impl App {
 
     #[cfg(not(feature = "std"))]
     fn persist_library_cache(_root: &str, _fingerprint: u64, _books: &[BookInfo]) {}
+
+    #[cfg(feature = "std")]
+    fn settings_file_path() -> &'static str {
+        if cfg!(target_os = "espidf") {
+            "/sd/.xteink/app_settings.tsv"
+        } else {
+            "target/.xteink-app-settings.tsv"
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn load_persisted_settings() -> Option<UnifiedSettings> {
+        let raw = std::fs::read_to_string(Self::settings_file_path()).ok()?;
+        let mut lines = raw.lines();
+        let header = lines.next()?;
+        if header != "v1" {
+            return None;
+        }
+        let line = lines.next()?;
+        let mut fields = line.split('\t');
+        let font_size = FontSize::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let font_family = FontFamily::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let auto_sleep_duration =
+            AutoSleepDuration::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let line_spacing = LineSpacing::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let margin_size = MarginSize::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let text_alignment = TextAlignment::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let show_page_numbers = fields.next()? == "1";
+        let refresh_frequency =
+            RefreshFrequency::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let invert_colors = fields.next()? == "1";
+        let volume_button_action =
+            VolumeButtonAction::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let tap_zone_config = TapZoneConfig::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        Some(UnifiedSettings {
+            font_size,
+            font_family,
+            auto_sleep_duration,
+            line_spacing,
+            margin_size,
+            text_alignment,
+            show_page_numbers,
+            refresh_frequency,
+            invert_colors,
+            volume_button_action,
+            tap_zone_config,
+        })
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn load_persisted_settings() -> Option<UnifiedSettings> {
+        None
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_settings(settings: UnifiedSettings) {
+        let path = Self::settings_file_path();
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            settings.font_size.index(),
+            settings.font_family.index(),
+            settings.auto_sleep_duration.index(),
+            settings.line_spacing.index(),
+            settings.margin_size.index(),
+            settings.text_alignment.index(),
+            if settings.show_page_numbers { 1 } else { 0 },
+            settings.refresh_frequency.index(),
+            if settings.invert_colors { 1 } else { 0 },
+            settings.volume_button_action.index(),
+            settings.tap_zone_config.index(),
+        );
+        let mut out = String::from("v1\n");
+        out.push_str(&line);
+        out.push('\n');
+        let _ = std::fs::write(path, out);
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn persist_settings(_settings: UnifiedSettings) {}
 
     /// Get current tab for testing/monitoring.
     pub fn current_tab(&self) -> crate::main_activity::Tab {
@@ -452,8 +632,7 @@ impl App {
 
     /// Get auto-sleep duration in milliseconds.
     pub fn auto_sleep_duration_ms(&self) -> u32 {
-        // Default: 5 minutes
-        300_000
+        self.main_activity.auto_sleep_duration_ms()
     }
 }
 

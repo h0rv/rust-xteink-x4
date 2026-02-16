@@ -25,7 +25,7 @@ use std::thread;
 #[cfg(feature = "std")]
 use embedded_graphics::{
     mono_font::{
-        ascii::{FONT_6X10, FONT_7X13, FONT_7X13_BOLD},
+        ascii::{FONT_7X13, FONT_7X13_BOLD, FONT_8X13, FONT_9X18_BOLD},
         MonoTextStyle,
     },
     primitives::{PrimitiveStyle, Rectangle},
@@ -59,6 +59,13 @@ use crate::ui::{Activity, ActivityResult};
 
 #[cfg(feature = "std")]
 mod epub;
+
+#[cfg(feature = "std")]
+pub(super) const EPUB_FOOTER_HEIGHT: i32 = 36;
+#[cfg(feature = "std")]
+pub(super) const EPUB_FOOTER_BOTTOM_PADDING: i32 = 12;
+#[cfg(feature = "std")]
+pub(super) const EPUB_FOOTER_TOP_GAP: i32 = 8;
 
 #[derive(Debug, Clone)]
 enum FileBrowserTask {
@@ -252,6 +259,7 @@ pub struct FileBrowserActivity {
     browser: FileBrowser,
     mode: BrowserMode,
     reader_settings: ReaderSettings,
+    battery_percent: u8,
     #[cfg(feature = "std")]
     epub_overlay: Option<EpubOverlay>,
     #[cfg(feature = "std")]
@@ -267,6 +275,33 @@ pub struct FileBrowserActivity {
 }
 
 impl FileBrowserActivity {
+    fn exit_reader_to_browser(&mut self) -> ActivityResult {
+        #[cfg(feature = "std")]
+        {
+            self.persist_active_epub_position();
+        }
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        {
+            self.epub_open_pending = None;
+            self.epub_navigation_pending = None;
+        }
+        #[cfg(all(feature = "std", target_os = "espidf"))]
+        {
+            self.epub_open_staged = None;
+        }
+        self.mode = BrowserMode::Browsing;
+        #[cfg(feature = "std")]
+        {
+            self.epub_overlay = None;
+            self.active_epub_path = None;
+        }
+        if self.return_to_previous_on_back {
+            self.return_to_previous_on_back = false;
+            return ActivityResult::NavigateBack;
+        }
+        ActivityResult::Consumed
+    }
+
     #[cfg(feature = "std")]
     fn handle_epub_overlay_input(&mut self, event: InputEvent) -> ActivityResult {
         let Some(mut overlay) = self.epub_overlay.take() else {
@@ -278,11 +313,12 @@ impl FileBrowserActivity {
         }
 
         let mut navigate_settings = false;
+        let mut exit_to_files = false;
         let mut put_back = true;
         match &mut self.mode {
             BrowserMode::ReadingEpub { renderer } => match &mut overlay {
                 EpubOverlay::QuickMenu { selected } => {
-                    const COUNT: usize = 4;
+                    const COUNT: usize = 5;
                     match event {
                         InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
                             if *selected == 0 {
@@ -329,6 +365,10 @@ impl FileBrowserActivity {
                                     navigate_settings = true;
                                     put_back = false;
                                 }
+                                4 => {
+                                    exit_to_files = true;
+                                    put_back = false;
+                                }
                                 _ => {}
                             }
                         }
@@ -340,7 +380,7 @@ impl FileBrowserActivity {
                     selected,
                     scroll,
                 } => {
-                    let page = 8usize;
+                    let page = 6usize;
                     match event {
                         InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
                             if *selected == 0 {
@@ -373,7 +413,7 @@ impl FileBrowserActivity {
                         }
                         _ => {}
                     }
-                    let visible = 8usize;
+                    let visible = 6usize;
                     if *selected < *scroll {
                         *scroll = *selected;
                     } else if *selected >= *scroll + visible {
@@ -413,6 +453,10 @@ impl FileBrowserActivity {
             self.epub_overlay = None;
             return ActivityResult::NavigateTo(AppScreen::ReaderSettings);
         }
+        if exit_to_files {
+            self.epub_overlay = None;
+            return self.exit_reader_to_browser();
+        }
         if put_back {
             self.epub_overlay = Some(overlay);
         } else {
@@ -432,6 +476,7 @@ impl FileBrowserActivity {
             browser: FileBrowser::new(Self::DEFAULT_ROOT),
             mode: BrowserMode::Browsing,
             reader_settings: ReaderSettings::default(),
+            battery_percent: 100,
             #[cfg(feature = "std")]
             epub_overlay: None,
             #[cfg(feature = "std")]
@@ -499,6 +544,10 @@ impl FileBrowserActivity {
                 ));
             }
         }
+    }
+
+    pub fn set_battery_percent(&mut self, battery_percent: u8) {
+        self.battery_percent = battery_percent.min(100);
     }
 
     /// Returns current EPUB reading position as:
@@ -680,28 +729,12 @@ impl FileBrowserActivity {
         if matches!(event, InputEvent::Press(Button::Back)) {
             #[cfg(feature = "std")]
             {
-                self.persist_active_epub_position();
+                if self.is_viewing_epub() {
+                    self.epub_overlay = Some(EpubOverlay::QuickMenu { selected: 0 });
+                    return ActivityResult::Consumed;
+                }
             }
-            #[cfg(all(feature = "std", not(target_os = "espidf")))]
-            {
-                self.epub_open_pending = None;
-                self.epub_navigation_pending = None;
-            }
-            #[cfg(all(feature = "std", target_os = "espidf"))]
-            {
-                self.epub_open_staged = None;
-            }
-            self.mode = BrowserMode::Browsing;
-            #[cfg(feature = "std")]
-            {
-                self.epub_overlay = None;
-                self.active_epub_path = None;
-            }
-            if self.return_to_previous_on_back {
-                self.return_to_previous_on_back = false;
-                return ActivityResult::NavigateBack;
-            }
-            return ActivityResult::Consumed;
+            return self.exit_reader_to_browser();
         }
 
         match &mut self.mode {
@@ -757,17 +790,23 @@ impl FileBrowserActivity {
                             EpubInputAction::ChapterPrev => renderer.prev_chapter(),
                             EpubInputAction::OpenSettings => false,
                         };
+                        let mut exact_chapter_counts: Vec<(usize, usize)> = Vec::new();
                         if !advanced {
                             log::warn!("[EPUB] unable to handle epub action");
                         } else {
                             advanced_position = Some(renderer.position_indices());
+                            exact_chapter_counts = renderer.exact_chapter_page_counts();
                         }
                         drop(renderer);
                         if let (Some((chapter_idx, page_idx)), Some(path)) =
                             (advanced_position, self.active_epub_path.as_ref())
                         {
-                            let _ =
-                                Self::persist_epub_position_for_path(path, chapter_idx, page_idx);
+                            let _ = Self::persist_epub_position_for_path(
+                                path,
+                                chapter_idx,
+                                page_idx,
+                                &exact_chapter_counts,
+                            );
                         }
                         ActivityResult::Consumed
                     }
@@ -954,8 +993,8 @@ impl FileBrowserActivity {
         let size = display.bounding_box().size;
         let width = size.width.min(size.height);
         let height = size.width.max(size.height);
-        let footer_h: u32 = 36;
-        let y = (height as i32 - footer_h as i32 - 12).max(0);
+        let footer_h: u32 = EPUB_FOOTER_HEIGHT as u32;
+        let y = (height as i32 - footer_h as i32 - EPUB_FOOTER_BOTTOM_PADDING).max(0);
 
         Rectangle::new(Point::new(0, y), Size::new(width, footer_h))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
@@ -967,20 +1006,30 @@ impl FileBrowserActivity {
         let title = renderer.current_chapter_title(max_title_chars);
         Text::new(&title, Point::new(6, y + 13), chapter_style).draw(display)?;
 
-        let info = if self.reader_settings.show_page_numbers {
-            format!(
-                "{} | {} | {}%",
-                renderer.page_progress_label(),
-                renderer.chapter_progress_label(),
-                renderer.book_progress_percent(),
-            )
-        } else {
-            format!(
-                "{} | {}%",
-                renderer.chapter_progress_label(),
-                renderer.book_progress_percent(),
-            )
-        };
+        let battery_text = format!("{}%", self.battery_percent);
+        let battery_width = (battery_text.len() as i32) * 7;
+        let battery_x = (width as i32 - 6 - battery_width).max(6);
+        Text::new(&battery_text, Point::new(battery_x, y + 27), metrics_style).draw(display)?;
+
+        let mut info = format!(
+            "{}  {}  {}%",
+            renderer.page_progress_label(),
+            renderer.chapter_progress_label(),
+            renderer.book_progress_percent(),
+        );
+        let available_info_px = (battery_x - 12).max(0);
+        let max_info_chars = (available_info_px / 7).max(0) as usize;
+        if max_info_chars > 0 && info.chars().count() > max_info_chars {
+            let mut truncated = String::new();
+            for (idx, ch) in info.chars().enumerate() {
+                if idx + 1 >= max_info_chars {
+                    truncated.push('…');
+                    break;
+                }
+                truncated.push(ch);
+            }
+            info = truncated;
+        }
         Text::new(&info, Point::new(6, y + 27), metrics_style).draw(display)?;
         Ok(())
     }
@@ -1014,15 +1063,15 @@ impl FileBrowserActivity {
         .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
         .draw(display)?;
 
-        let title_style = MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::On);
-        let body_style = MonoTextStyle::new(&FONT_7X13, BinaryColor::On);
-        let hint_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+        let title_style = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::On);
+        let body_style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+        let hint_style = MonoTextStyle::new(&FONT_7X13, BinaryColor::On);
 
         match overlay {
             EpubOverlay::QuickMenu { selected } => {
                 Text::new(
                     "Reader Menu",
-                    Point::new(panel_x + 8, panel_y + 16),
+                    Point::new(panel_x + 8, panel_y + 22),
                     title_style,
                 )
                 .draw(display)?;
@@ -1031,29 +1080,35 @@ impl FileBrowserActivity {
                     "Table of Contents",
                     "Go to Position",
                     "Reader Settings",
+                    "Back to Files",
                 ];
                 for (i, item) in items.iter().enumerate() {
-                    let y = panel_y + 36 + (i as i32 * 20);
+                    let y = panel_y + 56 + (i as i32 * 28);
                     if i == *selected {
                         Rectangle::new(
-                            Point::new(panel_x + 6, y - 11),
-                            Size::new((panel_w - 12) as u32, 16),
+                            Point::new(panel_x + 6, y - 16),
+                            Size::new((panel_w - 12) as u32, 22),
                         )
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display)?;
                         Text::new(
                             item,
                             Point::new(panel_x + 10, y),
-                            MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::Off),
+                            MonoTextStyle::new(&FONT_8X13, BinaryColor::Off),
                         )
                         .draw(display)?;
                     } else {
-                        Text::new(item, Point::new(panel_x + 10, y), body_style).draw(display)?;
+                        Text::new(
+                            item,
+                            Point::new(panel_x + 10, y),
+                            MonoTextStyle::new(&FONT_8X13, BinaryColor::On),
+                        )
+                        .draw(display)?;
                     }
                 }
                 Text::new(
                     "U/D Move  OK Select  Back Close",
-                    Point::new(panel_x + 8, panel_y + panel_h - 8),
+                    Point::new(panel_x + 8, panel_y + panel_h - 14),
                     hint_style,
                 )
                 .draw(display)?;
@@ -1065,37 +1120,37 @@ impl FileBrowserActivity {
             } => {
                 Text::new(
                     "Table of Contents",
-                    Point::new(panel_x + 8, panel_y + 16),
+                    Point::new(panel_x + 8, panel_y + 22),
                     title_style,
                 )
                 .draw(display)?;
-                let visible = 8usize;
+                let visible = 6usize;
                 for row in 0..visible {
                     let idx = scroll + row;
                     if idx >= items.len() {
                         break;
                     }
                     let item = &items[idx];
-                    let y = panel_y + 36 + (row as i32 * 16);
+                    let y = panel_y + 56 + (row as i32 * 22);
                     let indent = (item.depth.min(4) as i32) * 10;
                     if idx == *selected {
                         Rectangle::new(
-                            Point::new(panel_x + 6, y - 11),
-                            Size::new((panel_w - 12) as u32, 14),
+                            Point::new(panel_x + 6, y - 15),
+                            Size::new((panel_w - 12) as u32, 20),
                         )
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display)?;
                         Text::new(
                             &item.label,
                             Point::new(panel_x + 10 + indent, y),
-                            MonoTextStyle::new(&FONT_6X10, BinaryColor::Off),
+                            MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::Off),
                         )
                         .draw(display)?;
                     } else {
                         Text::new(
                             &item.label,
                             Point::new(panel_x + 10 + indent, y),
-                            hint_style,
+                            body_style,
                         )
                         .draw(display)?;
                     }
@@ -1103,13 +1158,13 @@ impl FileBrowserActivity {
                 let pos = format!("{}/{}", selected + 1, items.len());
                 Text::new(
                     &pos,
-                    Point::new(panel_x + panel_w - 56, panel_y + 16),
-                    hint_style,
+                    Point::new(panel_x + panel_w - 72, panel_y + 22),
+                    body_style,
                 )
                 .draw(display)?;
                 Text::new(
                     "U/D Move  L/R Pg  OK Jump  Back",
-                    Point::new(panel_x + 8, panel_y + panel_h - 8),
+                    Point::new(panel_x + 8, panel_y + panel_h - 14),
                     hint_style,
                 )
                 .draw(display)?;
@@ -1117,35 +1172,35 @@ impl FileBrowserActivity {
             EpubOverlay::JumpPercent { percent } => {
                 Text::new(
                     "Go to Position",
-                    Point::new(panel_x + 8, panel_y + 16),
+                    Point::new(panel_x + 8, panel_y + 22),
                     title_style,
                 )
                 .draw(display)?;
                 let pct = format!("{}%", percent);
                 Text::new(
                     &pct,
-                    Point::new(panel_x + panel_w / 2 - 18, panel_y + 52),
-                    MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::On),
+                    Point::new(panel_x + panel_w / 2 - 28, panel_y + 64),
+                    MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::On),
                 )
                 .draw(display)?;
 
                 let bar_x = panel_x + 16;
-                let bar_y = panel_y + 70;
+                let bar_y = panel_y + 88;
                 let bar_w = panel_w - 32;
-                Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_w as u32, 12))
+                Rectangle::new(Point::new(bar_x, bar_y), Size::new(bar_w as u32, 16))
                     .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
                     .draw(display)?;
                 let fill = (bar_w.saturating_sub(4) * (*percent as i32)) / 100;
                 if fill > 0 {
-                    Rectangle::new(Point::new(bar_x + 2, bar_y + 2), Size::new(fill as u32, 8))
+                    Rectangle::new(Point::new(bar_x + 2, bar_y + 2), Size::new(fill as u32, 12))
                         .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                         .draw(display)?;
                 }
                 let chapter = format!("Now: {}%", renderer.book_progress_percent());
-                Text::new(&chapter, Point::new(bar_x, bar_y + 26), hint_style).draw(display)?;
+                Text::new(&chapter, Point::new(bar_x, bar_y + 34), body_style).draw(display)?;
                 Text::new(
                     "L/R 1%  U/D 10%  OK Jump  Back",
-                    Point::new(panel_x + 8, panel_y + panel_h - 8),
+                    Point::new(panel_x + 8, panel_y + panel_h - 14),
                     hint_style,
                 )
                 .draw(display)?;

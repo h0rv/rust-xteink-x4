@@ -179,12 +179,12 @@ impl Default for ThemeMetrics {
     /// - Optimized for button navigation (no touch)
     fn default() -> Self {
         Self {
-            header_height: 62,    // Sized for 10x20 font (25% increase)
-            footer_height: 50,    // Sized for 10x20 font (25% increase)
-            side_padding: 25,     // Ample breathing room (25% increase)
-            list_item_height: 80, // Very comfortable and readable (25% increase)
-            button_height: 62,    // Large interaction target (25% increase)
-            spacing: 15,          // Extremely generous spacing (25% increase)
+            header_height: 72,
+            footer_height: 56,
+            side_padding: 30,
+            list_item_height: 96,
+            button_height: 74,
+            spacing: 18,
         }
     }
 }
@@ -222,16 +222,16 @@ pub mod ui_text {
 
     /// **CHANGE THIS to switch fonts everywhere**
     /// Options: "bookerly-bold", "bookerly-regular", "bookerly-italic", "bookerly-bold-italic"
-    pub const FONT_NAME: &str = "bookerly-bold";
+    pub const FONT_NAME: &str = "bookerly-regular";
 
-    /// Default UI font size (24px - readable and crisp)
-    pub const DEFAULT_SIZE: u32 = 24;
+    /// Default UI font size
+    pub const DEFAULT_SIZE: u32 = 30;
 
-    /// Header/title font size (28px - larger for emphasis)
-    pub const HEADER_SIZE: u32 = 28;
+    /// Header/title font size
+    pub const HEADER_SIZE: u32 = 35;
 
-    /// Small UI font size (20px - for secondary text)
-    pub const SMALL_SIZE: u32 = 20;
+    /// Small UI font size
+    pub const SMALL_SIZE: u32 = 25;
 
     /// Render text using the configured UI font (see FONT_NAME)
     /// Returns the width of the rendered text
@@ -249,9 +249,21 @@ pub mod ui_text {
         y: i32,
         size: Option<u32>,
     ) -> Result<i32, D::Error> {
+        draw_colored(display, text, x, y, size, BinaryColor::On)
+    }
+
+    /// Render text with explicit color using the configured UI font.
+    pub fn draw_colored<D: DrawTarget<Color = BinaryColor>>(
+        display: &mut D,
+        text: &str,
+        x: i32,
+        y: i32,
+        size: Option<u32>,
+        color: BinaryColor,
+    ) -> Result<i32, D::Error> {
         let size = size.unwrap_or(DEFAULT_SIZE);
         if let Some(font) = EmbeddedFontRegistry::get_font_nearest(FONT_NAME, size) {
-            font.draw_text(display, text, x, y)
+            font.draw_text_colored(display, text, x, y, color)
         } else {
             Ok(0)
         }
@@ -292,37 +304,34 @@ mod tests {
     #[test]
     fn default_metrics_values() {
         let m = ThemeMetrics::default();
-        assert_eq!(m.header_height, 50);
-        assert_eq!(m.footer_height, 40);
-        assert_eq!(m.side_padding, 20);
-        assert_eq!(m.list_item_height, 60);
-        assert_eq!(m.button_height, 50);
-        assert_eq!(m.spacing, 8);
+        assert_eq!(m.header_height, 72);
+        assert_eq!(m.footer_height, 56);
+        assert_eq!(m.side_padding, 30);
+        assert_eq!(m.list_item_height, 96);
+        assert_eq!(m.button_height, 74);
+        assert_eq!(m.spacing, 18);
     }
 
     #[test]
     fn content_dimensions() {
         let m = ThemeMetrics::default();
-        assert_eq!(m.content_width(480), 440);
-        assert_eq!(m.content_height(800), 710);
+        assert_eq!(m.content_width(480), 420);
+        assert_eq!(m.content_height(800), 672);
     }
 
     #[test]
     fn spacing_helpers() {
         let m = ThemeMetrics::default();
-        assert_eq!(m.spacing_double(), 16);
-        assert_eq!(m.spacing_half(), 4);
+        assert_eq!(m.spacing_double(), 36);
+        assert_eq!(m.spacing_half(), 9);
     }
 
     #[test]
     fn text_centering() {
         let m = ThemeMetrics::default();
-        // 60px item: center at 30 + 5 = 35
-        assert_eq!(m.item_text_y(), 35);
-        // 50px header: center at 25 + 5 = 30
-        assert_eq!(m.header_text_y(), 30);
-        // 50px button: center at 25 + 5 = 30
-        assert_eq!(m.button_text_y(), 30);
+        assert_eq!(m.item_text_y(), 58);
+        assert_eq!(m.header_text_y(), 46);
+        assert_eq!(m.button_text_y(), 47);
         // Free function
         assert_eq!(ThemeMetrics::text_y_offset(40), 25);
     }
@@ -336,8 +345,8 @@ mod tests {
     #[test]
     fn visible_items_count() {
         let m = ThemeMetrics::default();
-        // 800 - 50 header - 16 double_spacing = 734
-        // 734 / (60 + 8) = 10.79 → 10
-        assert_eq!(m.visible_items(800), 10);
+        // 800 - 72 header - 36 spacing = 692
+        // 692 / (96 + 18) = 6.07 -> 6
+        assert_eq!(m.visible_items(800), 6);
     }
 }

@@ -66,6 +66,18 @@ impl EmbeddedBitmapFont {
         x: i32,
         y: i32, // baseline y position
     ) -> Result<(), D::Error> {
+        self.draw_glyph_colored(display, glyph, x, y, BinaryColor::On)
+    }
+
+    /// Render a glyph to the display at the given position with explicit color.
+    pub fn draw_glyph_colored<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        glyph: &EmbeddedGlyphMetrics,
+        x: i32,
+        y: i32, // baseline y position
+        color: BinaryColor,
+    ) -> Result<(), D::Error> {
         if glyph.width == 0 || glyph.height == 0 {
             return Ok(());
         }
@@ -120,7 +132,7 @@ impl EmbeddedBitmapFont {
 
                     if new_pixel >= 128 {
                         let point = Point::new(glyph_x + col as i32, glyph_y + row as i32);
-                        pixels.push(Pixel(point, BinaryColor::On));
+                        pixels.push(Pixel(point, color));
                     }
                 }
             }
@@ -136,7 +148,7 @@ impl EmbeddedBitmapFont {
                         let byte = bitmap[byte_idx];
                         if (byte >> bit_idx) & 1 == 1 {
                             let point = Point::new(glyph_x + col as i32, glyph_y + row as i32);
-                            pixels.push(Pixel(point, BinaryColor::On));
+                            pixels.push(Pixel(point, color));
                         }
                     }
                 }
@@ -165,11 +177,23 @@ impl EmbeddedBitmapFont {
         x: i32,
         y: i32, // baseline position
     ) -> Result<i32, D::Error> {
+        self.draw_text_colored(display, text, x, y, BinaryColor::On)
+    }
+
+    /// Render text to display with explicit color.
+    pub fn draw_text_colored<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        text: &str,
+        x: i32,
+        y: i32, // baseline position
+        color: BinaryColor,
+    ) -> Result<i32, D::Error> {
         let mut cursor_x = x;
 
         for ch in text.chars() {
             if let Some(glyph) = self.glyph(ch) {
-                self.draw_glyph(display, glyph, cursor_x, y)?;
+                self.draw_glyph_colored(display, glyph, cursor_x, y, color)?;
                 cursor_x += glyph.advance_width as i32;
             }
         }

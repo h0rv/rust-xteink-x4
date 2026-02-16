@@ -22,9 +22,10 @@ use crate::filesystem::FileSystem;
 use crate::input::{Button, InputEvent};
 use crate::library_activity::BookInfo;
 use crate::reader_settings_activity::{
-    LineSpacing, MarginSize, RefreshFrequency, TapZoneConfig, TextAlignment, VolumeButtonAction,
+    LineSpacing, MarginSize, ReaderSettings, RefreshFrequency, TapZoneConfig, TextAlignment,
+    VolumeButtonAction,
 };
-use crate::settings_activity::{FontFamily, FontSize};
+use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
 use crate::system_menu_activity::DeviceStatus;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::DISPLAY_HEIGHT;
@@ -89,6 +90,7 @@ pub struct FilesTabContent {
 pub enum SettingItem {
     FontSize,
     FontFamily,
+    AutoSleep,
     LineSpacing,
     MarginSize,
     TextAlignment,
@@ -100,9 +102,10 @@ pub enum SettingItem {
 }
 
 impl SettingItem {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::FontSize,
         Self::FontFamily,
+        Self::AutoSleep,
         Self::LineSpacing,
         Self::MarginSize,
         Self::TextAlignment,
@@ -117,6 +120,7 @@ impl SettingItem {
         match self {
             Self::FontSize => "Font Size",
             Self::FontFamily => "Font Family",
+            Self::AutoSleep => "Auto Sleep",
             Self::LineSpacing => "Line Spacing",
             Self::MarginSize => "Margins",
             Self::TextAlignment => "Text Align",
@@ -130,9 +134,11 @@ impl SettingItem {
 }
 
 /// Unified settings state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnifiedSettings {
     pub font_size: FontSize,
     pub font_family: FontFamily,
+    pub auto_sleep_duration: AutoSleepDuration,
     pub line_spacing: LineSpacing,
     pub margin_size: MarginSize,
     pub text_alignment: TextAlignment,
@@ -148,6 +154,7 @@ impl Default for UnifiedSettings {
         Self {
             font_size: FontSize::Medium,
             font_family: FontFamily::Serif,
+            auto_sleep_duration: AutoSleepDuration::Never,
             line_spacing: LineSpacing::Normal,
             margin_size: MarginSize::Medium,
             text_alignment: TextAlignment::Justified,
@@ -156,6 +163,23 @@ impl Default for UnifiedSettings {
             invert_colors: false,
             volume_button_action: VolumeButtonAction::Scroll,
             tap_zone_config: TapZoneConfig::LeftNext,
+        }
+    }
+}
+
+impl UnifiedSettings {
+    pub fn to_reader_settings(self) -> ReaderSettings {
+        ReaderSettings {
+            font_size: self.font_size,
+            font_family: self.font_family,
+            line_spacing: self.line_spacing,
+            margin_size: self.margin_size,
+            text_alignment: self.text_alignment,
+            show_page_numbers: self.show_page_numbers,
+            refresh_frequency: self.refresh_frequency,
+            invert_colors: self.invert_colors,
+            tap_zone_config: self.tap_zone_config,
+            volume_button_action: self.volume_button_action,
         }
     }
 }
@@ -181,6 +205,7 @@ impl MainActivity {
     /// Set device status for battery display
     pub fn set_device_status(&mut self, status: DeviceStatus) {
         self.device_status = status;
+        self.files_tab.set_battery_percent(status.battery_percent);
     }
 
     /// Get current tab
@@ -216,6 +241,23 @@ impl MainActivity {
 
     pub fn switch_to_tab(&mut self, tab: Tab) {
         self.current_tab = tab.index();
+    }
+
+    pub fn settings(&self) -> UnifiedSettings {
+        self.settings_tab.settings
+    }
+
+    pub fn apply_settings(&mut self, settings: UnifiedSettings) {
+        self.settings_tab.settings = settings;
+        self.files_tab
+            .set_reader_settings(settings.to_reader_settings());
+    }
+
+    pub fn auto_sleep_duration_ms(&self) -> u32 {
+        self.settings_tab
+            .settings
+            .auto_sleep_duration
+            .milliseconds()
     }
 
     /// Cycle to next tab (right)
@@ -320,7 +362,8 @@ impl Activity for MainActivity {
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
-        match event {
+        let settings_before = self.settings_tab.settings;
+        let result = match event {
             InputEvent::Press(Button::Left) => {
                 if self.current_tab == Tab::Files.index() && self.files_tab.is_reading() {
                     self.delegate_input(event)
@@ -338,7 +381,12 @@ impl Activity for MainActivity {
                 }
             }
             _ => self.delegate_input(event),
+        };
+        if self.settings_tab.settings != settings_before {
+            self.files_tab
+                .set_reader_settings(self.settings_tab.settings.to_reader_settings());
         }
+        result
     }
 
     fn render<D: DrawTarget<Color = BinaryColor>>(&self, display: &mut D) -> Result<(), D::Error> {
@@ -577,6 +625,14 @@ impl FilesTabContent {
         self.file_browser.process_pending_task(fs)
     }
 
+    pub fn set_reader_settings(&mut self, settings: ReaderSettings) {
+        self.file_browser.set_reader_settings(settings);
+    }
+
+    pub fn set_battery_percent(&mut self, battery_percent: u8) {
+        self.file_browser.set_battery_percent(battery_percent);
+    }
+
     pub fn request_open_path(&mut self, path: impl Into<String>) {
         self.file_browser.request_open_path(path);
     }
@@ -664,6 +720,10 @@ impl SettingsTabContent {
             SettingItem::FontFamily => {
                 self.settings.font_family = Self::cycle_font_family(self.settings.font_family);
             }
+            SettingItem::AutoSleep => {
+                self.settings.auto_sleep_duration =
+                    self.settings.auto_sleep_duration.next_wrapped();
+            }
             SettingItem::LineSpacing => {
                 self.settings.line_spacing = self.settings.line_spacing.next_wrapped();
             }
@@ -715,6 +775,7 @@ impl SettingsTabContent {
         match item {
             SettingItem::FontSize => format!("{:?}", self.settings.font_size),
             SettingItem::FontFamily => format!("{:?}", self.settings.font_family),
+            SettingItem::AutoSleep => self.settings.auto_sleep_duration.label().into(),
             SettingItem::LineSpacing => format!("{:?}", self.settings.line_spacing),
             SettingItem::MarginSize => format!("{:?}", self.settings.margin_size),
             SettingItem::TextAlignment => format!("{:?}", self.settings.text_alignment),

@@ -675,22 +675,11 @@ impl EpubReadingState {
             return false;
         }
 
-        let total_units: usize = weighted.iter().map(|(_, w)| *w).sum::<usize>().max(1);
-        let target_units = ((percent.min(100) as usize) * total_units) / 100;
-        let mut remaining = target_units.min(total_units.saturating_sub(1));
-
-        let mut target_chapter = weighted[0].0;
-        let mut target_chapter_units = weighted[0].1.max(1);
-        for (chapter_idx, units) in weighted.iter().copied() {
-            if remaining < units {
-                target_chapter = chapter_idx;
-                target_chapter_units = units.max(1);
-                break;
-            }
-            remaining = remaining.saturating_sub(units);
-            target_chapter = chapter_idx;
-            target_chapter_units = units.max(1);
-        }
+        let Some((target_chapter, remaining, target_chapter_units)) =
+            Self::select_target_from_weighted(percent, &weighted)
+        else {
+            return false;
+        };
 
         // If this chapter has exact page counts, jump within the chapter too.
         if self.chapter_page_counts_exact.contains(&target_chapter) {
@@ -708,6 +697,31 @@ impl EpubReadingState {
         }
 
         self.jump_to_chapter(target_chapter)
+    }
+
+    fn select_target_from_weighted(
+        percent: u8,
+        weighted: &[(usize, usize)],
+    ) -> Option<(usize, usize, usize)> {
+        let &(first_chapter, first_units) = weighted.first()?;
+        let total_units: usize = weighted.iter().map(|(_, w)| *w).sum::<usize>().max(1);
+        let target_units = ((percent.min(100) as usize) * total_units) / 100;
+        let mut remaining = target_units.min(total_units.saturating_sub(1));
+
+        let mut target_chapter = first_chapter;
+        let mut target_chapter_units = first_units.max(1);
+        for (chapter_idx, units) in weighted.iter().copied() {
+            let units = units.max(1);
+            if remaining < units {
+                target_chapter = chapter_idx;
+                target_chapter_units = units;
+                break;
+            }
+            remaining = remaining.saturating_sub(units);
+            target_chapter = chapter_idx;
+            target_chapter_units = units;
+        }
+        Some((target_chapter, remaining, target_chapter_units))
     }
 
     pub(super) fn restore_position(&mut self, chapter_idx: usize, page_idx: usize) -> bool {
@@ -1482,6 +1496,26 @@ mod tests {
         assert_eq!(EpubReadingState::chapter_weight_from_counts(None, 9), 9);
         assert_eq!(EpubReadingState::chapter_weight_from_counts(Some(0), 9), 1);
         assert_eq!(EpubReadingState::chapter_weight_from_counts(None, 0), 1);
+    }
+
+    #[test]
+    fn select_target_from_weighted_stays_stable_across_boundary() {
+        let weighted = [(0usize, 9usize), (1, 8), (2, 7), (3, 1)];
+        let target = EpubReadingState::select_target_from_weighted(73, &weighted)
+            .expect("target should resolve");
+        assert_eq!(target.0, 2);
+        assert!(target.1 < target.2);
+    }
+
+    #[test]
+    fn select_target_from_weighted_hits_final_only_at_hundred() {
+        let weighted = [(0usize, 9usize), (1, 8), (2, 7), (3, 1)];
+        let ninety_nine = EpubReadingState::select_target_from_weighted(99, &weighted)
+            .expect("target should resolve");
+        let hundred = EpubReadingState::select_target_from_weighted(100, &weighted)
+            .expect("target should resolve");
+        assert_eq!(ninety_nine.0, 2);
+        assert_eq!(hundred.0, 3);
     }
 }
 

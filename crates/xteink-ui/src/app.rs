@@ -68,7 +68,9 @@ impl App {
     const DEFAULT_REFRESH_FREQUENCY: u32 = 0;
     const MAX_LIBRARY_BOOKS_PER_TICK: usize = 2;
     const MAX_FILE_BROWSER_TASKS_PER_TICK: usize = 2;
+    #[cfg(feature = "std")]
     const MAX_LIBRARY_CACHE_BOOKS: usize = 2048;
+    #[cfg(feature = "std")]
     const MAX_COMPACT_COVER_CHARS: usize =
         ((crate::DISPLAY_WIDTH as usize) * (crate::DISPLAY_HEIGHT as usize)).div_ceil(8) * 2 + 16;
 

@@ -267,6 +267,7 @@ pub struct FileBrowserActivity {
     reader_settings: ReaderSettings,
     battery_percent: u8,
     ui_tick: u32,
+    #[cfg(feature = "std")]
     last_epub_interaction_tick: u32,
     #[cfg(feature = "std")]
     epub_overlay: Option<EpubOverlay>,
@@ -523,6 +524,7 @@ impl FileBrowserActivity {
             reader_settings: ReaderSettings::default(),
             battery_percent: 100,
             ui_tick: 0,
+            #[cfg(feature = "std")]
             last_epub_interaction_tick: 0,
             #[cfg(feature = "std")]
             epub_overlay: None,

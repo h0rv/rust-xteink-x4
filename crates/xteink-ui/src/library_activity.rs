@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -575,6 +575,7 @@ impl LibraryActivity {
             .map_err(|_| ())
     }
 
+    #[cfg(feature = "std")]
     fn resolve_epub_relative_path(base_file_path: &str, relative: &str) -> String {
         let mut parts: Vec<&str> = Vec::new();
 
@@ -608,10 +609,8 @@ impl LibraryActivity {
         max_height: u32,
     ) -> Option<CoverThumbnail> {
         let decoded = Self::decode_bmp_to_luma(data)?;
-        Self::scale_luma_to_binary_thumbnail(
-            &decoded, max_width, max_height,
-            128, // pragmatic fixed threshold for e-ink list thumbnails
-        )
+        let threshold = Self::adaptive_thumbnail_threshold(&decoded);
+        Self::scale_luma_to_binary_thumbnail(&decoded, max_width, max_height, threshold)
     }
 
     fn decode_bmp_to_luma(data: &[u8]) -> Option<LumaImage> {
@@ -798,10 +797,49 @@ impl LibraryActivity {
             height,
             pixels,
         };
-        Self::scale_luma_to_binary_thumbnail(
-            &decoded, max_width, max_height,
-            128, // pragmatic fixed threshold for e-ink list thumbnails
-        )
+        let threshold = Self::adaptive_thumbnail_threshold(&decoded);
+        Self::scale_luma_to_binary_thumbnail(&decoded, max_width, max_height, threshold)
+    }
+
+    fn adaptive_thumbnail_threshold(source: &LumaImage) -> u8 {
+        if source.pixels.is_empty() {
+            return 128;
+        }
+        let mut sum = 0u64;
+        let mut dark = 0usize;
+        for &px in &source.pixels {
+            sum = sum.saturating_add(px as u64);
+            if px < 96 {
+                dark += 1;
+            }
+        }
+        let avg = (sum / source.pixels.len() as u64) as i32;
+        let dark_ratio = dark as f32 / source.pixels.len() as f32;
+        let mut threshold = avg;
+        if dark_ratio > 0.5 {
+            threshold += 14;
+        } else if dark_ratio < 0.2 {
+            threshold -= 10;
+        }
+        threshold.clamp(78, 178) as u8
+    }
+
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    fn decode_jpeg_thumbnail(
+        _data: &[u8],
+        _max_width: u32,
+        _max_height: u32,
+    ) -> Option<CoverThumbnail> {
+        None
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn decode_jpeg_thumbnail(
+        _data: &[u8],
+        _max_width: u32,
+        _max_height: u32,
+    ) -> Option<CoverThumbnail> {
+        None
     }
 
     fn scale_luma_to_binary_thumbnail(
@@ -2131,6 +2169,28 @@ mod tests {
         assert_eq!(thumb.width, 50);
         assert_eq!(thumb.height, 25);
         assert!(thumb.is_black(0, 0));
+    }
+
+    #[test]
+    fn adaptive_thumbnail_threshold_tracks_dark_images() {
+        let source = LumaImage {
+            width: 4,
+            height: 4,
+            pixels: vec![30u8; 16],
+        };
+        let threshold = LibraryActivity::adaptive_thumbnail_threshold(&source);
+        assert!(threshold > 30);
+    }
+
+    #[test]
+    fn adaptive_thumbnail_threshold_tracks_bright_images() {
+        let source = LumaImage {
+            width: 4,
+            height: 4,
+            pixels: vec![220u8; 16],
+        };
+        let threshold = LibraryActivity::adaptive_thumbnail_threshold(&source);
+        assert!(threshold < 220);
     }
 
     #[test]

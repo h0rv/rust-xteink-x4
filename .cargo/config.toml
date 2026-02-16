@@ -1,14 +1,10 @@
 [build]
-target = "riscv32imc-esp-espidf"
 rustc-wrapper = "sccache"
 
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = [ "--cfg",  "espidf_time64"]
-
-[unstable]
-build-std = ["std", "panic_abort"]
 
 [env]
 MCU="esp32c3"

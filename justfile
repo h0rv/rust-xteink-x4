@@ -25,6 +25,8 @@ host_target := `if [ -n "${HOST_TEST_TARGET:-}" ]; then \
 else \
     rustc -vV | awk '/^host: /{print $2}'; \
 fi`
+esp_target := "riscv32imc-esp-espidf"
+esp_build_std_flags := "-Zbuild-std=std,panic_abort"
 backup_file := "firmware_backup.bin"
 partition_table := "crates/xteink-firmware/partitions.csv"
 
@@ -122,42 +124,42 @@ check:
 # Check firmware (requires esp toolchain)
 check-firmware:
     mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo check -p xteink-firmware
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo check -p xteink-firmware --target {{ esp_target }} {{ esp_build_std_flags }}
 
 # Build firmware
 build-firmware:
     mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
 
 # Build firmware and enforce app-partition size gate.
 test-firmware-size:
     mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
 
 # Flash firmware to device (incremental build)
 flash:
     mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
     cargo clean -p xteink-firmware
     mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Clean flash (full rebuild with sdkconfig regeneration)
 flash-clean:
     cargo clean -p xteink-firmware
     rm -rf target/riscv32imc-esp-espidf/release/build/esp-idf-sys-*
     mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Just monitor serial output
 monitor:

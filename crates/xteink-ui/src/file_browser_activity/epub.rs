@@ -379,13 +379,72 @@ impl EpubReadingState {
     }
 
     pub(super) fn book_progress_percent(&self) -> u8 {
-        Self::compute_book_progress_percent(
-            self.current_chapter(),
-            self.total_chapters(),
+        let (pages_before, current_pages, total_pages, on_final_exact_page) =
+            self.estimated_global_page_metrics();
+        Self::compute_book_progress_percent_from_pages(
+            pages_before,
             self.page_idx,
-            self.total_pages(),
-            self.chapter_page_counts_exact.contains(&self.chapter_idx),
+            current_pages,
+            total_pages,
+            on_final_exact_page,
         )
+    }
+
+    fn estimated_global_page_metrics(&self) -> (usize, usize, usize, bool) {
+        let mut pages_before = 0usize;
+        let mut total_pages = 0usize;
+        let mut current_pages = self.total_pages().max(1);
+        let mut last_renderable = 0usize;
+        for chapter_idx in 0..self.book.chapter_count() {
+            if self.non_renderable_chapters.contains(&chapter_idx) {
+                continue;
+            }
+            last_renderable = chapter_idx;
+            let chapter_pages = self
+                .chapter_page_counts
+                .get(&chapter_idx)
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            if chapter_idx < self.chapter_idx {
+                pages_before = pages_before.saturating_add(chapter_pages);
+            }
+            if chapter_idx == self.chapter_idx {
+                current_pages = chapter_pages;
+            }
+            total_pages = total_pages.saturating_add(chapter_pages);
+        }
+        if total_pages == 0 {
+            total_pages = 1;
+            current_pages = 1;
+        }
+        let on_final_exact_page = self.chapter_idx == last_renderable
+            && self.chapter_page_counts_exact.contains(&self.chapter_idx)
+            && self.current_page_number() >= current_pages;
+        (
+            pages_before,
+            current_pages,
+            total_pages,
+            on_final_exact_page,
+        )
+    }
+
+    fn compute_book_progress_percent_from_pages(
+        pages_before_current_chapter: usize,
+        page_idx_in_chapter: usize,
+        current_chapter_pages: usize,
+        total_book_pages_estimate: usize,
+        on_final_exact_page: bool,
+    ) -> u8 {
+        if on_final_exact_page {
+            return 100;
+        }
+        let total = total_book_pages_estimate.max(1);
+        let current_chapter_pages = current_chapter_pages.max(1);
+        let clamped_page_idx = page_idx_in_chapter.min(current_chapter_pages.saturating_sub(1));
+        let global_page_idx = pages_before_current_chapter.saturating_add(clamped_page_idx);
+        let pct = ((global_page_idx as f32 / total as f32) * 100.0).clamp(0.0, 99.0);
+        pct as u8
     }
 
     fn compute_current_chapter(chapter_idx: usize, skipped_before: usize) -> usize {
@@ -404,7 +463,7 @@ impl EpubReadingState {
         format!("c{}/{}", current_chapter, total_chapters.max(1))
     }
 
-    fn compute_book_progress_percent(
+    fn compute_book_progress_percent_legacy(
         current_chapter: usize,
         total_chapters: usize,
         page_idx: usize,
@@ -1314,27 +1373,40 @@ mod tests {
 
     #[test]
     fn book_progress_percent_hits_100_only_on_known_final_page() {
-        let p = EpubReadingState::compute_book_progress_percent(5, 5, 9, 10, true);
+        let p = EpubReadingState::compute_book_progress_percent_legacy(5, 5, 9, 10, true);
         assert_eq!(p, 100);
 
-        let p = EpubReadingState::compute_book_progress_percent(5, 5, 8, 10, true);
+        let p = EpubReadingState::compute_book_progress_percent_legacy(5, 5, 8, 10, true);
         assert!(p < 100);
 
-        let p = EpubReadingState::compute_book_progress_percent(5, 5, 99, 1, false);
+        let p = EpubReadingState::compute_book_progress_percent_legacy(5, 5, 99, 1, false);
         assert!(p < 100);
     }
 
     #[test]
     fn book_progress_percent_monotonic_inside_chapter() {
-        let p0 = EpubReadingState::compute_book_progress_percent(2, 5, 0, 10, true);
-        let p1 = EpubReadingState::compute_book_progress_percent(2, 5, 3, 10, true);
-        let p2 = EpubReadingState::compute_book_progress_percent(2, 5, 9, 10, true);
+        let p0 = EpubReadingState::compute_book_progress_percent_legacy(2, 5, 0, 10, true);
+        let p1 = EpubReadingState::compute_book_progress_percent_legacy(2, 5, 3, 10, true);
+        let p2 = EpubReadingState::compute_book_progress_percent_legacy(2, 5, 9, 10, true);
         assert!(p0 <= p1 && p1 <= p2);
 
-        let u0 = EpubReadingState::compute_book_progress_percent(2, 5, 0, 1, false);
-        let u1 = EpubReadingState::compute_book_progress_percent(2, 5, 2, 1, false);
-        let u2 = EpubReadingState::compute_book_progress_percent(2, 5, 8, 1, false);
+        let u0 = EpubReadingState::compute_book_progress_percent_legacy(2, 5, 0, 1, false);
+        let u1 = EpubReadingState::compute_book_progress_percent_legacy(2, 5, 2, 1, false);
+        let u2 = EpubReadingState::compute_book_progress_percent_legacy(2, 5, 8, 1, false);
         assert!(u0 <= u1 && u1 <= u2);
+    }
+
+    #[test]
+    fn global_page_percent_smooths_chapter_boundary_jump() {
+        // 4 chapters with page totals [9, 8, 7, 1]:
+        // last page of chapter 3 should be high but not 100.
+        let c3_last =
+            EpubReadingState::compute_book_progress_percent_from_pages(9 + 8, 6, 7, 25, false);
+        assert!(c3_last < 100);
+        // first page of last one-page chapter can be 100 only when exact final.
+        let c4_only =
+            EpubReadingState::compute_book_progress_percent_from_pages(24, 0, 1, 25, true);
+        assert_eq!(c4_only, 100);
     }
 }
 

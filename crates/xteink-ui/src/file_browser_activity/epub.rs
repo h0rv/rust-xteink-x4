@@ -136,11 +136,17 @@ impl EpubReadingState {
             .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
         log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
         let (engine, chapter_events_opts) = Self::create_engine(settings);
+        #[cfg(feature = "fontdue")]
+        let (eg_renderer, layout_text_measurer) = Self::create_renderer();
+        #[cfg(not(feature = "fontdue"))]
+        let eg_renderer = Self::create_renderer();
         let mut state = Self {
             book,
             engine,
             chapter_events_opts,
-            eg_renderer: Self::create_renderer(),
+            eg_renderer,
+            #[cfg(feature = "fontdue")]
+            layout_text_measurer,
             chapter_buf: Vec::with_capacity(Self::CHAPTER_BUF_CAPACITY_BYTES),
             chapter_scratch: ScratchBuffers::embedded(),
             current_page: None,
@@ -185,11 +191,17 @@ impl EpubReadingState {
         log::info!("[EPUB] creating render engine");
         let (engine, chapter_events_opts) = Self::create_engine(settings);
         log::info!("[EPUB] render engine ready");
+        #[cfg(feature = "fontdue")]
+        let (eg_renderer, layout_text_measurer) = Self::create_renderer();
+        #[cfg(not(feature = "fontdue"))]
+        let eg_renderer = Self::create_renderer();
         let mut state = Self {
             book,
             engine,
             chapter_events_opts,
-            eg_renderer: Self::create_renderer(),
+            eg_renderer,
+            #[cfg(feature = "fontdue")]
+            layout_text_measurer,
             // Keep EPUB open deterministic on constrained heaps: defer large
             // working buffer allocations until first page load.
             chapter_buf: Vec::new(),
@@ -390,27 +402,66 @@ impl EpubReadingState {
         )
     }
 
+    fn compute_default_page_estimate(sum: usize, count: usize) -> usize {
+        if count == 0 {
+            8
+        } else {
+            (sum / count).clamp(1, 256)
+        }
+    }
+
+    fn chapter_weight_from_counts(known_pages: Option<usize>, default_estimate: usize) -> usize {
+        known_pages.unwrap_or(default_estimate).max(1)
+    }
+
+    fn default_chapter_page_estimate(&self) -> usize {
+        let mut sum = 0usize;
+        let mut count = 0usize;
+        for chapter_idx in 0..self.book.chapter_count() {
+            if self.non_renderable_chapters.contains(&chapter_idx) {
+                continue;
+            }
+            if let Some(pages) = self.chapter_page_counts.get(&chapter_idx).copied() {
+                sum = sum.saturating_add(pages.max(1));
+                count = count.saturating_add(1);
+            }
+        }
+        Self::compute_default_page_estimate(sum, count)
+    }
+
+    fn chapter_page_estimate_or_default(
+        &self,
+        chapter_idx: usize,
+        default_estimate: usize,
+    ) -> usize {
+        Self::chapter_weight_from_counts(
+            self.chapter_page_counts.get(&chapter_idx).copied(),
+            default_estimate,
+        )
+    }
+
     fn estimated_global_page_metrics(&self) -> (usize, usize, usize, bool) {
         let mut pages_before = 0usize;
         let mut total_pages = 0usize;
         let mut current_pages = self.total_pages().max(1);
         let mut last_renderable = 0usize;
+        let mut all_renderable_exact = true;
+        let fallback_pages = self.default_chapter_page_estimate();
         for chapter_idx in 0..self.book.chapter_count() {
             if self.non_renderable_chapters.contains(&chapter_idx) {
                 continue;
             }
             last_renderable = chapter_idx;
-            let chapter_pages = self
-                .chapter_page_counts
-                .get(&chapter_idx)
-                .copied()
-                .unwrap_or(1)
-                .max(1);
+            let chapter_pages = self.chapter_page_estimate_or_default(chapter_idx, fallback_pages);
+            let exact = self.chapter_page_counts_exact.contains(&chapter_idx);
+            if !exact {
+                all_renderable_exact = false;
+            }
             if chapter_idx < self.chapter_idx {
                 pages_before = pages_before.saturating_add(chapter_pages);
             }
             if chapter_idx == self.chapter_idx {
-                current_pages = chapter_pages;
+                current_pages = chapter_pages.max(self.current_page_number());
             }
             total_pages = total_pages.saturating_add(chapter_pages);
         }
@@ -418,7 +469,8 @@ impl EpubReadingState {
             total_pages = 1;
             current_pages = 1;
         }
-        let on_final_exact_page = self.chapter_idx == last_renderable
+        let on_final_exact_page = all_renderable_exact
+            && self.chapter_idx == last_renderable
             && self.chapter_page_counts_exact.contains(&self.chapter_idx)
             && self.current_page_number() >= current_pages;
         (
@@ -463,6 +515,7 @@ impl EpubReadingState {
         format!("c{}/{}", current_chapter, total_chapters.max(1))
     }
 
+    #[cfg(test)]
     fn compute_book_progress_percent_legacy(
         current_chapter: usize,
         total_chapters: usize,
@@ -607,23 +660,15 @@ impl EpubReadingState {
             return false;
         }
 
-        // Prefer page-aware positioning when we have exact chapter counts.
-        // Unknown chapters are treated as one unit so the control remains
-        // responsive without full-book repagination in the hot path.
+        // Prefer page-aware positioning. Unknown chapters use dynamic estimates
+        // derived from observed chapter page counts to keep seek/progress stable.
+        let fallback_pages = self.default_chapter_page_estimate();
         let mut weighted: Vec<(usize, usize)> = Vec::new();
         for chapter_idx in 0..chapters {
             if self.non_renderable_chapters.contains(&chapter_idx) {
                 continue;
             }
-            let weight = if self.chapter_page_counts_exact.contains(&chapter_idx) {
-                self.chapter_page_counts
-                    .get(&chapter_idx)
-                    .copied()
-                    .unwrap_or(1)
-                    .max(1)
-            } else {
-                1
-            };
+            let weight = self.chapter_page_estimate_or_default(chapter_idx, fallback_pages);
             weighted.push((chapter_idx, weight));
         }
         if weighted.is_empty() {
@@ -1057,6 +1102,8 @@ impl EpubReadingState {
             let config = RenderConfig::default()
                 .with_page_range(page_idx..page_idx + 1)
                 .with_cache(&self.render_cache);
+            #[cfg(feature = "fontdue")]
+            let config = config.with_text_measurer(Arc::new(self.layout_text_measurer.clone()));
             let mut session = self.engine.begin(chapter_idx, config);
             let mut layout_error: Option<String> = None;
 
@@ -1192,7 +1239,12 @@ impl EpubReadingState {
             render: self.chapter_events_opts,
         };
         let mut count = 0usize;
-        let mut session = self.engine.begin(chapter_idx, RenderConfig::default());
+        let mut config = RenderConfig::default();
+        #[cfg(feature = "fontdue")]
+        {
+            config = config.with_text_measurer(Arc::new(self.layout_text_measurer.clone()));
+        }
+        let mut session = self.engine.begin(chapter_idx, config);
         let mut layout_error: Option<String> = None;
         self.book
             .chapter_events_with_scratch(
@@ -1240,16 +1292,17 @@ impl EpubReadingState {
         }
     }
 
+    #[cfg(feature = "fontdue")]
+    fn create_renderer() -> (ReaderRenderer, BookerlyFontBackend) {
+        let cfg = EgRenderConfig::default();
+        let backend = BookerlyFontBackend::default();
+        (EgRenderer::with_backend(cfg, backend.clone()), backend)
+    }
+
+    #[cfg(not(feature = "fontdue"))]
     fn create_renderer() -> ReaderRenderer {
         let cfg = EgRenderConfig::default();
-        #[cfg(all(feature = "std", feature = "fontdue"))]
-        {
-            EgRenderer::with_backend(cfg, BookerlyFontBackend::default())
-        }
-        #[cfg(all(feature = "std", not(feature = "fontdue")))]
-        {
-            EgRenderer::with_backend(cfg, mu_epub_embedded_graphics::MonoFontBackend)
-        }
+        EgRenderer::with_backend(cfg, mu_epub_embedded_graphics::MonoFontBackend)
     }
 
     fn register_embedded_fonts(&mut self) {
@@ -1407,6 +1460,28 @@ mod tests {
         let c4_only =
             EpubReadingState::compute_book_progress_percent_from_pages(24, 0, 1, 25, true);
         assert_eq!(c4_only, 100);
+    }
+
+    #[test]
+    fn default_page_estimate_uses_average_and_bounds() {
+        assert_eq!(EpubReadingState::compute_default_page_estimate(0, 0), 8);
+        assert_eq!(EpubReadingState::compute_default_page_estimate(48, 6), 8);
+        assert_eq!(EpubReadingState::compute_default_page_estimate(3, 5), 1);
+        assert_eq!(
+            EpubReadingState::compute_default_page_estimate(999_999, 1),
+            256
+        );
+    }
+
+    #[test]
+    fn chapter_weight_prefers_known_pages_else_default_estimate() {
+        assert_eq!(
+            EpubReadingState::chapter_weight_from_counts(Some(17), 9),
+            17
+        );
+        assert_eq!(EpubReadingState::chapter_weight_from_counts(None, 9), 9);
+        assert_eq!(EpubReadingState::chapter_weight_from_counts(Some(0), 9), 1);
+        assert_eq!(EpubReadingState::chapter_weight_from_counts(None, 0), 1);
     }
 }
 

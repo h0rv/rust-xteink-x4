@@ -239,6 +239,8 @@ struct EpubReadingState {
     engine: RenderEngine,
     chapter_events_opts: RenderPrepOptions,
     eg_renderer: ReaderRenderer,
+    #[cfg(all(feature = "std", feature = "fontdue"))]
+    layout_text_measurer: BookerlyFontBackend,
     chapter_buf: Vec<u8>,
     chapter_scratch: ScratchBuffers,
     current_page: Option<RenderPage>,

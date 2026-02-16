@@ -54,11 +54,30 @@ fn normalize_font_family_from_href(href: &str) -> String {
 }
 
 fn infer_weight_style_from_href(href: &str) -> (u16, EmbeddedFontStyle) {
+    let black = href.contains("black") || href.contains("heavy");
     let bold = href.contains("bold");
+    let semibold = href.contains("semibold")
+        || href.contains("semi-bold")
+        || href.contains("demibold")
+        || href.contains("demi-bold");
+    let medium = href.contains("medium");
+    let light = href.contains("light") || href.contains("thin");
     let italic = href.contains("italic");
     let oblique = href.contains("oblique");
 
-    let weight = if bold { 700 } else { 400 };
+    let weight = if black {
+        900
+    } else if bold {
+        700
+    } else if semibold {
+        600
+    } else if medium {
+        500
+    } else if light {
+        300
+    } else {
+        400
+    };
     let style = if italic {
         EmbeddedFontStyle::Italic
     } else if oblique {
@@ -67,4 +86,25 @@ fn infer_weight_style_from_href(href: &str) -> (u16, EmbeddedFontStyle) {
         EmbeddedFontStyle::Normal
     };
     (weight, style)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_weight_style_from_href_recognizes_weight_keywords() {
+        assert_eq!(
+            infer_weight_style_from_href("fonts/SourceSans-SemiBold.ttf"),
+            (600, EmbeddedFontStyle::Normal)
+        );
+        assert_eq!(
+            infer_weight_style_from_href("fonts/SourceSans-BlackItalic.ttf"),
+            (900, EmbeddedFontStyle::Italic)
+        );
+        assert_eq!(
+            infer_weight_style_from_href("fonts/Bookerly-Light.otf"),
+            (300, EmbeddedFontStyle::Normal)
+        );
+    }
 }

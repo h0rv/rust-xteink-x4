@@ -539,15 +539,14 @@ impl FontCache {
         width: usize,
         height: usize,
     ) -> Result<(), D::Error> {
-        // Convert grayscale bitmap to binary (threshold at 128)
+        let threshold = adaptive_glyph_threshold(bitmap, width, height);
         let mut pixels = Vec::new();
         for row in 0..height {
             for col in 0..width {
                 let pixel_idx = row * width + col;
                 if pixel_idx < bitmap.len() {
                     let pixel_value = bitmap[pixel_idx];
-                    // Threshold: if pixel is darker than 50%, draw it
-                    if pixel_value > 128 {
+                    if pixel_value >= threshold {
                         let point = Point::new(x + col as i32, y + row as i32);
                         pixels.push(Pixel(point, BinaryColor::On));
                     }
@@ -556,6 +555,35 @@ impl FontCache {
         }
         display.draw_iter(pixels)
     }
+}
+
+fn adaptive_glyph_threshold(bitmap: &[u8], width: usize, height: usize) -> u8 {
+    if bitmap.is_empty() || width == 0 || height == 0 {
+        return 128;
+    }
+    let mut sum = 0u32;
+    let mut ink = 0u32;
+    for &px in bitmap {
+        sum = sum.saturating_add(px as u32);
+        if px >= 128 {
+            ink = ink.saturating_add(1);
+        }
+    }
+    let avg = (sum / bitmap.len() as u32) as i32;
+    let mut threshold = avg + 18;
+    let area = width.saturating_mul(height);
+    if area <= 64 {
+        threshold -= 10;
+    } else if area >= 240 {
+        threshold += 6;
+    }
+    let ink_ratio = (ink as f32 / bitmap.len() as f32).clamp(0.0, 1.0);
+    if ink_ratio < 0.18 {
+        threshold -= 8;
+    } else if ink_ratio > 0.55 {
+        threshold += 6;
+    }
+    threshold.clamp(92, 178) as u8
 }
 
 /// Information about a single glyph
@@ -632,12 +660,28 @@ impl Default for FontCache {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
 
     #[test]
     fn test_font_cache_new() {
         let cache = FontCache::new();
         assert_eq!(cache.font_size, 16.0);
+    }
+
+    #[test]
+    fn adaptive_threshold_darkens_sparse_small_glyphs() {
+        let bitmap = vec![0, 0, 0, 110, 120, 140, 0, 0, 0];
+        let t = adaptive_glyph_threshold(&bitmap, 3, 3);
+        assert!(t < 128);
+    }
+
+    #[test]
+    fn adaptive_threshold_controls_dense_large_glyphs() {
+        let bitmap = vec![200u8; 20 * 20];
+        let t = adaptive_glyph_threshold(&bitmap, 20, 20);
+        assert!(t >= 120);
     }
 
     #[cfg(all(feature = "fontdue", feature = "std"))]

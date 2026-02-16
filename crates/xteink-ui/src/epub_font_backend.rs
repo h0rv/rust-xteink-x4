@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::sync::Arc;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 use mu_epub_embedded_graphics::{
@@ -14,6 +15,7 @@ use mu_epub_embedded_graphics::{
     FontMetrics, FontSelection,
 };
 use mu_epub_render::ResolvedTextStyle;
+use mu_epub_render::TextMeasurer;
 
 use crate::embedded_fonts::{EmbeddedFontCache, EmbeddedFontRegistry};
 use crate::font_render::FontCache;
@@ -169,13 +171,21 @@ impl BackendState {
 /// Fonts are pre-compiled at build time and embedded in firmware flash.
 /// No SD card font files or runtime TTF parsing required.
 pub struct BookerlyFontBackend {
-    state: std::sync::Mutex<BackendState>,
+    state: Arc<std::sync::Mutex<BackendState>>,
 }
 
 impl Default for BookerlyFontBackend {
     fn default() -> Self {
         Self {
-            state: std::sync::Mutex::new(BackendState::new()),
+            state: Arc::new(std::sync::Mutex::new(BackendState::new())),
+        }
+    }
+}
+
+impl Clone for BookerlyFontBackend {
+    fn clone(&self) -> Self {
+        Self {
+            state: Arc::clone(&self.state),
         }
     }
 }
@@ -369,5 +379,57 @@ impl FontBackend for BookerlyFontBackend {
             svg: false,
             justification: true,
         }
+    }
+}
+
+impl TextMeasurer for BookerlyFontBackend {
+    fn measure_text_px(&self, text: &str, style: &ResolvedTextStyle) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let chosen_name = if let Some(id) = style.font_id {
+            state
+                .resolved_font_names_by_id
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| BackendState::default_font_name_for_style(style).to_string())
+        } else {
+            BackendState::default_font_name_for_style(style).to_string()
+        };
+        let selection = FontSelection {
+            font_id: state.ensure_slot_for(FontSlotKey::new(chosen_name, style.size_px)),
+            fallback_reason: None,
+        };
+        let slot = state.slot_key_for_id(selection.font_id);
+        #[cfg(not(target_os = "espidf"))]
+        {
+            state.runtime_cache.set_font_size(slot.size_px());
+            if state.runtime_font_available(&slot.font_name, slot.size_px()) {
+                return state
+                    .runtime_cache
+                    .measure_text(text, &slot.font_name)
+                    .max(0.0);
+            }
+        }
+        EmbeddedFontRegistry::get_font_nearest(&slot.font_name, slot.size_px() as u32)
+            .map(|font| {
+                text.chars()
+                    .map(|ch| font.glyph(ch).map(|g| g.advance_width).unwrap_or(0) as f32)
+                    .sum::<f32>()
+            })
+            .unwrap_or_else(|| {
+                let approx = state
+                    .runtime_cache
+                    .metrics(&slot.font_name, 'n')
+                    .or_else(|| state.runtime_cache.metrics(&slot.font_name, 'a'))
+                    .map(|m| m.advance_width)
+                    .unwrap_or(8.0)
+                    .max(1.0);
+                approx * text.chars().count() as f32
+            })
     }
 }

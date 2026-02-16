@@ -3,6 +3,7 @@ use xteink_ui::{App, BufferedDisplay, DisplayInterface, EinkDisplay, FileSystem,
 
 use crate::cli::SerialCli;
 use crate::sdcard::SdCardFs;
+use crate::wifi_manager::{WifiManager, WifiMode};
 
 fn format_size(size: u64) -> String {
     if size >= 1024 * 1024 {
@@ -40,6 +41,7 @@ pub fn handle_cli_command<I, D>(
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
     sleep_requested: &mut bool,
+    wifi_manager: &mut WifiManager,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
@@ -54,6 +56,9 @@ pub fn handle_cli_command<I, D>(
             );
             cli.write_line(
                 "          put <path> <size> [chunk], refresh <full|partial|fast>, sleep",
+            );
+            cli.write_line(
+                "          wifi status|show|mode <ap|sta>|ap <ssid> [pass]|sta <ssid> <pass>|clear",
             );
             cli.write_line("OK");
         }
@@ -257,6 +262,85 @@ pub fn handle_cli_command<I, D>(
         "sleep" => {
             cli.write_line("OK sleeping");
             *sleep_requested = true;
+        }
+        "wifi" => {
+            let sub = parts.next().unwrap_or("status");
+            match sub {
+                "status" | "show" => {
+                    let settings = wifi_manager.settings();
+                    cli.write_line(&format!("mode {}", settings.mode.as_str()));
+                    cli.write_line(&format!(
+                        "active {}",
+                        if wifi_manager.is_network_active() {
+                            1
+                        } else {
+                            0
+                        }
+                    ));
+                    cli.write_line(&format!("ap_ssid {}", settings.ap_ssid));
+                    cli.write_line(&format!(
+                        "ap_password {}",
+                        WifiManager::masked_password(&settings.ap_password)
+                    ));
+                    cli.write_line(&format!("sta_ssid {}", settings.sta_ssid));
+                    cli.write_line(&format!(
+                        "sta_password {}",
+                        WifiManager::masked_password(&settings.sta_password)
+                    ));
+                    let info = wifi_manager.transfer_info();
+                    if !info.url.is_empty() {
+                        cli.write_line(&format!("url {}", info.url));
+                    }
+                    if !info.message.is_empty() {
+                        cli.write_line(&format!("message {}", info.message));
+                    }
+                    cli.write_line("OK");
+                }
+                "mode" => {
+                    let Some(mode_raw) = parts.next() else {
+                        cli.write_line("ERR missing mode");
+                        return;
+                    };
+                    let Some(mode) = WifiMode::from_str(mode_raw) else {
+                        cli.write_line("ERR mode must be ap|sta");
+                        return;
+                    };
+                    match wifi_manager.set_mode(mode) {
+                        Ok(()) => cli.write_line("OK"),
+                        Err(err) => cli.write_line(&format!("ERR {}", err)),
+                    }
+                }
+                "ap" => {
+                    let Some(ssid) = parts.next() else {
+                        cli.write_line("ERR missing ssid");
+                        return;
+                    };
+                    let password = parts.next().unwrap_or("").to_string();
+                    match wifi_manager.configure_ap(ssid.to_string(), password) {
+                        Ok(()) => cli.write_line("OK"),
+                        Err(err) => cli.write_line(&format!("ERR {}", err)),
+                    }
+                }
+                "sta" => {
+                    let Some(ssid) = parts.next() else {
+                        cli.write_line("ERR missing ssid");
+                        return;
+                    };
+                    let Some(password) = parts.next() else {
+                        cli.write_line("ERR missing password");
+                        return;
+                    };
+                    match wifi_manager.configure_sta(ssid.to_string(), password.to_string()) {
+                        Ok(()) => cli.write_line("OK"),
+                        Err(err) => cli.write_line(&format!("ERR {}", err)),
+                    }
+                }
+                "clear" => match wifi_manager.clear_sta() {
+                    Ok(()) => cli.write_line("OK"),
+                    Err(err) => cli.write_line(&format!("ERR {}", err)),
+                },
+                _ => cli.write_line("ERR unknown wifi command"),
+            }
         }
         "" => {}
         _ => cli.write_line("ERR unknown command"),

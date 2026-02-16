@@ -508,7 +508,7 @@ fn main() {
         (BUTTON_REPEAT_INITIAL_MS + LOOP_DELAY_MS - 1) / LOOP_DELAY_MS;
     const BUTTON_REPEAT_INTERVAL_TICKS: u32 =
         (BUTTON_REPEAT_INTERVAL_MS + LOOP_DELAY_MS - 1) / LOOP_DELAY_MS;
-    const ENABLE_CLI: bool = false;
+    const ENABLE_CLI: bool = true;
     let mut cli = if ENABLE_CLI {
         Some(SerialCli::new())
     } else {
@@ -537,6 +537,7 @@ fn main() {
                     &mut delay,
                     &mut buffered_display,
                     &mut sleep_requested,
+                    &mut wifi_manager,
                 );
             }
         }

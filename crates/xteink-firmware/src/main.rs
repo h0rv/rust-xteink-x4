@@ -6,7 +6,9 @@ mod input;
 mod runtime_diagnostics;
 mod sdcard;
 mod web_upload;
+mod wifi_manager;
 
+use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::{
     delay::FreeRtos,
     gpio::{PinDriver, Pull},
@@ -27,6 +29,7 @@ use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, configure_pthread_defaults, log_heap};
 use sdcard::SdCardFs;
 use web_upload::{PollError, WebUploadServer};
+use wifi_manager::WifiManager;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
@@ -45,7 +48,7 @@ const POWER_LONG_PRESS_MS: u32 = 2000;
 const BATTERY_SAMPLE_INTERVAL_MS: u32 = 2000;
 const BATTERY_ADC_EMPTY: i32 = 2100;
 const BATTERY_ADC_FULL: i32 = 3200;
-const ENABLE_WEB_UPLOAD_SERVER: bool = true;
+const ENABLE_WEB_UPLOAD_SERVER: bool = false;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -271,6 +274,49 @@ fn stop_web_upload_server(web_upload_server: &mut Option<WebUploadServer>) {
     }
 }
 
+fn reconcile_web_upload_server(
+    app: &mut App,
+    wifi_manager: &mut WifiManager,
+    web_upload_server: &mut Option<WebUploadServer>,
+) -> bool {
+    let was_active = web_upload_server.is_some();
+    if let Some(request_start) = app.take_file_transfer_request() {
+        if request_start {
+            match wifi_manager.start_transfer_network() {
+                Ok(()) => {
+                    if web_upload_server.is_none() {
+                        match WebUploadServer::start() {
+                            Ok(server) => {
+                                *web_upload_server = Some(server);
+                            }
+                            Err(err) => {
+                                log::warn!("[WEB] upload server start failed: {}", err);
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    log::warn!("[WIFI] unable to start transfer network: {}", err);
+                }
+            }
+        } else {
+            stop_web_upload_server(web_upload_server);
+            wifi_manager.stop_transfer_network();
+        }
+    }
+    let is_active = web_upload_server.is_some();
+    app.set_file_transfer_active(is_active);
+    let transfer_info = wifi_manager.transfer_info();
+    app.set_file_transfer_network_details(
+        transfer_info.mode,
+        transfer_info.ssid,
+        transfer_info.password_hint,
+        transfer_info.url,
+        transfer_info.message,
+    );
+    was_active != is_active
+}
+
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -306,6 +352,8 @@ fn main() {
     );
 
     let peripherals = Peripherals::take().unwrap();
+    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let mut wifi_manager = WifiManager::new(peripherals.modem, sys_loop);
 
     let spi = SpiDriver::new(
         peripherals.spi2,
@@ -376,6 +424,7 @@ fn main() {
     };
 
     let mut web_upload_server = if ENABLE_WEB_UPLOAD_SERVER {
+        let _ = wifi_manager.start_transfer_network();
         match WebUploadServer::start() {
             Ok(server) => Some(server),
             Err(err) => {
@@ -402,6 +451,15 @@ fn main() {
         app.set_device_status(device_status);
         append_diag("battery_init skipped (adc-disabled)");
     }
+    app.set_file_transfer_active(web_upload_server.is_some());
+    let transfer_info = wifi_manager.transfer_info();
+    app.set_file_transfer_network_details(
+        transfer_info.mode,
+        transfer_info.ssid,
+        transfer_info.password_hint,
+        transfer_info.url,
+        transfer_info.message,
+    );
     log_heap("before_app_init");
     // Prime deferred work (library cache/load scan) before the first paint to
     // avoid a guaranteed second full-screen refresh immediately after boot.
@@ -498,6 +556,8 @@ fn main() {
                     Err(PollError::QueueDisconnected) => {
                         log::warn!("[WEB] upload event queue disconnected, stopping server");
                         stop_web_upload_server(&mut web_upload_server);
+                        wifi_manager.stop_transfer_network();
+                        app.set_file_transfer_active(false);
                         break;
                     }
                 }
@@ -507,6 +567,7 @@ fn main() {
         if sleep_requested {
             sleep_requested = false;
             stop_web_upload_server(&mut web_upload_server);
+            wifi_manager.stop_transfer_network();
             show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
             enter_deep_sleep(3);
         }
@@ -573,6 +634,7 @@ fn main() {
                     );
                     log::info!("Displayed centered cover for power off");
                     stop_web_upload_server(&mut web_upload_server);
+                    wifi_manager.stop_transfer_network();
 
                     while power_btn.is_low() {
                         FreeRtos::delay_ms(50);
@@ -587,6 +649,11 @@ fn main() {
                 append_diag("power_short_press");
 
                 if app.handle_input(InputEvent::Press(Button::Power)) {
+                    let _ = reconcile_web_upload_server(
+                        &mut app,
+                        &mut wifi_manager,
+                        &mut web_upload_server,
+                    );
                     log::info!("UI: redraw after power short press");
                     buffered_display.clear();
                     app.render(&mut buffered_display).ok();
@@ -640,6 +707,11 @@ fn main() {
                 log_heap("before_handle_input");
 
                 if app.handle_input(InputEvent::Press(btn)) {
+                    let _ = reconcile_web_upload_server(
+                        &mut app,
+                        &mut wifi_manager,
+                        &mut web_upload_server,
+                    );
                     log::info!("UI: redraw after {:?}", btn);
                     log_heap("before_render");
                     buffered_display.clear();
@@ -670,6 +742,11 @@ fn main() {
                         }
                     }
                 } else {
+                    let _ = reconcile_web_upload_server(
+                        &mut app,
+                        &mut wifi_manager,
+                        &mut web_upload_server,
+                    );
                     log::info!("UI: no redraw after {:?}", btn);
                     log_heap("after_handle_input_no_redraw");
                 }
@@ -681,6 +758,8 @@ fn main() {
         }
 
         if app.process_deferred_tasks(&mut fs) {
+            let _ =
+                reconcile_web_upload_server(&mut app, &mut wifi_manager, &mut web_upload_server);
             log_heap("before_deferred_render");
             buffered_display.clear();
             app.render(&mut buffered_display).ok();
@@ -763,6 +842,8 @@ fn main() {
 
                 show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
                 stop_web_upload_server(&mut web_upload_server);
+                wifi_manager.stop_transfer_network();
+                app.set_file_transfer_active(false);
 
                 enter_deep_sleep(3);
             }

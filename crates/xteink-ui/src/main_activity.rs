@@ -78,8 +78,17 @@ pub struct LibraryTabContent {
     books: Vec<BookInfo>,
     selected_index: usize,
     hero_selected: bool,
+    transfer_selected: bool,
+    transfer_screen_open: bool,
+    file_transfer_active: bool,
     is_loading: bool,
     pending_open_path: Option<String>,
+    pending_file_transfer_request: Option<bool>,
+    transfer_mode: String,
+    transfer_ssid: String,
+    transfer_password_hint: String,
+    transfer_url: String,
+    transfer_message: String,
     refresh_request: bool,
 }
 
@@ -359,15 +368,20 @@ impl MainActivity {
 
         // Library-only quick action hint.
         if self.current_tab == Tab::Library.index() {
-            let chip_w = 104u32;
+            let chip_w = 136u32;
             let chip_h = 18u32;
             let chip_x = MARGIN - 2;
             let chip_y = bar_y + ((BOTTOM_BAR_H - chip_h as i32) / 2);
             Rectangle::new(Point::new(chip_x, chip_y), Size::new(chip_w, chip_h))
                 .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
                 .draw(display)?;
+            let label = if self.library_tab.is_transfer_screen_open() {
+                "Back: Exit Transfer"
+            } else {
+                "Back: Rescan"
+            };
             Text::new(
-                "Back: Rescan",
+                label,
                 Point::new(chip_x + 6, chip_y + 13),
                 MonoTextStyle::new(ui_font_small(), BinaryColor::On),
             )
@@ -474,8 +488,17 @@ impl LibraryTabContent {
             books: Vec::new(),
             selected_index: 0,
             hero_selected: true,
+            transfer_selected: false,
+            transfer_screen_open: false,
+            file_transfer_active: false,
             is_loading: false,
             pending_open_path: None,
+            pending_file_transfer_request: None,
+            transfer_mode: String::from("Hotspot"),
+            transfer_ssid: String::new(),
+            transfer_password_hint: String::new(),
+            transfer_url: String::new(),
+            transfer_message: String::new(),
             refresh_request: false,
         }
     }
@@ -492,6 +515,7 @@ impl LibraryTabContent {
         self.books = books;
         self.selected_index = 0;
         self.hero_selected = true;
+        self.transfer_selected = false;
     }
 
     pub fn update_book_progress(&mut self, path: &str, progress_percent: u8, last_read: u64) {
@@ -507,19 +531,75 @@ impl LibraryTabContent {
         requested
     }
 
+    pub fn set_file_transfer_active(&mut self, active: bool) {
+        self.file_transfer_active = active;
+    }
+
+    pub fn set_file_transfer_network_details(
+        &mut self,
+        mode: String,
+        ssid: String,
+        password_hint: String,
+        url: String,
+        message: String,
+    ) {
+        self.transfer_mode = mode;
+        self.transfer_ssid = ssid;
+        self.transfer_password_hint = password_hint;
+        self.transfer_url = url;
+        self.transfer_message = message;
+    }
+
+    pub fn take_file_transfer_request(&mut self) -> Option<bool> {
+        self.pending_file_transfer_request.take()
+    }
+
+    pub fn is_transfer_screen_open(&self) -> bool {
+        self.transfer_screen_open
+    }
+
     /// Take the pending open path (called by App to process book opening)
     pub fn take_open_request(&mut self) -> Option<String> {
         self.pending_open_path.take()
     }
 
     fn on_enter(&mut self) {}
-    fn on_exit(&mut self) {}
+    fn on_exit(&mut self) {
+        if self.transfer_screen_open || self.file_transfer_active {
+            self.pending_file_transfer_request = Some(false);
+        }
+        self.transfer_screen_open = false;
+        self.transfer_selected = false;
+    }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
+        if self.transfer_screen_open {
+            match event {
+                InputEvent::Press(Button::Back) | InputEvent::Press(Button::Confirm) => {
+                    self.transfer_screen_open = false;
+                    self.transfer_selected = false;
+                    self.hero_selected = true;
+                    if self.file_transfer_active {
+                        self.pending_file_transfer_request = Some(false);
+                    }
+                    return ActivityResult::Consumed;
+                }
+                _ => return ActivityResult::Consumed,
+            }
+        }
+
         match event {
             InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
                 if self.hero_selected {
                     // already at top row
+                } else if self.transfer_selected {
+                    if self.books.is_empty() {
+                        self.hero_selected = true;
+                        self.transfer_selected = false;
+                    } else {
+                        self.transfer_selected = false;
+                        self.selected_index = self.books.len().saturating_sub(1);
+                    }
                 } else if self.selected_index == 0 {
                     self.hero_selected = true;
                 } else {
@@ -531,10 +611,18 @@ impl LibraryTabContent {
                 if self.hero_selected {
                     if !self.books.is_empty() {
                         self.hero_selected = false;
+                        self.transfer_selected = false;
                         self.selected_index = 0;
+                    } else {
+                        self.hero_selected = false;
+                        self.transfer_selected = true;
                     }
+                } else if self.transfer_selected {
+                    // already at bottom action row
                 } else if self.selected_index + 1 < self.books.len() {
                     self.selected_index += 1;
+                } else {
+                    self.transfer_selected = true;
                 }
                 ActivityResult::Consumed
             }
@@ -543,18 +631,11 @@ impl LibraryTabContent {
                     if let Some(idx) = self.currently_reading_index() {
                         self.pending_open_path = Some(self.books[idx].path.clone());
                     }
+                } else if self.transfer_selected {
+                    self.transfer_screen_open = true;
+                    self.pending_file_transfer_request = Some(true);
                 } else if let Some(book) = self.books.get(self.selected_index) {
                     self.pending_open_path = Some(book.path.clone());
-                }
-                ActivityResult::Consumed
-            }
-            InputEvent::Press(Button::Power) => {
-                // Quick resume: open most recent book from hero card in one press.
-                if let Some(idx) = self.currently_reading_index() {
-                    self.pending_open_path = Some(self.books[idx].path.clone());
-                } else {
-                    self.refresh_request = true;
-                    self.begin_loading_scan();
                 }
                 ActivityResult::Consumed
             }
@@ -689,6 +770,89 @@ impl LibraryTabContent {
         let body_h = ui_font_body().character_size.height as i32;
         let small_h = ui_font_small().character_size.height as i32;
 
+        if self.transfer_screen_open {
+            Text::new(
+                "File Transfer",
+                Point::new(MARGIN, HEADER_TEXT_Y),
+                title_style,
+            )
+            .draw(display)?;
+            let status = if self.file_transfer_active {
+                "Status: Running"
+            } else {
+                "Status: Stopped"
+            };
+            Text::new(
+                status,
+                Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG),
+                body_style,
+            )
+            .draw(display)?;
+            Text::new(
+                &format!("Mode: {}", self.transfer_mode),
+                Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG + body_h + 4),
+                small_style,
+            )
+            .draw(display)?;
+            if !self.transfer_ssid.is_empty() {
+                Text::new(
+                    &format!("SSID: {}", self.transfer_ssid),
+                    Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG + body_h + small_h + 8),
+                    small_style,
+                )
+                .draw(display)?;
+            }
+            if !self.transfer_password_hint.is_empty() {
+                Text::new(
+                    &self.transfer_password_hint,
+                    Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG + body_h + small_h * 2 + 12),
+                    small_style,
+                )
+                .draw(display)?;
+            }
+            if !self.transfer_url.is_empty() {
+                Text::new(
+                    &self.transfer_url,
+                    Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG + body_h + small_h * 3 + 16),
+                    small_style,
+                )
+                .draw(display)?;
+            }
+            if !self.transfer_message.is_empty() {
+                Text::new(
+                    &self.transfer_message,
+                    Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG + body_h + small_h * 4 + 20),
+                    small_style,
+                )
+                .draw(display)?;
+            }
+            Text::new(
+                "Open Calibre and use",
+                Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG * 5),
+                small_style,
+            )
+            .draw(display)?;
+            Text::new(
+                "\"Send to device\"",
+                Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG * 5 + small_h + 2),
+                small_style,
+            )
+            .draw(display)?;
+            Text::new(
+                "Keep this screen open.",
+                Point::new(MARGIN, HEADER_TEXT_Y + GAP_LG * 6 - 2),
+                small_style,
+            )
+            .draw(display)?;
+            Text::new(
+                "Back/Confirm: Exit",
+                Point::new(MARGIN, DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - 8),
+                small_style,
+            )
+            .draw(display)?;
+            return Ok(());
+        }
+
         // Title
         Text::new("Library", Point::new(MARGIN, HEADER_TEXT_Y), title_style).draw(display)?;
 
@@ -798,6 +962,57 @@ impl LibraryTabContent {
                 small_style,
             )
             .draw(display)?;
+            let transfer_y = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - (small_h + 10);
+            if self.transfer_selected {
+                Rectangle::new(
+                    Point::new(MARGIN - SELECT_PAD_X, transfer_y - body_h),
+                    Size::new(
+                        DISPLAY_WIDTH - (MARGIN as u32 * 2) + (SELECT_PAD_X as u32 * 2),
+                        (body_h + small_h + 10) as u32,
+                    ),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                let selected_style = MonoTextStyleBuilder::new()
+                    .font(ui_font_body())
+                    .text_color(BinaryColor::Off)
+                    .background_color(BinaryColor::On)
+                    .build();
+                let selected_small_style = MonoTextStyleBuilder::new()
+                    .font(ui_font_small())
+                    .text_color(BinaryColor::Off)
+                    .background_color(BinaryColor::On)
+                    .build();
+                Text::new(
+                    "File Transfer",
+                    Point::new(MARGIN, transfer_y),
+                    selected_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    if self.file_transfer_active {
+                        "Running"
+                    } else {
+                        "Open"
+                    },
+                    Point::new(MARGIN, transfer_y + small_h + 1),
+                    selected_small_style,
+                )
+                .draw(display)?;
+            } else {
+                Text::new("File Transfer", Point::new(MARGIN, transfer_y), body_style)
+                    .draw(display)?;
+                Text::new(
+                    if self.file_transfer_active {
+                        "Running"
+                    } else {
+                        "Open"
+                    },
+                    Point::new(MARGIN, transfer_y + small_h + 1),
+                    small_style,
+                )
+                .draw(display)?;
+            }
         } else if self.books.is_empty() {
             Text::new(
                 "No books found",
@@ -805,24 +1020,77 @@ impl LibraryTabContent {
                 small_style,
             )
             .draw(display)?;
+            let transfer_y = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - (small_h + 10);
+            if self.transfer_selected {
+                Rectangle::new(
+                    Point::new(MARGIN - SELECT_PAD_X, transfer_y - body_h),
+                    Size::new(
+                        DISPLAY_WIDTH - (MARGIN as u32 * 2) + (SELECT_PAD_X as u32 * 2),
+                        (body_h + small_h + 10) as u32,
+                    ),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                let selected_style = MonoTextStyleBuilder::new()
+                    .font(ui_font_body())
+                    .text_color(BinaryColor::Off)
+                    .background_color(BinaryColor::On)
+                    .build();
+                let selected_small_style = MonoTextStyleBuilder::new()
+                    .font(ui_font_small())
+                    .text_color(BinaryColor::Off)
+                    .background_color(BinaryColor::On)
+                    .build();
+                Text::new(
+                    "File Transfer",
+                    Point::new(MARGIN, transfer_y),
+                    selected_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    if self.file_transfer_active {
+                        "Running"
+                    } else {
+                        "Open"
+                    },
+                    Point::new(MARGIN, transfer_y + small_h + 1),
+                    selected_small_style,
+                )
+                .draw(display)?;
+            } else {
+                Text::new("File Transfer", Point::new(MARGIN, transfer_y), body_style)
+                    .draw(display)?;
+                Text::new(
+                    if self.file_transfer_active {
+                        "Running"
+                    } else {
+                        "Open"
+                    },
+                    Point::new(MARGIN, transfer_y + small_h + 1),
+                    small_style,
+                )
+                .draw(display)?;
+            }
         } else {
             let item_h = (body_h + small_h + INNER_PAD + 8).max(40);
             let start_y = list_y + body_h + 2;
             let bottom_limit = DISPLAY_HEIGHT as i32 - BOTTOM_BAR_H - INNER_PAD;
-            let max_items = ((bottom_limit - start_y) / item_h).max(1) as usize;
+            let max_items = ((bottom_limit - start_y) / item_h).max(2) as usize;
+            let book_rows = max_items.saturating_sub(1);
             let selected = if self.hero_selected {
                 0
             } else {
                 self.selected_index.min(self.books.len().saturating_sub(1))
             };
-            let scroll_offset = selected.saturating_sub(max_items / 2);
+            let scroll_offset = selected.saturating_sub(book_rows / 2);
             for (row, idx) in (scroll_offset..self.books.len())
-                .take(max_items)
+                .take(book_rows)
                 .enumerate()
             {
                 let y = start_y + (row as i32) * item_h;
                 let book = &self.books[idx];
-                let is_selected = !self.hero_selected && idx == self.selected_index;
+                let is_selected =
+                    !self.hero_selected && !self.transfer_selected && idx == self.selected_index;
                 if is_selected {
                     Rectangle::new(
                         Point::new(MARGIN - SELECT_PAD_X, y - body_h),
@@ -921,6 +1189,61 @@ impl LibraryTabContent {
                     )
                     .draw(display)?;
                 }
+            }
+
+            let transfer_y = start_y + (book_rows as i32) * item_h;
+            let transfer_selected = self.transfer_selected;
+            if transfer_selected {
+                Rectangle::new(
+                    Point::new(MARGIN - SELECT_PAD_X, transfer_y - body_h),
+                    Size::new(
+                        DISPLAY_WIDTH - (MARGIN as u32 * 2) + (SELECT_PAD_X as u32 * 2),
+                        item_h as u32,
+                    ),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                let selected_style = MonoTextStyleBuilder::new()
+                    .font(ui_font_body())
+                    .text_color(BinaryColor::Off)
+                    .background_color(BinaryColor::On)
+                    .build();
+                let selected_small_style = MonoTextStyleBuilder::new()
+                    .font(ui_font_small())
+                    .text_color(BinaryColor::Off)
+                    .background_color(BinaryColor::On)
+                    .build();
+                Text::new(
+                    "File Transfer",
+                    Point::new(MARGIN, transfer_y),
+                    selected_style,
+                )
+                .draw(display)?;
+                let action = if self.file_transfer_active {
+                    "Running"
+                } else {
+                    "Open"
+                };
+                Text::new(
+                    action,
+                    Point::new(MARGIN, transfer_y + small_h + 1),
+                    selected_small_style,
+                )
+                .draw(display)?;
+            } else {
+                Text::new("File Transfer", Point::new(MARGIN, transfer_y), body_style)
+                    .draw(display)?;
+                let action = if self.file_transfer_active {
+                    "Running"
+                } else {
+                    "Open"
+                };
+                Text::new(
+                    action,
+                    Point::new(MARGIN, transfer_y + small_h + 1),
+                    small_style,
+                )
+                .draw(display)?;
             }
         }
 

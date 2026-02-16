@@ -61,6 +61,7 @@ pub struct App {
     device_status: DeviceStatus,
     applied_settings: UnifiedSettings,
     filtered_battery_percent: Option<u8>,
+    pending_file_transfer_request: Option<bool>,
 }
 
 impl App {
@@ -90,6 +91,7 @@ impl App {
             device_status: DeviceStatus::default(),
             applied_settings: UnifiedSettings::default(),
             filtered_battery_percent: None,
+            pending_file_transfer_request: None,
         };
         // Initialize library with loading state
         app.main_activity.library_tab.begin_loading_scan();
@@ -149,6 +151,10 @@ impl App {
             self.main_activity.files_tab.request_open_path(path);
             // Switch to files tab to show the book
             self.main_activity.set_tab(crate::main_activity::Tab::Files);
+            redraw = true;
+        }
+        if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
+            self.pending_file_transfer_request = Some(request);
             redraw = true;
         }
 
@@ -322,6 +328,9 @@ impl App {
         let settings_updated = self.sync_runtime_settings();
         if self.main_activity.library_tab.take_refresh_request() {
             self.force_rescan_library();
+        }
+        if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
+            self.pending_file_transfer_request = Some(request);
         }
         let library_updated = self.process_library_scan(fs);
         let file_browser_updated = self.process_file_browser_tasks(fs);
@@ -714,6 +723,32 @@ impl App {
     /// Get current EPUB reading position.
     pub fn file_browser_epub_position(&self) -> Option<(usize, usize, usize, usize)> {
         self.main_activity.files_tab.epub_position()
+    }
+
+    /// Set whether file transfer web server is currently active.
+    pub fn set_file_transfer_active(&mut self, active: bool) {
+        self.main_activity
+            .library_tab
+            .set_file_transfer_active(active);
+    }
+
+    /// Set file transfer network details for transfer UI.
+    pub fn set_file_transfer_network_details(
+        &mut self,
+        mode: String,
+        ssid: String,
+        password_hint: String,
+        url: String,
+        message: String,
+    ) {
+        self.main_activity
+            .library_tab
+            .set_file_transfer_network_details(mode, ssid, password_hint, url, message);
+    }
+
+    /// Take pending file transfer request (true=start, false=stop).
+    pub fn take_file_transfer_request(&mut self) -> Option<bool> {
+        self.pending_file_transfer_request.take()
     }
 
     /// Get compact-encoded cover thumbnail for the currently open EPUB, if known.

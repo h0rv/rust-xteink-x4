@@ -54,7 +54,37 @@ impl WebUploadServer {
 
         server.fn_handler::<(), _>("/", Method::Get, |req| {
             let mut resp = req.into_ok_response().map_err(|_| ())?;
-            let _ = resp.write_all(b"xteink web upload server");
+            let _ = resp.write_all(
+                br#"<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xteink Transfer</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;background:#f4f4f4;color:#111;margin:0;padding:24px}
+.card{max-width:680px;margin:0 auto;background:#fff;border:1px solid #ddd;border-radius:10px;padding:16px}
+h1{margin:0 0 8px 0}.muted{color:#555;font-size:14px}
+input,button{font-size:16px;padding:10px}
+button{cursor:pointer}
+pre{background:#f7f7f7;padding:10px;border:1px solid #eee;overflow:auto}
+</style></head>
+<body><div class="card">
+<h1>Xteink File Transfer</h1>
+<p class="muted">Upload EPUB files directly to the device.</p>
+<form id="upf">
+<input id="file" type="file" accept=".epub,.txt,.md" required>
+<button type="submit">Upload</button>
+</form>
+<pre id="out">Ready.</pre>
+</div>
+<script>
+const form=document.getElementById('upf');const out=document.getElementById('out');
+form.addEventListener('submit', async(e)=>{e.preventDefault();const f=document.getElementById('file').files[0];if(!f){return;}
+out.textContent='Uploading '+f.name+' ...';
+try{const r=await fetch('/upload?filename='+encodeURIComponent(f.name),{method:'POST',headers:{'Content-Length':String(f.size)},body:f});
+const t=await r.text();out.textContent='HTTP '+r.status+'\\n'+t;}catch(err){out.textContent='Upload failed: '+err;}});
+</script>
+</body></html>"#,
+            );
             Ok(())
         })?;
 

@@ -39,7 +39,7 @@ pub fn handle_cli_command<I, D>(
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
-    enter_sleep: fn(i32),
+    sleep_requested: &mut bool,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
@@ -256,7 +256,7 @@ pub fn handle_cli_command<I, D>(
         }
         "sleep" => {
             cli.write_line("OK sleeping");
-            enter_sleep(3);
+            *sleep_requested = true;
         }
         "" => {}
         _ => cli.write_line("ERR unknown command"),

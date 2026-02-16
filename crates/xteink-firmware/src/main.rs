@@ -5,6 +5,7 @@ mod cli_commands;
 mod input;
 mod runtime_diagnostics;
 mod sdcard;
+mod web_upload;
 
 use esp_idf_svc::hal::{
     delay::FreeRtos,
@@ -25,6 +26,7 @@ use cli_commands::handle_cli_command;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, configure_pthread_defaults, log_heap};
 use sdcard::SdCardFs;
+use web_upload::{PollError, WebUploadServer};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
@@ -43,6 +45,7 @@ const POWER_LONG_PRESS_MS: u32 = 2000;
 const BATTERY_SAMPLE_INTERVAL_MS: u32 = 2000;
 const BATTERY_ADC_EMPTY: i32 = 2100;
 const BATTERY_ADC_FULL: i32 = 3200;
+const ENABLE_WEB_UPLOAD_SERVER: bool = true;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -262,6 +265,12 @@ fn enter_deep_sleep(power_btn_pin: i32) {
     }
 }
 
+fn stop_web_upload_server(web_upload_server: &mut Option<WebUploadServer>) {
+    if let Some(server) = web_upload_server.take() {
+        server.stop();
+    }
+}
+
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -366,6 +375,18 @@ fn main() {
         }
     };
 
+    let mut web_upload_server = if ENABLE_WEB_UPLOAD_SERVER {
+        match WebUploadServer::start() {
+            Ok(server) => Some(server),
+            Err(err) => {
+                log::warn!("[WEB] upload server start failed: {}", err);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Initialize app and render initial screen
     let mut app = App::new();
     let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
@@ -437,6 +458,7 @@ fn main() {
     };
     let mut input_debug_ticks: u32 = 0;
     let mut battery_sample_elapsed_ms: u32 = 0;
+    let mut sleep_requested = false;
 
     // Auto-sleep tracking
     let mut inactivity_ms: u32 = 0;
@@ -456,9 +478,37 @@ fn main() {
                     &mut display,
                     &mut delay,
                     &mut buffered_display,
-                    enter_deep_sleep,
+                    &mut sleep_requested,
                 );
             }
+        }
+
+        if let Some(server) = web_upload_server.as_mut() {
+            loop {
+                match server.poll() {
+                    Ok(Some(event)) => {
+                        log::info!(
+                            "[WEB] upload completed path={} bytes={}",
+                            event.path,
+                            event.received_bytes
+                        );
+                        app.invalidate_library_cache();
+                    }
+                    Ok(None) => break,
+                    Err(PollError::QueueDisconnected) => {
+                        log::warn!("[WEB] upload event queue disconnected, stopping server");
+                        stop_web_upload_server(&mut web_upload_server);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if sleep_requested {
+            sleep_requested = false;
+            stop_web_upload_server(&mut web_upload_server);
+            show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
+            enter_deep_sleep(3);
         }
 
         let (button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
@@ -522,6 +572,7 @@ fn main() {
                         &mut buffered_display,
                     );
                     log::info!("Displayed centered cover for power off");
+                    stop_web_upload_server(&mut web_upload_server);
 
                     while power_btn.is_low() {
                         FreeRtos::delay_ms(50);
@@ -711,6 +762,7 @@ fn main() {
                 }
 
                 show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
+                stop_web_upload_server(&mut web_upload_server);
 
                 enter_deep_sleep(3);
             }

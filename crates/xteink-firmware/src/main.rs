@@ -358,13 +358,17 @@ fn main() {
     let mut app = App::new();
     let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
     let mut device_status = DeviceStatus::default();
-    let initial_battery_raw = read_battery_raw();
-    device_status.battery_percent = battery_percent_from_adc(initial_battery_raw);
-    app.set_device_status(device_status);
-    append_diag(&format!(
-        "battery_init raw={} pct={}",
-        initial_battery_raw, device_status.battery_percent
-    ));
+    if let Some(initial_battery_raw) = read_battery_raw() {
+        device_status.battery_percent = battery_percent_from_adc(initial_battery_raw);
+        app.set_device_status(device_status);
+        append_diag(&format!(
+            "battery_init raw={} pct={}",
+            initial_battery_raw, device_status.battery_percent
+        ));
+    } else {
+        app.set_device_status(device_status);
+        append_diag("battery_init skipped (adc-disabled)");
+    }
     log_heap("before_app_init");
     // Prime deferred work (library cache/load scan) before the first paint to
     // avoid a guaranteed second full-screen refresh immediately after boot.
@@ -470,10 +474,11 @@ fn main() {
         battery_sample_elapsed_ms = battery_sample_elapsed_ms.saturating_add(LOOP_DELAY_MS);
         if battery_sample_elapsed_ms >= BATTERY_SAMPLE_INTERVAL_MS {
             battery_sample_elapsed_ms = 0;
-            let battery_raw = read_battery_raw();
-            let battery_percent = battery_percent_from_adc(battery_raw);
-            device_status.battery_percent = battery_percent;
-            app.set_device_status(device_status);
+            if let Some(battery_raw) = read_battery_raw() {
+                let battery_percent = battery_percent_from_adc(battery_raw);
+                device_status.battery_percent = battery_percent;
+                app.set_device_status(device_status);
+            }
         }
 
         if power_pressed {

@@ -55,6 +55,8 @@ use crate::file_browser::{FileBrowser, TextViewer};
 use crate::filesystem::{basename, dirname, FileSystem};
 use crate::input::{Button, InputEvent};
 use crate::reader_settings_activity::ReaderSettings;
+#[cfg(feature = "std")]
+use crate::ui::theme::ui_text;
 use crate::ui::{Activity, ActivityResult};
 
 #[cfg(feature = "std")]
@@ -279,6 +281,33 @@ pub struct FileBrowserActivity {
 }
 
 impl FileBrowserActivity {
+    #[cfg(feature = "std")]
+    fn truncate_to_px(text: &str, max_px: i32, size: u32) -> String {
+        if max_px <= 0 {
+            return String::new();
+        }
+        if ui_text::width(text, Some(size)) as i32 <= max_px {
+            return text.to_string();
+        }
+        let ellipsis = "...";
+        let ellipsis_w = ui_text::width(ellipsis, Some(size)) as i32;
+        if ellipsis_w >= max_px {
+            return String::new();
+        }
+        let mut out = String::new();
+        for ch in text.chars() {
+            let mut candidate = out.clone();
+            candidate.push(ch);
+            let candidate_w = ui_text::width(&candidate, Some(size)) as i32;
+            if candidate_w + ellipsis_w > max_px {
+                break;
+            }
+            out.push(ch);
+        }
+        out.push_str(ellipsis);
+        out
+    }
+
     fn exit_reader_to_browser(&mut self) -> ActivityResult {
         #[cfg(feature = "std")]
         {
@@ -1044,18 +1073,13 @@ impl FileBrowserActivity {
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
             .draw(display)?;
 
-        let chapter_style = MonoTextStyle::new(&FONT_7X13_BOLD, BinaryColor::On);
-        let metrics_style = MonoTextStyle::new(&FONT_7X13, BinaryColor::On);
-        let max_title_chars = ((width as i32 - 12) / 7).max(0) as usize;
-        let title = renderer.current_chapter_title(max_title_chars);
-        Text::new(&title, Point::new(6, y + 13), chapter_style).draw(display)?;
-
+        let body_size = 16u32;
+        let title_size = 18u32;
         let battery_text = format!("{}%", self.battery_percent);
-        let battery_width = (battery_text.len() as i32) * 7;
-        let battery_x = (width as i32 - 6 - battery_width).max(6);
-        Text::new(&battery_text, Point::new(battery_x, y + 27), metrics_style).draw(display)?;
+        let battery_w = ui_text::width(&battery_text, Some(body_size)) as i32;
+        let battery_x = (width as i32 - 8 - battery_w).max(8);
 
-        let mut info = match self.reader_settings.footer_density {
+        let info = match self.reader_settings.footer_density {
             crate::reader_settings_activity::FooterDensity::Minimal => {
                 format!(
                     "{}  {}%",
@@ -1072,20 +1096,30 @@ impl FileBrowserActivity {
                 )
             }
         };
-        let available_info_px = (battery_x - 12).max(0);
-        let max_info_chars = (available_info_px / 7).max(0) as usize;
-        if max_info_chars > 0 && info.chars().count() > max_info_chars {
-            let mut truncated = String::new();
-            for (idx, ch) in info.chars().enumerate() {
-                if idx + 1 >= max_info_chars {
-                    truncated.push('…');
-                    break;
-                }
-                truncated.push(ch);
-            }
-            info = truncated;
-        }
-        Text::new(&info, Point::new(6, y + 27), metrics_style).draw(display)?;
+        let info_max_w = (width as i32 / 3).max(80);
+        let info_text = Self::truncate_to_px(&info, info_max_w, body_size);
+        let info_w = ui_text::width(&info_text, Some(body_size)) as i32;
+        let info_x = 8;
+
+        // Center chapter title between left metrics and right battery.
+        let center_left = (info_x + info_w + 14).max(14);
+        let center_right = (battery_x - 14).max(center_left);
+        let center_w = (center_right - center_left).max(0);
+        let mut chapter_title = renderer.current_chapter_title(128);
+        chapter_title = Self::truncate_to_px(&chapter_title, center_w, title_size);
+        let chapter_w = ui_text::width(&chapter_title, Some(title_size)) as i32;
+        let chapter_x = (center_left + ((center_w - chapter_w) / 2)).max(center_left);
+
+        let baseline = y + 25;
+        ui_text::draw(display, &info_text, info_x, baseline, Some(body_size))?;
+        ui_text::draw(
+            display,
+            &chapter_title,
+            chapter_x,
+            baseline,
+            Some(title_size),
+        )?;
+        ui_text::draw(display, &battery_text, battery_x, baseline, Some(body_size))?;
         Ok(())
     }
 

@@ -464,12 +464,63 @@ impl EpubReadingState {
         if chapters == 0 {
             return false;
         }
-        let pct = percent.min(100) as usize;
-        let mut target = (pct * chapters) / 100;
-        if target >= chapters {
-            target = chapters - 1;
+
+        // Prefer page-aware positioning when we have exact chapter counts.
+        // Unknown chapters are treated as one unit so the control remains
+        // responsive without full-book repagination in the hot path.
+        let mut weighted: Vec<(usize, usize)> = Vec::new();
+        for chapter_idx in 0..chapters {
+            if self.non_renderable_chapters.contains(&chapter_idx) {
+                continue;
+            }
+            let weight = if self.chapter_page_counts_exact.contains(&chapter_idx) {
+                self.chapter_page_counts
+                    .get(&chapter_idx)
+                    .copied()
+                    .unwrap_or(1)
+                    .max(1)
+            } else {
+                1
+            };
+            weighted.push((chapter_idx, weight));
         }
-        self.jump_to_chapter(target)
+        if weighted.is_empty() {
+            return false;
+        }
+
+        let total_units: usize = weighted.iter().map(|(_, w)| *w).sum::<usize>().max(1);
+        let target_units = ((percent.min(100) as usize) * total_units) / 100;
+        let mut remaining = target_units.min(total_units.saturating_sub(1));
+
+        let mut target_chapter = weighted[0].0;
+        let mut target_chapter_units = weighted[0].1.max(1);
+        for (chapter_idx, units) in weighted.iter().copied() {
+            if remaining < units {
+                target_chapter = chapter_idx;
+                target_chapter_units = units.max(1);
+                break;
+            }
+            remaining = remaining.saturating_sub(units);
+            target_chapter = chapter_idx;
+            target_chapter_units = units.max(1);
+        }
+
+        // If this chapter has exact page counts, jump within the chapter too.
+        if self.chapter_page_counts_exact.contains(&target_chapter) {
+            let page_total = self
+                .chapter_page_counts
+                .get(&target_chapter)
+                .copied()
+                .unwrap_or(1)
+                .max(1);
+            let mut page_idx = (remaining * page_total) / target_chapter_units;
+            if page_idx >= page_total {
+                page_idx = page_total - 1;
+            }
+            return self.restore_position(target_chapter, page_idx);
+        }
+
+        self.jump_to_chapter(target_chapter)
     }
 
     pub(super) fn restore_position(&mut self, chapter_idx: usize, page_idx: usize) -> bool {

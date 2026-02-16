@@ -142,7 +142,7 @@ flash:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
@@ -150,7 +150,7 @@ flash-monitor:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Clean flash (full rebuild with sdkconfig regeneration)
 flash-clean:
@@ -159,7 +159,7 @@ flash-clean:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+    cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Just monitor serial output
 monitor:

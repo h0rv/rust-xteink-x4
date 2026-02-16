@@ -8,13 +8,20 @@ const ADC_RANGES_1: [i32; 5] = [3800, 3100, 2090, 750, i32::MIN];
 const ADC_RANGES_2: [i32; 3] = [3800, 1120, i32::MIN];
 const ADC_WIDTH_BIT_12: u32 = 3;
 const ADC_ATTEN_DB_11: u32 = 3;
+// NOTE: GPIO3 is wired to the power button on X4. Using ADC1 channel 3 on this
+// board conflicts with digital button reads and can cause false "power held"
+// detection. Keep battery ADC disabled unless a non-conflicting channel is
+// confirmed for this hardware revision.
+const BATTERY_ADC_CHANNEL: Option<sys::adc_channel_t> = None;
 
 pub fn init_adc() {
     unsafe {
         sys::adc1_config_width(ADC_WIDTH_BIT_12);
         sys::adc1_config_channel_atten(sys::adc_channel_t_ADC_CHANNEL_1, ADC_ATTEN_DB_11);
         sys::adc1_config_channel_atten(sys::adc_channel_t_ADC_CHANNEL_2, ADC_ATTEN_DB_11);
-        sys::adc1_config_channel_atten(sys::adc_channel_t_ADC_CHANNEL_3, ADC_ATTEN_DB_11);
+        if let Some(channel) = BATTERY_ADC_CHANNEL {
+            sys::adc1_config_channel_atten(channel, ADC_ATTEN_DB_11);
+        }
     }
 }
 
@@ -22,8 +29,8 @@ pub fn read_adc(channel: sys::adc_channel_t) -> i32 {
     unsafe { sys::adc1_get_raw(channel) as i32 }
 }
 
-pub fn read_battery_raw() -> i32 {
-    read_adc(sys::adc_channel_t_ADC_CHANNEL_3)
+pub fn read_battery_raw() -> Option<i32> {
+    BATTERY_ADC_CHANNEL.map(read_adc)
 }
 
 fn get_button_from_adc(adc_value: i32, ranges: &[i32], num_buttons: usize) -> i32 {

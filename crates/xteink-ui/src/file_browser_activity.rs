@@ -15,11 +15,11 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "std")]
 use std::fs::File;
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 use std::thread;
 
 #[cfg(feature = "std")]
@@ -70,19 +70,9 @@ pub(super) use crate::ui::theme::layout::EPUB_FOOTER_TOP_GAP;
 #[derive(Debug, Clone)]
 enum FileBrowserTask {
     LoadCurrentDirectory,
-    OpenPath {
-        path: String,
-    },
-    OpenTextFile {
-        path: String,
-    },
-    OpenEpubFile {
-        path: String,
-    },
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    FinalizeEpubOpen,
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    RestoreEpubPosition,
+    OpenPath { path: String },
+    OpenTextFile { path: String },
+    OpenEpubFile { path: String },
 }
 
 enum BrowserMode {
@@ -129,7 +119,7 @@ trait ReadSeek: Read + Seek + Send {}
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 struct PendingEpubOpen {
     receiver: Receiver<Result<EpubReadingState, String>>,
 }
@@ -282,12 +272,12 @@ pub struct FileBrowserActivity {
     active_epub_path: Option<String>,
     pending_task: Option<FileBrowserTask>,
     return_to_previous_on_back: bool,
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[cfg(feature = "std")]
     epub_open_pending: Option<PendingEpubOpen>,
+    #[cfg(feature = "std")]
+    epub_open_started_tick: Option<u32>,
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     epub_navigation_pending: Option<PendingEpubNavigation>,
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    epub_open_staged: Option<Arc<Mutex<EpubReadingState>>>,
 }
 
 impl FileBrowserActivity {
@@ -323,20 +313,21 @@ impl FileBrowserActivity {
         {
             self.persist_active_epub_position();
         }
-        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        #[cfg(feature = "std")]
         {
             self.epub_open_pending = None;
-            self.epub_navigation_pending = None;
-        }
-        #[cfg(all(feature = "std", target_os = "espidf"))]
-        {
-            self.epub_open_staged = None;
+            self.epub_open_started_tick = None;
+            #[cfg(not(target_os = "espidf"))]
+            {
+                self.epub_navigation_pending = None;
+            }
         }
         self.mode = BrowserMode::Browsing;
         #[cfg(feature = "std")]
         {
             self.epub_overlay = None;
             self.active_epub_path = None;
+            self.epub_open_started_tick = None;
         }
         if self.return_to_previous_on_back {
             self.return_to_previous_on_back = false;
@@ -542,6 +533,8 @@ impl FileBrowserActivity {
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_NAV_WORKER_STACK_BYTES: usize = 512 * 1024;
+    #[cfg(feature = "std")]
+    const EPUB_OPEN_TIMEOUT_TICKS: u32 = 900; // ~45s at 50ms loop delay
 
     pub fn new() -> Self {
         Self {
@@ -558,12 +551,12 @@ impl FileBrowserActivity {
             active_epub_path: None,
             pending_task: None,
             return_to_previous_on_back: false,
-            #[cfg(all(feature = "std", not(target_os = "espidf")))]
+            #[cfg(feature = "std")]
             epub_open_pending: None,
+            #[cfg(feature = "std")]
+            epub_open_started_tick: None,
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
             epub_navigation_pending: None,
-            #[cfg(all(feature = "std", target_os = "espidf"))]
-            epub_open_staged: None,
         }
     }
 
@@ -670,13 +663,13 @@ impl FileBrowserActivity {
     #[inline(never)]
     pub fn process_pending_task(&mut self, fs: &mut dyn FileSystem) -> bool {
         self.ui_tick = self.ui_tick.saturating_add(1);
-        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        #[cfg(feature = "std")]
         let mut updated = self.poll_epub_open_result();
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             updated |= self.poll_epub_navigation_result();
         }
-        #[cfg(any(not(feature = "std"), target_os = "espidf"))]
+        #[cfg(not(feature = "std"))]
         let mut updated = false;
 
         let Some(task) = self.pending_task.take() else {
@@ -688,10 +681,6 @@ impl FileBrowserActivity {
             FileBrowserTask::OpenPath { path } => self.process_open_path_task(fs, &path),
             FileBrowserTask::OpenTextFile { path } => self.process_open_text_file_task(fs, &path),
             FileBrowserTask::OpenEpubFile { path } => self.process_open_epub_file_task(fs, &path),
-            #[cfg(all(feature = "std", target_os = "espidf"))]
-            FileBrowserTask::FinalizeEpubOpen => self.process_finalize_epub_open_task(),
-            #[cfg(all(feature = "std", target_os = "espidf"))]
-            FileBrowserTask::RestoreEpubPosition => self.process_restore_epub_position_task(),
         };
         updated |= task_updated;
         updated
@@ -968,7 +957,16 @@ impl FileBrowserActivity {
                 }
             }
             #[cfg(feature = "std")]
-            BrowserMode::OpeningEpub => ActivityResult::Consumed,
+            BrowserMode::OpeningEpub => {
+                if matches!(event, InputEvent::Press(Button::Back)) {
+                    self.epub_open_pending = None;
+                    self.epub_open_started_tick = None;
+                    self.mode = BrowserMode::Browsing;
+                    self.browser
+                        .set_status_message("Canceled EPUB open".to_string());
+                }
+                ActivityResult::Consumed
+            }
             BrowserMode::Browsing => ActivityResult::Ignored,
         }
     }
@@ -981,15 +979,16 @@ impl Activity for FileBrowserActivity {
         {
             self.epub_overlay = None;
             self.active_epub_path = None;
+            self.epub_open_started_tick = None;
         }
-        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        #[cfg(feature = "std")]
         {
             self.epub_open_pending = None;
-            self.epub_navigation_pending = None;
-        }
-        #[cfg(all(feature = "std", target_os = "espidf"))]
-        {
-            self.epub_open_staged = None;
+            self.epub_open_started_tick = None;
+            #[cfg(not(target_os = "espidf"))]
+            {
+                self.epub_navigation_pending = None;
+            }
         }
         if self.pending_task.is_none() {
             self.queue_load_current_directory();
@@ -1009,14 +1008,13 @@ impl Activity for FileBrowserActivity {
         }
         self.pending_task = None;
         self.return_to_previous_on_back = false;
-        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        #[cfg(feature = "std")]
         {
             self.epub_open_pending = None;
-            self.epub_navigation_pending = None;
-        }
-        #[cfg(all(feature = "std", target_os = "espidf"))]
-        {
-            self.epub_open_staged = None;
+            #[cfg(not(target_os = "espidf"))]
+            {
+                self.epub_navigation_pending = None;
+            }
         }
     }
 

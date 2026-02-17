@@ -18,6 +18,7 @@ xteink-ui = { path = "../xteink-ui", features = ["std"] }
 embedded-hal = "1.0.0"
 embedded-graphics = "0.8.0"
 crc32fast = "1.4.2"
+embedded-svc = "0.28"
 
 [build-dependencies]
 embuild = "0.33"

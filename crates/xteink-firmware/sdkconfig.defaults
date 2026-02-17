@@ -1,7 +1,6 @@
-# Rust often needs a bit of an extra main task stack size compared to C (the default is 3K)
-# ESP32-C3 has ~191KB total RAM. EPUB open/first-page rendering now runs on the
-# main task to avoid pthread stack overflows, so keep extra headroom here.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=163840
+# Keep main task stack high enough for EPUB open + render on ESP32-C3.
+# Values that are too low cause stack protection faults in EPUB tasks.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=98304
 
 # Temporary diagnostic: disable watchdogs to unblock startup reset loop
 # while we isolate the long blocking path in display init/update.

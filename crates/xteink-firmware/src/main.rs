@@ -366,9 +366,9 @@ fn main() {
     configure_pthread_defaults();
     log_heap("startup");
 
-    // Stack size verification (runtime log)
-    // std-enabled UI task handling needs additional headroom on ESP32-C3.
-    const REQUIRED_STACK_SIZE: u32 = 120 * 1024; // 120KB minimum for EPUB open/render on main task
+    // Stack size verification (runtime log).
+    // Keep this reasonably high, but avoid consuming most heap at boot.
+    const REQUIRED_STACK_SIZE: u32 = 64 * 1024;
     let configured_stack = esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE;
     if configured_stack < REQUIRED_STACK_SIZE {
         log::warn!(

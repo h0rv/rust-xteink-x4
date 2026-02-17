@@ -192,25 +192,27 @@ impl WifiManager {
     }
 
     fn start_access_point(&mut self) -> Result<(), String> {
-        let ssid = self.settings.ap_ssid.trim();
+        let ssid = self.settings.ap_ssid.trim().to_string();
         if ssid.is_empty() {
             return Err(String::from("AP SSID is empty"));
         }
 
-        let ssid_h: heapless::String<32> = ssid
+        let ssid_h = ssid
+            .as_str()
             .try_into()
             .map_err(|_| String::from("AP SSID too long (max 32)"))?;
 
         let mut password_hint = String::from("Open network");
         let mut auth_method = AuthMethod::None;
-        let mut password_h: heapless::String<64> = heapless::String::new();
-        let password = self.settings.ap_password.trim();
+        let mut password_h = Default::default();
+        let password = self.settings.ap_password.trim().to_string();
         if !password.is_empty() {
             if password.len() < 8 {
                 return Err(String::from("AP password must be 8+ chars or empty"));
             }
             auth_method = AuthMethod::WPA2Personal;
             password_h = password
+                .as_str()
                 .try_into()
                 .map_err(|_| String::from("AP password too long (max 64)"))?;
             password_hint = format!("Password: {}", password);
@@ -245,7 +247,7 @@ impl WifiManager {
         self.network_active = true;
         self.transfer_info = WifiTransferInfo {
             mode: String::from("Hotspot"),
-            ssid: ssid.to_string(),
+            ssid,
             password_hint,
             url: format!("http://{}/", ip_str),
             message: String::from("Connect your phone/PC to this hotspot"),
@@ -254,22 +256,24 @@ impl WifiManager {
     }
 
     fn start_station(&mut self) -> Result<(), String> {
-        let ssid = self.settings.sta_ssid.trim();
+        let ssid = self.settings.sta_ssid.trim().to_string();
         if ssid.is_empty() {
             return Err(String::from("STA SSID is empty"));
         }
 
-        let ssid_h: heapless::String<32> = ssid
+        let ssid_h = ssid
+            .as_str()
             .try_into()
             .map_err(|_| String::from("STA SSID too long (max 32)"))?;
 
-        let password = self.settings.sta_password.trim();
-        let (auth_method, password_h): (AuthMethod, heapless::String<64>) = if password.is_empty() {
-            (AuthMethod::None, heapless::String::new())
+        let password = self.settings.sta_password.trim().to_string();
+        let (auth_method, password_h) = if password.is_empty() {
+            (AuthMethod::None, Default::default())
         } else {
             (
                 AuthMethod::WPA2Personal,
                 password
+                    .as_str()
                     .try_into()
                     .map_err(|_| String::from("STA password too long (max 64)"))?,
             )
@@ -304,7 +308,7 @@ impl WifiManager {
         self.network_active = true;
         self.transfer_info = WifiTransferInfo {
             mode: String::from("Wi-Fi"),
-            ssid: ssid.to_string(),
+            ssid,
             password_hint: String::new(),
             url: format!("http://{}/", ip_str),
             message: String::from("Connected to network"),

@@ -861,6 +861,7 @@ impl LibraryActivity {
         threshold.clamp(78, 178) as u8
     }
 
+    #[allow(dead_code)]
     #[cfg(all(feature = "std", target_os = "espidf"))]
     fn decode_jpeg_thumbnail(
         _data: &[u8],
@@ -870,6 +871,7 @@ impl LibraryActivity {
         None
     }
 
+    #[allow(dead_code)]
     #[cfg(not(feature = "std"))]
     fn decode_jpeg_thumbnail(
         _data: &[u8],

@@ -477,6 +477,73 @@ impl App {
     }
 
     #[cfg(feature = "std")]
+    fn cover_cache_root() -> &'static str {
+        if cfg!(target_os = "espidf") {
+            "/sd/.xteink/covers"
+        } else {
+            "target/.xteink-covers"
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn cover_cache_key(path: &str, size: u64) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut state = FNV_OFFSET;
+        for b in path.as_bytes() {
+            state ^= *b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
+        for b in size.to_le_bytes() {
+            state ^= b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
+        state
+    }
+
+    #[cfg(feature = "std")]
+    fn cover_cache_path(path: &str, size: u64) -> String {
+        format!(
+            "{}/{:016x}.compact",
+            Self::cover_cache_root(),
+            Self::cover_cache_key(path, size)
+        )
+    }
+
+    #[cfg(feature = "std")]
+    fn book_path_aliases(path: &str) -> [String; 3] {
+        let trimmed = path.trim();
+        let without_sd = trimmed.strip_prefix("/sd").unwrap_or(trimmed);
+        let with_sd = if trimmed.starts_with("/sd/") {
+            trimmed.to_string()
+        } else if trimmed.starts_with('/') {
+            format!("/sd{}", trimmed)
+        } else {
+            format!("/sd/{}", trimmed)
+        };
+        [trimmed.to_string(), without_sd.to_string(), with_sd]
+    }
+
+    #[cfg(feature = "std")]
+    fn load_compact_cover_from_artifact(path: &str) -> Option<String> {
+        for alias in Self::book_path_aliases(path) {
+            let Ok(meta) = std::fs::metadata(&alias) else {
+                continue;
+            };
+            let size = meta.len();
+            let cache_path = Self::cover_cache_path(&alias, size);
+            let Ok(encoded) = std::fs::read_to_string(cache_path) else {
+                continue;
+            };
+            let trimmed = encoded.trim().to_string();
+            if trimmed.len() <= Self::MAX_COMPACT_COVER_CHARS {
+                return Some(trimmed);
+            }
+        }
+        None
+    }
+
+    #[cfg(feature = "std")]
     fn escape_cache_field(input: &str) -> String {
         let mut out = String::with_capacity(input.len());
         for ch in input.chars() {
@@ -557,12 +624,18 @@ impl App {
                 }
             });
             let mut book = BookInfo::new(title, author, path, progress, last_read);
+            let mut cover_loaded = false;
             if let Some(cover_raw) = parts.next() {
                 if cover_raw.len() <= Self::MAX_COMPACT_COVER_CHARS {
                     let cover = Self::unescape_cache_field(cover_raw);
                     if cover.len() <= Self::MAX_COMPACT_COVER_CHARS {
-                        let _ = book.set_cover_thumbnail_from_compact(&cover);
+                        cover_loaded = book.set_cover_thumbnail_from_compact(&cover);
                     }
+                }
+            }
+            if !cover_loaded {
+                if let Some(cover) = Self::load_compact_cover_from_artifact(&book.path) {
+                    let _ = book.set_cover_thumbnail_from_compact(&cover);
                 }
             }
             books.push(book);
@@ -607,12 +680,18 @@ impl App {
                 }
             });
             let mut book = BookInfo::new(title, author, path, progress, last_read);
+            let mut cover_loaded = false;
             if let Some(cover_raw) = parts.next() {
                 if cover_raw.len() <= Self::MAX_COMPACT_COVER_CHARS {
                     let cover = Self::unescape_cache_field(cover_raw);
                     if cover.len() <= Self::MAX_COMPACT_COVER_CHARS {
-                        let _ = book.set_cover_thumbnail_from_compact(&cover);
+                        cover_loaded = book.set_cover_thumbnail_from_compact(&cover);
                     }
+                }
+            }
+            if !cover_loaded {
+                if let Some(cover) = Self::load_compact_cover_from_artifact(&book.path) {
+                    let _ = book.set_cover_thumbnail_from_compact(&cover);
                 }
             }
             books.push(book);
@@ -832,10 +911,25 @@ impl App {
 
     #[cfg(feature = "std")]
     fn find_cover_thumbnail_compact_for_path(&self, path: &str) -> Option<String> {
+        fn aliases(path: &str) -> [String; 3] {
+            let trimmed = path.trim();
+            let without_sd = trimmed.strip_prefix("/sd").unwrap_or(trimmed);
+            let with_sd = if trimmed.starts_with("/sd/") {
+                trimmed.to_string()
+            } else if trimmed.starts_with('/') {
+                format!("/sd{}", trimmed)
+            } else {
+                format!("/sd/{}", trimmed)
+            };
+            [trimmed.to_string(), without_sd.to_string(), with_sd]
+        }
+
+        let candidates = aliases(path);
+        let matches_path = |book_path: &str| candidates.iter().any(|c| c == book_path);
         if let Some(books) = self.library_cache.as_ref() {
             if let Some(cover) = books
                 .iter()
-                .find(|book| book.path == path)
+                .find(|book| matches_path(&book.path))
                 .and_then(|book| book.cover_thumbnail_compact())
             {
                 return Some(cover);
@@ -845,7 +939,7 @@ impl App {
         Self::load_latest_library_snapshot(&self.library_root).and_then(|books| {
             books
                 .iter()
-                .find(|book| book.path == path)
+                .find(|book| matches_path(&book.path))
                 .and_then(|book| book.cover_thumbnail_compact())
         })
     }

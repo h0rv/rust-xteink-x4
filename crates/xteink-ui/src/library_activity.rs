@@ -733,10 +733,11 @@ impl LibraryActivity {
         max_len: usize,
     ) -> Option<(String, Vec<u8>)> {
         let resolved = Self::resolve_epub_relative_path(base_file_path, href);
-        let mut candidates = Vec::with_capacity(3);
-        candidates.push(resolved.clone());
-        candidates.push(href.to_string());
-        candidates.push(resolved.trim_start_matches('/').to_string());
+        let candidates = vec![
+            resolved.clone(),
+            href.to_string(),
+            resolved.trim_start_matches('/').to_string(),
+        ];
 
         let mut output = Vec::new();
         for candidate in candidates {
@@ -1569,8 +1570,8 @@ impl LibraryActivity {
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)?;
 
-            let icon_w = cover_width.saturating_sub(12).min(20).max(12);
-            let icon_h = cover_height.saturating_sub(12).min(24).max(14);
+            let icon_w = cover_width.saturating_sub(12).clamp(12, 20);
+            let icon_h = cover_height.saturating_sub(12).clamp(14, 24);
             let icon_x = cover_x + ((cover_width as i32 - icon_w as i32).max(0) / 2);
             let icon_y = cover_y + ((cover_height as i32 - icon_h as i32).max(0) / 2);
             Rectangle::new(Point::new(icon_x, icon_y), Size::new(icon_w, icon_h))

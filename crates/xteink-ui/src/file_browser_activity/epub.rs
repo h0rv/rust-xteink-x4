@@ -146,6 +146,8 @@ impl EpubReadingState {
         #[cfg(not(feature = "fontdue"))]
         let eg_renderer = Self::create_renderer();
         let mut state = Self {
+            #[cfg(target_os = "espidf")]
+            source_path: None,
             book,
             engine,
             chapter_events_opts,
@@ -206,6 +208,8 @@ impl EpubReadingState {
         #[cfg(not(feature = "fontdue"))]
         let eg_renderer = Self::create_renderer();
         let mut state = Self {
+            #[cfg(target_os = "espidf")]
+            source_path: Some(path.to_string()),
             book,
             engine,
             chapter_events_opts,
@@ -251,8 +255,16 @@ impl EpubReadingState {
         Ok(())
     }
 
+    #[cfg(not(target_os = "espidf"))]
+    pub(super) fn ensure_initial_page_loaded(&mut self) -> Result<(), String> {
+        if self.current_page.is_none() {
+            self.load_chapter_forward(0)?;
+        }
+        Ok(())
+    }
+
     fn load_chapter_exact(&mut self, chapter_idx: usize) -> Result<(), String> {
-        log::info!("[EPUB] load_chapter_exact idx={}", chapter_idx);
+        log::debug!("[EPUB] load_chapter_exact idx={}", chapter_idx);
         self.chapter_idx = chapter_idx;
         self.page_idx = 0;
         self.current_page = None;
@@ -1287,8 +1299,23 @@ impl EpubReadingState {
     fn initialize_cover_image_cache(&mut self) {
         #[cfg(target_os = "espidf")]
         {
-            // Keep EPUB open path deterministic on constrained heaps.
-            // Cover-page image rendering falls back to placeholder on device.
+            // Keep EPUB open deterministic: only read lightweight cover refs and
+            // reuse a precomputed compact artifact from library scan cache.
+            if let Ok(Some(cover_ref)) = self.book.cover_image_ref() {
+                self.cover_image_sources
+                    .insert(Self::normalize_image_src_key(&cover_ref.href));
+                self.cover_image_sources
+                    .insert(Self::normalize_image_src_key(&cover_ref.zip_path));
+                let file_name = basename(&cover_ref.href);
+                if !file_name.is_empty() {
+                    self.cover_image_sources
+                        .insert(Self::normalize_image_src_key(file_name));
+                }
+            }
+            self.cover_image_bitmap = self
+                .source_path
+                .as_deref()
+                .and_then(Self::load_compact_cover_bitmap_for_book_path);
             return;
         }
         #[cfg(not(target_os = "espidf"))]
@@ -1322,6 +1349,120 @@ impl EpubReadingState {
                 }
             }
         }
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn cover_cache_root() -> &'static str {
+        "/sd/.xteink/covers"
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn cover_cache_key(path: &str, size: u64) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut state = FNV_OFFSET;
+        for b in path.as_bytes() {
+            state ^= *b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
+        for b in size.to_le_bytes() {
+            state ^= b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
+        state
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn cover_cache_path(path: &str, size: u64) -> String {
+        format!(
+            "{}/{:016x}.compact",
+            Self::cover_cache_root(),
+            Self::cover_cache_key(path, size)
+        )
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn book_path_aliases(path: &str) -> [String; 3] {
+        let trimmed = path.trim();
+        let without_sd = trimmed.strip_prefix("/sd").unwrap_or(trimmed);
+        let with_sd = if trimmed.starts_with("/sd/") {
+            trimmed.to_string()
+        } else if trimmed.starts_with('/') {
+            format!("/sd{}", trimmed)
+        } else {
+            format!("/sd/{}", trimmed)
+        };
+        [trimmed.to_string(), without_sd.to_string(), with_sd]
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn decode_compact_cover_bitmap(encoded: &str) -> Option<InlineImageBitmap> {
+        let (dims, hex) = encoded.trim().split_once(':')?;
+        let (w, h) = dims.split_once('x')?;
+        let width = w.parse::<u32>().ok()?;
+        let height = h.parse::<u32>().ok()?;
+        if width == 0
+            || height == 0
+            || width > crate::DISPLAY_WIDTH
+            || height > crate::DISPLAY_HEIGHT
+        {
+            return None;
+        }
+        let pixel_count = (width as usize).checked_mul(height as usize)?;
+        let packed_len = pixel_count.checked_add(7)? / 8;
+        if hex.len() != packed_len.checked_mul(2)? {
+            return None;
+        }
+        let mut packed = vec![0u8; packed_len];
+        for (idx, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+            let hi = match chunk[0] {
+                b'0'..=b'9' => chunk[0] - b'0',
+                b'a'..=b'f' => chunk[0] - b'a' + 10,
+                b'A'..=b'F' => chunk[0] - b'A' + 10,
+                _ => return None,
+            };
+            let lo = match chunk[1] {
+                b'0'..=b'9' => chunk[1] - b'0',
+                b'a'..=b'f' => chunk[1] - b'a' + 10,
+                b'A'..=b'F' => chunk[1] - b'A' + 10,
+                _ => return None,
+            };
+            packed[idx] = (hi << 4) | lo;
+        }
+        let mut pixels = vec![255u8; pixel_count];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = (y * width + x) as usize;
+                let byte = packed[idx / 8];
+                let bit = 7 - (idx % 8);
+                let is_black = (byte & (1 << bit)) != 0;
+                pixels[idx] = if is_black { 0 } else { 255 };
+            }
+        }
+        Some(InlineImageBitmap {
+            width,
+            height,
+            pixels,
+            threshold: 128,
+        })
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn load_compact_cover_bitmap_for_book_path(path: &str) -> Option<InlineImageBitmap> {
+        let file_size = std::fs::metadata(path).ok()?.len();
+        for candidate in Self::book_path_aliases(path) {
+            if candidate.is_empty() {
+                continue;
+            }
+            let cache_path = Self::cover_cache_path(&candidate, file_size);
+            let Ok(encoded) = std::fs::read_to_string(cache_path) else {
+                continue;
+            };
+            if let Some(bitmap) = Self::decode_compact_cover_bitmap(&encoded) {
+                return Some(bitmap);
+            }
+        }
+        None
     }
 
     fn resolve_cover_image_bitmap_for_src(&self, src: &str) -> Option<&InlineImageBitmap> {
@@ -1666,6 +1807,9 @@ impl EpubReadingState {
                 .with_cache(&self.render_cache);
             #[cfg(feature = "fontdue")]
             let config = config.with_text_measurer(Arc::new(self.layout_text_measurer.clone()));
+            #[cfg(target_os = "espidf")]
+            let mut session = Box::new(self.engine.begin(chapter_idx, config));
+            #[cfg(not(target_os = "espidf"))]
             let mut session = self.engine.begin(chapter_idx, config);
             let mut layout_error: Option<String> = None;
 
@@ -1807,6 +1951,9 @@ impl EpubReadingState {
         {
             config = config.with_text_measurer(Arc::new(self.layout_text_measurer.clone()));
         }
+        #[cfg(target_os = "espidf")]
+        let mut session = Box::new(self.engine.begin(chapter_idx, config));
+        #[cfg(not(target_os = "espidf"))]
         let mut session = self.engine.begin(chapter_idx, config);
         let mut layout_error: Option<String> = None;
         self.book
@@ -2219,26 +2366,11 @@ impl FileBrowserActivity {
                 Ok(EpubOpenSource::HostPath(host_path)) => {
                     match EpubReadingState::from_sd_path_light(&host_path, self.reader_settings) {
                         Ok(state) => {
-                            // Allocate the renderer handle before chapter pagination work.
-                            // On constrained heaps this avoids a late large Arc allocation
-                            // failing after open/render prep has fragmented free blocks.
+                            // Allocate renderer first; defer first-page pagination to the next
+                            // app tick to keep open-task stack usage minimal on ESP.
                             let renderer = Arc::new(Mutex::new(state));
-                            let initial_result = match renderer.lock() {
-                                Ok(mut guard) => guard.ensure_initial_page_loaded(),
-                                Err(poisoned) => {
-                                    let mut guard = poisoned.into_inner();
-                                    guard.ensure_initial_page_loaded()
-                                }
-                            };
-                            if let Err(err) = initial_result {
-                                self.mode = BrowserMode::Browsing;
-                                self.browser
-                                    .set_status_message(format!("Unable to open EPUB: {}", err));
-                                self.active_epub_path = None;
-                                return true;
-                            }
-                            self.restore_active_epub_position(&renderer);
                             self.invalidate_browser_tasks();
+                            self.pending_epub_initial_load = true;
                             self.mode = BrowserMode::ReadingEpub { renderer };
                         }
                         Err(error) => {
@@ -2270,6 +2402,34 @@ impl FileBrowserActivity {
             self.browser
                 .set_status_message("Unsupported file type: .epub".to_string());
         }
+        true
+    }
+
+    #[cfg(feature = "std")]
+    pub(super) fn process_pending_epub_initial_load(&mut self) -> bool {
+        if !self.pending_epub_initial_load {
+            return false;
+        }
+        self.pending_epub_initial_load = false;
+        let renderer = match &self.mode {
+            BrowserMode::ReadingEpub { renderer } => Arc::clone(renderer),
+            _ => return false,
+        };
+        let initial_result = match renderer.lock() {
+            Ok(mut guard) => guard.ensure_initial_page_loaded(),
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.ensure_initial_page_loaded()
+            }
+        };
+        if let Err(err) = initial_result {
+            self.mode = BrowserMode::Browsing;
+            self.browser
+                .set_status_message(format!("Unable to open EPUB: {}", err));
+            self.active_epub_path = None;
+            return true;
+        }
+        self.restore_active_epub_position(&renderer);
         true
     }
 

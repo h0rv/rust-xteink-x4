@@ -420,6 +420,8 @@ type EpubReader = Box<dyn ReadSeek>;
 
 #[cfg(feature = "std")]
 struct EpubReadingState {
+    #[cfg(target_os = "espidf")]
+    source_path: Option<String>,
     book: EpubBook<EpubReader>,
     engine: RenderEngine,
     chapter_events_opts: RenderPrepOptions,
@@ -465,6 +467,8 @@ pub struct FileBrowserActivity {
     pending_task: Option<PendingBrowserTask>,
     browser_task_epoch: u32,
     return_to_previous_on_back: bool,
+    #[cfg(feature = "std")]
+    pending_epub_initial_load: bool,
     #[cfg(feature = "std")]
     epub_open_pending: Option<PendingEpubOpen>,
     #[cfg(feature = "std")]
@@ -935,6 +939,8 @@ impl FileBrowserActivity {
             browser_task_epoch: 1,
             return_to_previous_on_back: false,
             #[cfg(feature = "std")]
+            pending_epub_initial_load: false,
+            #[cfg(feature = "std")]
             epub_open_pending: None,
             #[cfg(feature = "std")]
             epub_open_started_tick: None,
@@ -1064,6 +1070,10 @@ impl FileBrowserActivity {
         self.ui_tick = self.ui_tick.saturating_add(1);
         #[cfg(feature = "std")]
         let mut updated = self.poll_epub_open_result();
+        #[cfg(feature = "std")]
+        {
+            updated |= self.process_pending_epub_initial_load();
+        }
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             updated |= self.poll_epub_navigation_result();
@@ -1236,6 +1246,10 @@ impl FileBrowserActivity {
     fn invalidate_browser_tasks(&mut self) {
         self.browser_task_epoch = self.browser_task_epoch.wrapping_add(1);
         self.pending_task = None;
+        #[cfg(feature = "std")]
+        {
+            self.pending_epub_initial_load = false;
+        }
     }
 
     fn queue_task(&mut self, task: FileBrowserTask) {

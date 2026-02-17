@@ -1521,12 +1521,20 @@ impl FilesTabContent {
         self.file_browser.is_viewing_text()
     }
 
+    pub fn is_reading_image(&self) -> bool {
+        self.file_browser.is_viewing_image()
+    }
+
     pub fn is_reading_epub(&self) -> bool {
         self.file_browser.is_viewing_epub()
     }
 
     pub fn is_reading(&self) -> bool {
-        self.is_reading_text() || self.is_reading_epub()
+        self.is_reading_text() || self.is_reading_image() || self.is_reading_epub()
+    }
+
+    pub fn has_pending_task(&self) -> bool {
+        self.file_browser.has_pending_task()
     }
 
     pub fn epub_position(&self) -> Option<(usize, usize, usize, usize)> {

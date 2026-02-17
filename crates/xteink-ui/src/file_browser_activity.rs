@@ -28,6 +28,8 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
+#[cfg(feature = "std")]
+use image::ImageReader;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use mu_epub::book::{ChapterEventsOptions, OpenConfig};
@@ -72,6 +74,8 @@ enum FileBrowserTask {
     LoadCurrentDirectory,
     OpenPath { path: String },
     OpenTextFile { path: String },
+    OpenImageFile { path: String },
+    OpenAnyFile { path: String },
     OpenEpubFile { path: String },
 }
 
@@ -84,9 +88,174 @@ enum BrowserMode {
         viewer: TextViewer,
     },
     #[cfg(feature = "std")]
+    ViewingImage {
+        title: String,
+        viewer: ImageViewer,
+    },
+    #[cfg(feature = "std")]
     ReadingEpub {
         renderer: Arc<Mutex<EpubReadingState>>,
     },
+}
+
+#[cfg(feature = "std")]
+struct ImageViewer {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    threshold: u8,
+}
+
+#[cfg(feature = "std")]
+impl ImageViewer {
+    const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+    const MAX_DECODED_PIXELS: u64 = 8_000_000;
+
+    fn from_bytes(data: &[u8], max_width: u32, max_height: u32) -> Result<Self, String> {
+        if data.len() > Self::MAX_IMAGE_BYTES {
+            return Err("Image file is too large".to_string());
+        }
+        let cursor = std::io::Cursor::new(data);
+        let reader = ImageReader::new(cursor)
+            .with_guessed_format()
+            .map_err(|e| format!("Unable to detect image format: {}", e))?;
+        let (src_w, src_h) = reader
+            .into_dimensions()
+            .map_err(|e| format!("Unable to read image dimensions: {}", e))?;
+        if src_w == 0 || src_h == 0 {
+            return Err("Image has invalid dimensions".to_string());
+        }
+        if (src_w as u64).saturating_mul(src_h as u64) > Self::MAX_DECODED_PIXELS {
+            return Err("Image dimensions are too large".to_string());
+        }
+        let decoded =
+            image::load_from_memory(data).map_err(|e| format!("Unable to decode image: {}", e))?;
+        let resized = decoded.thumbnail(max_width.max(1), max_height.max(1));
+        let gray = resized.to_luma8();
+        let (width, height) = gray.dimensions();
+        if width == 0 || height == 0 {
+            return Err("Image decode returned empty frame".to_string());
+        }
+        let pixels = gray.into_raw();
+        if pixels.is_empty() {
+            return Err("Image decode returned no pixels".to_string());
+        }
+        let threshold = Self::adaptive_threshold(&pixels);
+        Ok(Self {
+            width,
+            height,
+            pixels,
+            threshold,
+        })
+    }
+
+    #[cfg(target_os = "espidf")]
+    fn from_path(path: &str, max_width: u32, max_height: u32) -> Result<Self, String> {
+        let reader = ImageReader::open(path)
+            .map_err(|e| format!("Unable to open image: {}", e))?
+            .with_guessed_format()
+            .map_err(|e| format!("Unable to detect image format: {}", e))?;
+        let (src_w, src_h) = reader
+            .into_dimensions()
+            .map_err(|e| format!("Unable to read image dimensions: {}", e))?;
+        if src_w == 0 || src_h == 0 {
+            return Err("Image has invalid dimensions".to_string());
+        }
+        if (src_w as u64).saturating_mul(src_h as u64) > Self::MAX_DECODED_PIXELS {
+            return Err("Image dimensions are too large".to_string());
+        }
+        let decoded = ImageReader::open(path)
+            .map_err(|e| format!("Unable to open image: {}", e))?
+            .with_guessed_format()
+            .map_err(|e| format!("Unable to detect image format: {}", e))?
+            .decode()
+            .map_err(|e| format!("Unable to decode image: {}", e))?;
+        let resized = decoded.thumbnail(max_width.max(1), max_height.max(1));
+        let gray = resized.to_luma8();
+        let (width, height) = gray.dimensions();
+        if width == 0 || height == 0 {
+            return Err("Image decode returned empty frame".to_string());
+        }
+        let pixels = gray.into_raw();
+        if pixels.is_empty() {
+            return Err("Image decode returned no pixels".to_string());
+        }
+        let threshold = Self::adaptive_threshold(&pixels);
+        Ok(Self {
+            width,
+            height,
+            pixels,
+            threshold,
+        })
+    }
+
+    fn adaptive_threshold(pixels: &[u8]) -> u8 {
+        if pixels.is_empty() {
+            return 128;
+        }
+        let sum: u64 = pixels.iter().map(|px| *px as u64).sum();
+        let avg = (sum / pixels.len() as u64) as i32;
+        avg.clamp(78, 178) as u8
+    }
+
+    fn render<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        title: &str,
+    ) -> Result<(), D::Error> {
+        let size = display.bounding_box().size;
+        let width = size.width.min(size.height);
+        let height = size.width.max(size.height);
+        let header_h = 24i32;
+        let footer_h = 18i32;
+        let y_top = header_h;
+        let y_bottom = (height as i32 - footer_h).max(y_top + 1);
+        let content_h = (y_bottom - y_top).max(1);
+
+        display.clear(BinaryColor::Off)?;
+        let header_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
+        let footer_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
+        let title = FileBrowserActivity::truncate_to_px(
+            title,
+            width as i32 - 2 * layout::GAP_SM,
+            12,
+        );
+        Text::new(
+            &title,
+            Point::new(layout::GAP_SM, 14),
+            header_style,
+        )
+        .draw(display)?;
+        Rectangle::new(Point::new(0, header_h), Size::new(width, 1))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+
+        let offset_x = ((width as i32 - self.width as i32).max(0)) / 2;
+        let offset_y = y_top + ((content_h - self.height as i32).max(0)) / 2;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = (y * self.width + x) as usize;
+                let luma = self.pixels[idx];
+                let color = if luma < self.threshold {
+                    BinaryColor::On
+                } else {
+                    BinaryColor::Off
+                };
+                Pixel(Point::new(offset_x + x as i32, offset_y + y as i32), color).draw(display)?;
+            }
+        }
+
+        Rectangle::new(Point::new(0, y_bottom), Size::new(width, 1))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+        Text::new(
+            "Back: Close",
+            Point::new(layout::GAP_SM, height as i32 - 4),
+            footer_style,
+        )
+        .draw(display)?;
+        Ok(())
+    }
 }
 
 #[cfg(feature = "std")]
@@ -584,6 +753,18 @@ impl FileBrowserActivity {
         matches!(self.mode, BrowserMode::ReadingText { .. })
     }
 
+    pub fn is_viewing_image(&self) -> bool {
+        #[cfg(feature = "std")]
+        {
+            matches!(self.mode, BrowserMode::ViewingImage { .. })
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            false
+        }
+    }
+
     pub fn is_viewing_epub(&self) -> bool {
         #[cfg(feature = "std")]
         {
@@ -606,6 +787,10 @@ impl FileBrowserActivity {
         {
             false
         }
+    }
+
+    pub(crate) fn has_pending_task(&self) -> bool {
+        self.pending_task.is_some()
     }
 
     #[allow(dead_code)]
@@ -696,6 +881,8 @@ impl FileBrowserActivity {
             FileBrowserTask::LoadCurrentDirectory => self.process_load_current_directory_task(fs),
             FileBrowserTask::OpenPath { path } => self.process_open_path_task(fs, &path),
             FileBrowserTask::OpenTextFile { path } => self.process_open_text_file_task(fs, &path),
+            FileBrowserTask::OpenImageFile { path } => self.process_open_image_file_task(fs, &path),
+            FileBrowserTask::OpenAnyFile { path } => self.process_open_any_file_task(fs, &path),
             FileBrowserTask::OpenEpubFile { path } => self.process_open_epub_file_task(fs, &path),
         };
         updated |= task_updated;
@@ -739,6 +926,94 @@ impl FileBrowserActivity {
         true
     }
 
+    #[cfg(feature = "std")]
+    #[inline(never)]
+    fn process_open_image_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
+        let title = basename(path).to_string();
+        let max_w = crate::DISPLAY_WIDTH as u32;
+        let max_h = (crate::DISPLAY_HEIGHT as u32).saturating_sub(44).max(1);
+
+        #[cfg(target_os = "espidf")]
+        if let Some(host_path) = Self::resolve_host_backed_image_path(path) {
+            match ImageViewer::from_path(&host_path, max_w, max_h) {
+                Ok(viewer) => {
+                    self.mode = BrowserMode::ViewingImage { title, viewer };
+                    return true;
+                }
+                Err(error) => {
+                    self.browser
+                        .set_status_message(format!("Unable to decode image: {}", error));
+                    self.mode = BrowserMode::Browsing;
+                    return true;
+                }
+            }
+        }
+
+        let bytes = match fs.read_file_bytes(path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.browser
+                    .set_status_message(format!("Unable to open image: {}", error));
+                self.mode = BrowserMode::Browsing;
+                return true;
+            }
+        };
+        match ImageViewer::from_bytes(&bytes, max_w, max_h) {
+            Ok(viewer) => {
+                self.mode = BrowserMode::ViewingImage { title, viewer };
+            }
+            Err(error) => {
+                self.browser
+                    .set_status_message(format!("Unable to decode image: {}", error));
+                self.mode = BrowserMode::Browsing;
+            }
+        }
+        true
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[inline(never)]
+    fn process_open_image_file_task(&mut self, _fs: &mut dyn FileSystem, path: &str) -> bool {
+        self.mode = BrowserMode::Browsing;
+        self.browser
+            .set_status_message(format!("Unsupported file type: {}", basename(path)));
+        true
+    }
+
+    #[inline(never)]
+    fn process_open_any_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
+        const PREVIEW_MAX_BYTES: usize = 256 * 1024;
+        let title = basename(path).to_string();
+        let content = match fs.read_file(path) {
+            Ok(text) => text,
+            Err(_) => match fs.read_file_bytes(path) {
+                Ok(bytes) => {
+                    let truncated = if bytes.len() > PREVIEW_MAX_BYTES {
+                        &bytes[..PREVIEW_MAX_BYTES]
+                    } else {
+                        &bytes[..]
+                    };
+                    let mut text = String::from_utf8_lossy(truncated).to_string();
+                    if bytes.len() > PREVIEW_MAX_BYTES {
+                        text.push_str("\n\n[File preview truncated]");
+                    }
+                    text
+                }
+                Err(error) => {
+                    self.browser
+                        .set_status_message(format!("Unable to open file: {}", error));
+                    self.mode = BrowserMode::Browsing;
+                    return true;
+                }
+            },
+        };
+        self.mode = BrowserMode::ReadingText {
+            title,
+            viewer: TextViewer::new(content),
+        };
+        true
+    }
+
     #[cfg(not(feature = "std"))]
     #[inline(never)]
     fn process_open_epub_file_task(&mut self, _fs: &mut dyn FileSystem, path: &str) -> bool {
@@ -760,11 +1035,13 @@ impl FileBrowserActivity {
         self.mode = BrowserMode::Browsing;
         self.return_to_previous_on_back = true;
         let path = path.into();
-        if Self::is_text_file(&path) || Self::is_epub_file(&path) {
+        if Self::is_text_file(&path) || Self::is_epub_file(&path) || Self::is_image_file(&path) {
+            self.mode = BrowserMode::Browsing;
             // Open directly without first loading parent directory, so
             // library-open doesn't flash filesystem browser UI.
             self.queue_open_file(path);
         } else {
+            self.mode = BrowserMode::Browsing;
             self.queue_task(FileBrowserTask::OpenPath { path });
         }
     }
@@ -772,12 +1049,12 @@ impl FileBrowserActivity {
     fn queue_open_file(&mut self, path: String) {
         if Self::is_text_file(&path) {
             self.queue_task(FileBrowserTask::OpenTextFile { path });
+        } else if Self::is_image_file(&path) {
+            self.queue_task(FileBrowserTask::OpenImageFile { path });
         } else if cfg!(feature = "std") && Self::is_epub_file(&path) {
             self.queue_task(FileBrowserTask::OpenEpubFile { path });
         } else {
-            let filename = basename(&path);
-            self.browser
-                .set_status_message(format!("Unsupported file type: {}", filename));
+            self.queue_task(FileBrowserTask::OpenAnyFile { path });
         }
     }
 
@@ -790,6 +1067,14 @@ impl FileBrowserActivity {
         let lower = path.to_lowercase();
         // FAT 8.3 backends can expose EPUB as `.epu`.
         lower.ends_with(".epub") || lower.ends_with(".epu")
+    }
+
+    fn is_image_file(path: &str) -> bool {
+        let lower = path.to_lowercase();
+        lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".png")
+            || lower.ends_with(".bmp")
     }
 
     fn open_path(&mut self, fs: &mut dyn FileSystem, path: &str) {
@@ -848,6 +1133,8 @@ impl FileBrowserActivity {
                     ActivityResult::Ignored
                 }
             }
+            #[cfg(feature = "std")]
+            BrowserMode::ViewingImage { .. } => ActivityResult::Ignored,
             #[cfg(feature = "std")]
             BrowserMode::ReadingEpub { renderer } => {
                 enum EpubInputAction {
@@ -1035,7 +1322,11 @@ impl Activity for FileBrowserActivity {
     }
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
-        if self.is_viewing_text() || self.is_viewing_epub() || self.is_opening_epub() {
+        if self.is_viewing_text()
+            || self.is_viewing_image()
+            || self.is_viewing_epub()
+            || self.is_opening_epub()
+        {
             return self.handle_reader_input(event);
         }
 
@@ -1058,14 +1349,12 @@ impl Activity for FileBrowserActivity {
                 return ActivityResult::Consumed;
             }
 
-            if Self::is_text_file(&path) || Self::is_epub_file(&path) {
+            if Self::is_text_file(&path) || Self::is_epub_file(&path) || Self::is_image_file(&path)
+            {
                 self.queue_open_file(path);
                 return ActivityResult::Consumed;
             }
-
-            let filename = basename(&path);
-            self.browser
-                .set_status_message(format!("Unsupported file type: {}", filename));
+            self.queue_open_file(path);
             return ActivityResult::Consumed;
         }
 
@@ -1080,8 +1369,10 @@ impl Activity for FileBrowserActivity {
         match &self.mode {
             BrowserMode::Browsing => self.browser.render(display),
             #[cfg(feature = "std")]
-            BrowserMode::OpeningEpub => self.browser.render(display),
+            BrowserMode::OpeningEpub => self.render_opening_epub(display),
             BrowserMode::ReadingText { title, viewer } => viewer.render(display, title),
+            #[cfg(feature = "std")]
+            BrowserMode::ViewingImage { title, viewer } => viewer.render(display, title),
             #[cfg(feature = "std")]
             BrowserMode::ReadingEpub { renderer } => {
                 let renderer = match renderer.lock() {
@@ -1109,6 +1400,28 @@ impl Default for FileBrowserActivity {
 }
 
 impl FileBrowserActivity {
+    #[cfg(feature = "std")]
+    fn render_opening_epub<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+    ) -> Result<(), D::Error> {
+        self.browser.render(display)
+    }
+
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    fn resolve_host_backed_image_path(path: &str) -> Option<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        candidates.push(path.to_string());
+        if path.starts_with('/') {
+            candidates.push(format!("/sd{}", path));
+        } else {
+            candidates.push(format!("/sd/{}", path));
+        }
+        candidates
+            .into_iter()
+            .find(|candidate| std::fs::File::open(candidate).is_ok())
+    }
+
     #[cfg(feature = "std")]
     fn should_show_epub_footer(&self) -> bool {
         if self.epub_overlay.is_some() {
@@ -1447,17 +1760,44 @@ impl FileBrowserActivity {
 mod tests {
     use super::*;
     use crate::MockFileSystem;
+    use image::codecs::jpeg::JpegEncoder;
+    use image::codecs::png::PngEncoder;
+    use image::{ColorType, ImageEncoder};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
     use std::time::Instant;
+
+    fn tiny_jpeg() -> Vec<u8> {
+        let rgb = [0u8, 0, 0, 255, 255, 255, 200, 200, 200, 64, 64, 64];
+        let mut out = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut out, 80);
+        encoder
+            .encode(&rgb, 2, 2, image::ExtendedColorType::Rgb8)
+            .expect("jpeg encode should succeed");
+        out
+    }
+
+    fn tiny_png() -> Vec<u8> {
+        let rgba = [
+            0u8, 0, 0, 255, 255, 255, 255, 255, 200, 200, 200, 255, 64, 64, 64, 255,
+        ];
+        let mut out = Vec::new();
+        let encoder = PngEncoder::new(&mut out);
+        encoder
+            .write_image(&rgba, 2, 2, ColorType::Rgba8.into())
+            .expect("png encode should succeed");
+        out
+    }
 
     fn create_fs() -> MockFileSystem {
         let mut fs = MockFileSystem::empty();
         fs.add_directory("/");
         fs.add_directory("/docs");
         fs.add_file("/docs/readme.txt", b"hello");
-        fs.add_file("/docs/image.jpg", b"binary");
+        fs.add_file("/docs/image.jpg", &tiny_jpeg());
+        fs.add_file("/docs/image.png", &tiny_png());
+        fs.add_file("/docs/blob.bin", b"\x00\x01\x02\x03\xFF\xFE");
         fs
     }
 
@@ -1502,13 +1842,33 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_file_shows_clean_message() {
+    fn image_file_opens_image_viewer() {
         let mut activity = FileBrowserActivity::new();
         let mut fs = create_fs();
         activity.on_enter();
         activity.request_open_path("/docs/image.jpg");
         let _ = drain_pending_tasks(&mut activity, &mut fs);
-        assert!(!activity.is_viewing_text());
+        assert!(activity.is_viewing_image());
+    }
+
+    #[test]
+    fn png_file_opens_image_viewer() {
+        let mut activity = FileBrowserActivity::new();
+        let mut fs = create_fs();
+        activity.on_enter();
+        activity.request_open_path("/docs/image.png");
+        let _ = drain_pending_tasks(&mut activity, &mut fs);
+        assert!(activity.is_viewing_image());
+    }
+
+    #[test]
+    fn unknown_file_opens_text_preview() {
+        let mut activity = FileBrowserActivity::new();
+        let mut fs = create_fs();
+        activity.on_enter();
+        activity.request_open_path("/docs/blob.bin");
+        let _ = drain_pending_tasks(&mut activity, &mut fs);
+        assert!(activity.is_viewing_text());
     }
 
     #[test]
@@ -1518,10 +1878,10 @@ mod tests {
         activity.on_enter();
         assert!(activity.process_pending_task(&mut fs));
 
-        // Simulate library-initiated open of unsupported file type.
+        // Simulate library-initiated open of image file.
         activity.request_open_path("/docs/image.jpg");
         assert!(activity.process_pending_task(&mut fs));
-        assert!(!activity.is_viewing_text());
+        assert!(activity.is_viewing_image());
 
         assert_eq!(
             activity.handle_input(InputEvent::Press(Button::Back)),

@@ -24,7 +24,7 @@ log = "0.4"
 
 # TTF font rendering with no_std support - always enabled
 fontdue = { version = "0.9.3", optional = true }
-image = { version = "0.25.9", default-features = false, features = ["jpeg"], optional = true }
+image = { version = "0.25.9", default-features = false, features = ["bmp", "jpeg", "png"], optional = true }
 
 # External EPUB parser crate
 mu_epub = { workspace = true }

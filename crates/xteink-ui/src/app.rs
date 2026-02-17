@@ -165,8 +165,6 @@ impl App {
             if !self.main_activity.library_tab.is_transfer_screen_open() {
                 // Forward the open request to file browser
                 self.main_activity.files_tab.request_open_path(path);
-                // Switch to files tab to show the book
-                self.main_activity.set_tab(crate::main_activity::Tab::Files);
             }
             redraw = true;
         }
@@ -333,8 +331,10 @@ impl App {
 
     /// Run deferred file browser work.
     pub fn process_file_browser_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
-        // Always process file browser tasks when on Files tab
-        if self.main_activity.current_tab() != crate::main_activity::Tab::Files {
+        let on_files_tab = self.main_activity.current_tab() == crate::main_activity::Tab::Files;
+        let needs_background_work = self.main_activity.files_tab.has_pending_task()
+            || self.main_activity.files_tab.is_opening_epub();
+        if !on_files_tab && !needs_background_work {
             return false;
         }
 
@@ -365,8 +365,19 @@ impl App {
         }
         let library_updated = self.process_library_scan(fs);
         let file_browser_updated = self.process_file_browser_tasks(fs);
+        let mut switched_to_reader = false;
+        if self.main_activity.current_tab() != crate::main_activity::Tab::Files
+            && self.main_activity.files_tab.is_reading()
+        {
+            self.main_activity.set_tab(crate::main_activity::Tab::Files);
+            switched_to_reader = true;
+        }
         let library_progress_updated = self.sync_active_book_progress();
-        settings_updated || library_updated || file_browser_updated || library_progress_updated
+        settings_updated
+            || library_updated
+            || file_browser_updated
+            || switched_to_reader
+            || library_progress_updated
     }
 
     #[cfg(feature = "std")]

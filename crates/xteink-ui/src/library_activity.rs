@@ -2234,9 +2234,10 @@ mod tests {
         use mu_epub::zip::StreamingZip;
         use std::io::Cursor;
 
-        let data =
-            include_bytes!("../../../sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub")
-                .to_vec();
+        let data = include_bytes!(
+            "../../../sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub"
+        )
+        .to_vec();
         let mut zip = StreamingZip::new(Cursor::new(data)).expect("zip should open");
         let mut input_scratch = vec![0u8; 4096];
         let mut output_scratch = vec![0u8; 4096];
@@ -2259,7 +2260,10 @@ mod tests {
         let opf_path =
             parse_container_xml(&container_buf[..container_read]).expect("opf path should parse");
 
-        let opf_entry = zip.get_entry(&opf_path).expect("opf entry should exist").clone();
+        let opf_entry = zip
+            .get_entry(&opf_path)
+            .expect("opf entry should exist")
+            .clone();
         let mut opf_buf = Vec::new();
         let opf_read = LibraryActivity::read_zip_entry_with_scratch(
             &mut zip,
@@ -2279,7 +2283,10 @@ mod tests {
             &mut input_scratch,
             &mut output_scratch,
         );
-        assert!(thumb.is_some(), "cover thumbnail should resolve via cover.xhtml");
+        assert!(
+            thumb.is_some(),
+            "cover thumbnail should resolve via cover.xhtml"
+        );
     }
 
     #[test]

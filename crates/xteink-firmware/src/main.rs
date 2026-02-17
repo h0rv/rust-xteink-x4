@@ -541,7 +541,7 @@ fn main() {
     let mut held_button_ticks: u32 = 0;
     let mut next_repeat_tick: u32 = 0;
     const DEBUG_ADC: bool = false;
-    const DEBUG_INPUT: bool = true;
+    const DEBUG_INPUT: bool = false;
     const LOOP_DELAY_MS: u32 = 20;
     const POWER_LONG_PRESS_ITERATIONS: u32 = POWER_LONG_PRESS_MS / LOOP_DELAY_MS;
     const BUTTON_REPEAT_INITIAL_MS: u32 = 220;

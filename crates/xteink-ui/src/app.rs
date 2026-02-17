@@ -381,21 +381,27 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let mut updated = false;
+        let mut ui_progress_changed = false;
         if let Some(cache) = self.library_cache.as_mut() {
             if let Some(book) = cache.iter_mut().find(|book| book.path == path) {
                 let next = progress.min(100);
-                if book.progress_percent != next || book.last_read != Some(now) {
+                if book.progress_percent != next {
                     book.progress_percent = next;
                     book.last_read = Some(now);
-                    updated = true;
+                    ui_progress_changed = true;
+                } else if book.last_read.is_none() {
+                    // Initialize missing metadata without forcing a redraw.
+                    book.last_read = Some(now);
                 }
             }
         }
-        self.main_activity
-            .library_tab
-            .update_book_progress(path, progress.min(100), now);
-        updated
+        if ui_progress_changed {
+            self.main_activity
+                .library_tab
+                .update_book_progress(path, progress.min(100), now);
+        }
+        // Progress bookkeeping should not force display refreshes while reading.
+        false
     }
 
     #[cfg(not(feature = "std"))]

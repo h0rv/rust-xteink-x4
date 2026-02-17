@@ -79,6 +79,11 @@ impl App {
 
     /// Create a new App with MainActivity.
     pub fn new() -> Self {
+        Self::new_with_epub_resume(true)
+    }
+
+    /// Create a new App with optional EPUB auto-resume from last session.
+    pub fn new_with_epub_resume(auto_resume_epub: bool) -> Self {
         let mut app = Self {
             main_activity: MainActivity::new(),
             refresh_counter: 0,
@@ -115,12 +120,18 @@ impl App {
             app.main_activity.library_tab.finish_loading_scan();
         }
         #[cfg(feature = "std")]
-        if let Some(path) =
-            crate::file_browser_activity::FileBrowserActivity::load_last_active_epub_path()
         {
-            app.main_activity.files_tab.request_open_path(path);
-            app.main_activity
-                .switch_to_tab(crate::main_activity::Tab::Files);
+            if auto_resume_epub {
+                if let Some(path) =
+                    crate::file_browser_activity::FileBrowserActivity::load_last_active_epub_path()
+                {
+                    app.main_activity.files_tab.request_open_path(path);
+                    app.main_activity
+                        .switch_to_tab(crate::main_activity::Tab::Files);
+                }
+            } else {
+                crate::file_browser_activity::FileBrowserActivity::clear_last_active_epub_path();
+            }
         }
         app.main_activity.on_enter();
         app
@@ -151,10 +162,12 @@ impl App {
 
         // Check if library wants to open a book
         if let Some(path) = self.main_activity.library_tab.take_open_request() {
-            // Forward the open request to file browser
-            self.main_activity.files_tab.request_open_path(path);
-            // Switch to files tab to show the book
-            self.main_activity.set_tab(crate::main_activity::Tab::Files);
+            if !self.main_activity.library_tab.is_transfer_screen_open() {
+                // Forward the open request to file browser
+                self.main_activity.files_tab.request_open_path(path);
+                // Switch to files tab to show the book
+                self.main_activity.set_tab(crate::main_activity::Tab::Files);
+            }
             redraw = true;
         }
         if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {

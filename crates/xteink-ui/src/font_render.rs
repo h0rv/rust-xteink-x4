@@ -24,7 +24,10 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 /// Maximum number of glyphs to cache
-#[cfg(all(feature = "fontdue", feature = "std"))]
+#[cfg(all(feature = "fontdue", feature = "std", target_os = "espidf"))]
+const GLYPH_CACHE_MAX_SIZE: usize = 24;
+/// Maximum number of glyphs to cache
+#[cfg(all(feature = "fontdue", feature = "std", not(target_os = "espidf")))]
 const GLYPH_CACHE_MAX_SIZE: usize = 256;
 
 /// Cache key using u32 for f32 to support Hash and Eq
@@ -200,6 +203,19 @@ impl FontCache {
             glyph_cache: BTreeMap::new(),
             #[cfg(feature = "std")]
             lru_glyph_cache: GlyphCache::new(),
+            default_font: 0,
+            font_size: 16.0,
+            current_font: None,
+        }
+    }
+
+    /// Create empty font cache with explicit LRU glyph-cache capacity.
+    #[cfg(feature = "std")]
+    pub fn new_with_glyph_cache_capacity(glyph_cache_capacity: usize) -> Self {
+        Self {
+            fonts: BTreeMap::new(),
+            glyph_cache: BTreeMap::new(),
+            lru_glyph_cache: GlyphCache::with_capacity(glyph_cache_capacity),
             default_font: 0,
             font_size: 16.0,
             current_font: None,

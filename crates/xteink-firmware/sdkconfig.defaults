@@ -1,6 +1,6 @@
 # Keep main task stack high enough for EPUB open + render on ESP32-C3.
 # Values that are too low cause stack protection faults in EPUB tasks.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=98304
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=114688
 
 # Temporary diagnostic: disable watchdogs to unblock startup reset loop
 # while we isolate the long blocking path in display init/update.

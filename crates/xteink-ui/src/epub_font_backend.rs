@@ -84,7 +84,7 @@ impl BackendState {
         #[cfg(not(target_os = "espidf"))]
         let mut runtime_cache = FontCache::new();
         #[cfg(target_os = "espidf")]
-        let runtime_cache = FontCache::new();
+        let runtime_cache = FontCache::new_with_glyph_cache_capacity(0);
         #[cfg(not(target_os = "espidf"))]
         {
             let _ = runtime_cache.load_font(FONT_REGULAR, BOOKERLY_REGULAR_TTF);

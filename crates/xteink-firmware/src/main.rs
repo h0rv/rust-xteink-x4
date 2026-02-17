@@ -368,7 +368,7 @@ fn main() {
 
     // Stack size verification (runtime log).
     // Keep this reasonably high, but avoid consuming most heap at boot.
-    const REQUIRED_STACK_SIZE: u32 = 64 * 1024;
+    const REQUIRED_STACK_SIZE: u32 = 112 * 1024;
     let configured_stack = esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE;
     if configured_stack < REQUIRED_STACK_SIZE {
         log::warn!(
@@ -469,7 +469,17 @@ fn main() {
     };
 
     // Initialize app and render initial screen
-    let mut app = App::new();
+    let resume_epub = !matches!(
+        reset_reason,
+        sys::esp_reset_reason_t_ESP_RST_PANIC | sys::esp_reset_reason_t_ESP_RST_SW
+    );
+    if !resume_epub {
+        log::warn!(
+            "Disabling EPUB auto-resume after reset reason {:?} to prevent reboot loops",
+            reset_reason
+        );
+    }
+    let mut app = App::new_with_epub_resume(resume_epub);
     let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
     let mut device_status = DeviceStatus::default();
     if let Some(initial_battery_raw) = read_battery_raw() {
@@ -624,7 +634,7 @@ fn main() {
                 input_debug_ticks = 0;
                 let adc1_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_1);
                 let adc2_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_2);
-                log::info!(
+                log::debug!(
                     "INPUT: power={} adc1={} adc2={} decoded={:?} held={:?}",
                     power_pressed,
                     adc1_value,

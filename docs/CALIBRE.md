@@ -1,96 +1,65 @@
-# Calibre Integration Reuse Plan
+# Calibre + Desktop Transfer Guide
 
-## Why this doc
+This firmware exposes an HTTP transfer server while File Transfer mode is active.
 
-This repository already has the beginnings of wireless upload support (`crates/xteink-firmware/src/web_upload.rs`) and we want a clear path to Calibre-compatible transfers without overbuilding.
+## Discovery
 
-## Integration paths (highest value first)
+When transfer mode starts:
+- HTTP server: `http://<device-ip>/` (port 80)
+- mDNS hostname: `http://xteink-x4.local/`
+- mDNS services:
+1. `_http._tcp` on port `80`
+2. `_xteink._tcp` on port `80`
 
-1. Calibre Device Plugin compatibility (desktop "Send to device")
-- Target UX: user opens `File Transfer` mode on device, Calibre desktop discovers device or connects by IP, sends EPUBs wirelessly.
-- Device side needs a stable HTTP upload contract and simple status endpoint.
-- This gives the best user experience for existing Calibre users.
+When transfer mode stops, HTTP and mDNS advertising are both stopped.
 
-2. Calibre Content Server / OPDS pull (device downloads)
-- Device can browse/download from Calibre OPDS feed over Wi-Fi.
-- Useful as fallback when plugin compatibility is incomplete.
-- Requires OPDS/browser work in UI + authenticated HTTP client path.
+## Calibre Desktop Usage
 
-3. Generic web upload form (already useful)
-- Browser uploads via `POST /upload`.
-- Works immediately for non-Calibre users and as test harness for plugin path.
+### Plugin/manual URL setup
 
-## Reusable assets from `crosspoint-reader`
+Use one of these base URLs in desktop tooling:
+1. `http://xteink-x4.local/` (preferred if `.local` resolves on your OS)
+2. `http://<device-ip>/` (always valid fallback)
 
-The `crosspoint-reader` codebase in this workspace already has production-tested patterns we can mirror:
+Calibre-side endpoint contract:
+1. `GET /api/status`
+2. `GET /api/files?path=/books`
+3. `POST /upload?path=/books&filename=<name>.epub`
 
-- Web server route surface and lifecycle
-  - `crosspoint-reader/src/network/CrossPointWebServer.cpp`
-- Multipart upload pipeline with bounded buffering and watchdog resets
-  - `crosspoint-reader/src/network/CrossPointWebServer.cpp:522`
-- Calibre-focused activity UX and instructions
-  - `crosspoint-reader/src/activities/network/CalibreConnectActivity.cpp`
-- User docs for file transfer flow
-  - `crosspoint-reader/USER_GUIDE.md:78`
-  - `crosspoint-reader/docs/webserver-endpoints.md`
+### Manual upload (no plugin)
 
-## Reusable assets already in this repo
+Browser:
+1. Open `http://xteink-x4.local/` or `http://<device-ip>/`
+2. Choose a file and upload to `/books` (default)
 
-- Firmware-side upload scaffold (Rust, esp-idf)
-  - `crates/xteink-firmware/src/web_upload.rs`
-  - Current endpoints: `GET /upload/health`, `POST /upload` (queued event model)
-- Main loop hooks for upload server start/poll/stop
-  - `crates/xteink-firmware/src/main.rs`
+Command line:
 
-## Recommended protocol contract (v1)
+```bash
+curl -i -X POST \
+  "http://xteink-x4.local/upload?path=/books&filename=Example.epub" \
+  -H "Content-Type: application/epub+zip" \
+  --data-binary @Example.epub
+```
 
-Keep this minimal first and Calibre-friendly:
+Raw upload also works with `PUT /upload` using the same query parameters.
 
-- `GET /api/status`
-  - Returns firmware name/version, free space, and upload capability flags.
-- `POST /upload?path=/books/...`
-  - Accept `multipart/form-data` and raw body uploads.
-  - Overwrite existing file atomically.
-  - Return structured JSON (`ok`, `path`, `bytes`, `error`).
-- `GET /api/files?path=/books`
-  - List files/folders for plugin-side browse.
+## CORS / Preflight
 
-Optional (v2):
-- WebSocket binary upload endpoint for large transfers.
-- UDP discovery beacon for zero-config desktop discovery.
+`/upload` supports:
+1. `OPTIONS /upload` preflight
+2. `Access-Control-Allow-Origin: *`
+3. `Access-Control-Allow-Methods: POST, PUT, OPTIONS`
 
-## Calibre desktop compatibility notes
+This allows browser-based desktop tools to upload from a different origin.
 
-- Calibre plugin integration is the fastest route to native "Send to device" UX.
-- We should implement the device HTTP contract first, then adapt a plugin shim if needed.
-- If we reuse plugin code/resources from other projects, verify license compatibility before copying.
+## Network-drive style compatibility
 
-## Implementation checklist
+Current firmware does not expose SMB/WebDAV, so it is not mountable as a native network drive.
 
-1. Stabilize web upload server behavior
-- [ ] Enforce upload size limits and SD write streaming.
-- [ ] Add file extension policy (`.epub`, optional `.txt`, `.md`).
-- [ ] Add robust error mapping (400/409/413/500).
+Use HTTP paths instead:
+1. Upload target directory: `/books` (via `path=/books`)
+2. Nested upload path: `/books/<subdir>`
+3. Direct download: `GET /api/download?path=/books/<file>.epub`
 
-2. Add Calibre-facing endpoints
-- [ ] `GET /api/status`
-- [ ] `GET /api/files`
-- [ ] JSON responses with fixed schema and version field.
-
-3. Add UI entrypoint
-- [ ] `File Transfer` activity in UI.
-- [ ] Show IP + short instructions: "In Calibre: Send to device".
-
-4. Sync library after upload
-- [ ] Invalidate/rescan library cache after successful writes.
-- [ ] Ensure metadata/cover cache refresh for overwritten EPUBs.
-
-5. Desktop validation
-- [ ] Test with Calibre desktop + plugin.
-- [ ] Test fallback via curl/browser upload.
-
-## Suggested near-term decision
-
-- Proceed with HTTP `v1` contract first (no WebSocket required).
-- Keep server mode session-based (starts in File Transfer screen, stops on exit).
-- Add plugin/discovery only after v1 is stable on device.
+If a desktop file manager supports custom HTTP upload actions, point uploads to:
+`/upload?path=/books&filename=<file-name>`.

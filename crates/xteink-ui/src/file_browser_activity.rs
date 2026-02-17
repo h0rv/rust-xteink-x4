@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use std::collections::HashMap;
 #[cfg(feature = "std")]
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::fs::File;
 #[cfg(feature = "std")]
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -120,8 +120,14 @@ trait ReadSeek: Read + Seek + Send {}
 impl<T: Read + Seek + Send> ReadSeek for T {}
 
 #[cfg(feature = "std")]
+enum EpubOpenWorkerEvent {
+    Phase(&'static str),
+    Done(Result<Arc<Mutex<EpubReadingState>>, String>),
+}
+
+#[cfg(feature = "std")]
 struct PendingEpubOpen {
-    receiver: Receiver<Result<EpubReadingState, String>>,
+    receiver: Receiver<EpubOpenWorkerEvent>,
 }
 
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -529,12 +535,22 @@ impl FileBrowserActivity {
     }
 
     pub const DEFAULT_ROOT: &'static str = "/";
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    const EPUB_OPEN_WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
+    #[cfg(feature = "std")]
+    const EPUB_OPEN_WORKER_STACK_BYTES: usize = if cfg!(target_os = "espidf") {
+        48 * 1024
+    } else {
+        2 * 1024 * 1024
+    };
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_NAV_WORKER_STACK_BYTES: usize = 512 * 1024;
     #[cfg(feature = "std")]
-    const EPUB_OPEN_TIMEOUT_TICKS: u32 = 900; // ~45s at 50ms loop delay
+    const EPUB_OPEN_TIMEOUT_TICKS: u32 = if cfg!(target_os = "espidf") {
+        2400 // ~120s at 50ms loop delay
+    } else {
+        900 // ~45s at 50ms loop delay
+    };
+    #[cfg(feature = "std")]
+    const EPUB_OPEN_HEARTBEAT_TICKS: u32 = 20; // ~1s at 50ms loop delay
 
     pub fn new() -> Self {
         Self {
@@ -1431,6 +1447,7 @@ impl FileBrowserActivity {
 mod tests {
     use super::*;
     use crate::MockFileSystem;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
     use std::time::Instant;
@@ -1599,6 +1616,36 @@ mod tests {
         ));
         assert!(!activity.is_viewing_epub());
         assert!(activity.epub_overlay.is_none());
+    }
+
+    #[test]
+    fn opening_epub_back_cancels_pending_open() {
+        let mut activity = FileBrowserActivity::new();
+        let (_tx, rx) = mpsc::channel::<EpubOpenWorkerEvent>();
+        activity.mode = BrowserMode::OpeningEpub;
+        activity.epub_open_pending = Some(PendingEpubOpen { receiver: rx });
+        activity.epub_open_started_tick = Some(1);
+
+        let result = activity.handle_input(InputEvent::Press(Button::Back));
+        assert_eq!(result, ActivityResult::Consumed);
+        assert!(!activity.is_opening_epub());
+        assert!(activity.epub_open_pending.is_none());
+        assert!(activity.epub_open_started_tick.is_none());
+    }
+
+    #[test]
+    fn opening_epub_times_out_when_worker_stalls() {
+        let mut activity = FileBrowserActivity::new();
+        let (_tx, rx) = mpsc::channel::<EpubOpenWorkerEvent>();
+        activity.mode = BrowserMode::OpeningEpub;
+        activity.epub_open_pending = Some(PendingEpubOpen { receiver: rx });
+        activity.epub_open_started_tick = Some(0);
+        activity.ui_tick = FileBrowserActivity::EPUB_OPEN_TIMEOUT_TICKS + 1;
+
+        assert!(activity.poll_epub_open_result());
+        assert!(!activity.is_opening_epub());
+        assert!(activity.epub_open_pending.is_none());
+        assert!(activity.epub_open_started_tick.is_none());
     }
 
     // TODO: Fix this test - Cursor not imported

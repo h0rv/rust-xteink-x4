@@ -439,9 +439,13 @@ impl Activity for MainActivity {
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
         let settings_before = self.settings_tab.settings;
+        let library_transfer_modal_open =
+            self.current_tab == Tab::Library.index() && self.library_tab.is_transfer_screen_open();
         let result = match event {
             InputEvent::Press(Button::Left) => {
-                if self.current_tab == Tab::Files.index() && self.files_tab.is_reading() {
+                if (self.current_tab == Tab::Files.index() && self.files_tab.is_reading())
+                    || library_transfer_modal_open
+                {
                     self.delegate_input(event)
                 } else {
                     self.prev_tab();
@@ -449,7 +453,9 @@ impl Activity for MainActivity {
                 }
             }
             InputEvent::Press(Button::Right) => {
-                if self.current_tab == Tab::Files.index() && self.files_tab.is_reading() {
+                if (self.current_tab == Tab::Files.index() && self.files_tab.is_reading())
+                    || library_transfer_modal_open
+                {
                     self.delegate_input(event)
                 } else {
                     self.next_tab();

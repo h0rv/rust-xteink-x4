@@ -35,10 +35,12 @@ use mu_epub::book::{ChapterEventsOptions, OpenConfig};
 use mu_epub::{EpubBook, RenderPrepOptions, ScratchBuffers, ZipLimits};
 #[cfg(feature = "std")]
 use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
+#[cfg(feature = "std")]
+use mu_epub_render::{
+    DrawCommand, ImageObjectCommand, RenderConfig, RenderEngine, RenderEngineOptions, RenderPage,
+};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use mu_epub_render::{PaginationProfileId, RenderCacheStore};
-#[cfg(feature = "std")]
-use mu_epub_render::{RenderConfig, RenderEngine, RenderEngineOptions, RenderPage};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::Cursor;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -98,6 +100,15 @@ enum BrowserMode {
 
 #[cfg(feature = "std")]
 struct ImageViewer {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    threshold: u8,
+}
+
+#[cfg(feature = "std")]
+#[derive(Clone)]
+struct InlineImageBitmap {
     width: u32,
     height: u32,
     pixels: Vec<u8>,
@@ -264,10 +275,14 @@ enum EpubOverlay {
         items: Vec<EpubTocItem>,
         selected: usize,
         scroll: usize,
+        collapsed: BTreeSet<usize>,
     },
     JumpLocation {
         chapter: usize,
         page: usize,
+    },
+    JumpGlobalLocation {
+        location: usize,
     },
     JumpPercent {
         percent: u8,
@@ -414,6 +429,7 @@ struct EpubReadingState {
     chapter_page_counts: BTreeMap<usize, usize>,
     chapter_page_counts_exact: BTreeSet<usize>,
     non_renderable_chapters: BTreeSet<usize>,
+    inline_image_cache: BTreeMap<String, InlineImageBitmap>,
     chapter_idx: usize,
     page_idx: usize,
     last_next_page_reached_end: bool,
@@ -476,6 +492,35 @@ impl FileBrowserActivity {
         out
     }
 
+    #[cfg(feature = "std")]
+    fn toc_visible_indices(items: &[EpubTocItem], collapsed: &BTreeSet<usize>) -> Vec<usize> {
+        let mut visible = Vec::with_capacity(items.len());
+        let mut hidden_depth: Option<usize> = None;
+        for (idx, item) in items.iter().enumerate() {
+            if let Some(depth) = hidden_depth {
+                if item.depth > depth {
+                    continue;
+                }
+                hidden_depth = None;
+            }
+            visible.push(idx);
+            if collapsed.contains(&idx) {
+                hidden_depth = Some(item.depth);
+            }
+        }
+        visible
+    }
+
+    #[cfg(feature = "std")]
+    fn toc_has_children(items: &[EpubTocItem], idx: usize) -> bool {
+        let Some(current) = items.get(idx) else {
+            return false;
+        };
+        items
+            .get(idx + 1)
+            .is_some_and(|next| next.depth > current.depth)
+    }
+
     fn exit_reader_to_browser(&mut self) -> ActivityResult {
         #[cfg(feature = "std")]
         {
@@ -522,7 +567,7 @@ impl FileBrowserActivity {
         match &mut self.mode {
             BrowserMode::ReadingEpub { renderer } => match &mut overlay {
                 EpubOverlay::QuickMenu { selected } => {
-                    const COUNT: usize = 8;
+                    const COUNT: usize = 9;
                     match event {
                         InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
                             if *selected == 0 {
@@ -560,6 +605,7 @@ impl FileBrowserActivity {
                                             items,
                                             selected: current_idx,
                                             scroll: initial_scroll,
+                                            collapsed: BTreeSet::new(),
                                         };
                                     }
                                 }
@@ -578,25 +624,34 @@ impl FileBrowserActivity {
                                         Ok(guard) => guard,
                                         Err(poisoned) => poisoned.into_inner(),
                                     };
+                                    overlay = EpubOverlay::JumpGlobalLocation {
+                                        location: guard.current_global_location(),
+                                    };
+                                }
+                                4 => {
+                                    let guard = match renderer.lock() {
+                                        Ok(guard) => guard,
+                                        Err(poisoned) => poisoned.into_inner(),
+                                    };
                                     overlay = EpubOverlay::JumpPercent {
                                         percent: guard.book_progress_percent(),
                                     };
                                 }
-                                4 => {
+                                5 => {
                                     navigate_settings = true;
                                     put_back = false;
                                 }
-                                5 => {
+                                6 => {
                                     self.reader_settings.footer_density =
                                         self.reader_settings.footer_density.next_wrapped();
                                     self.set_reader_settings(self.reader_settings);
                                 }
-                                6 => {
+                                7 => {
                                     self.reader_settings.footer_auto_hide =
                                         self.reader_settings.footer_auto_hide.next_wrapped();
                                     self.set_reader_settings(self.reader_settings);
                                 }
-                                7 => {
+                                8 => {
                                     exit_to_files = true;
                                     put_back = false;
                                 }
@@ -610,24 +665,58 @@ impl FileBrowserActivity {
                     items,
                     selected,
                     scroll,
+                    collapsed,
                 } => {
-                    let page = 6usize;
+                    let mut visible_rows = Self::toc_visible_indices(items, collapsed);
+                    if visible_rows.is_empty() {
+                        return ActivityResult::Consumed;
+                    }
+                    let selected_visible = visible_rows
+                        .iter()
+                        .position(|idx| *idx == *selected)
+                        .unwrap_or(0);
                     match event {
                         InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
-                            if *selected == 0 {
-                                *selected = items.len().saturating_sub(1);
+                            let next_visible = if selected_visible == 0 {
+                                visible_rows.len().saturating_sub(1)
                             } else {
-                                *selected -= 1;
-                            }
+                                selected_visible - 1
+                            };
+                            *selected = visible_rows[next_visible];
                         }
                         InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
-                            *selected = (*selected + 1) % items.len();
+                            let next_visible = (selected_visible + 1) % visible_rows.len();
+                            *selected = visible_rows[next_visible];
                         }
                         InputEvent::Press(Button::Left) => {
-                            *selected = selected.saturating_sub(page);
+                            if collapsed.remove(selected) {
+                                visible_rows = Self::toc_visible_indices(items, collapsed);
+                            } else if Self::toc_has_children(items, *selected) {
+                                collapsed.insert(*selected);
+                                visible_rows = Self::toc_visible_indices(items, collapsed);
+                            } else if let Some(current) = items.get(*selected) {
+                                if let Some((parent_idx, _)) =
+                                    items.iter().enumerate().rev().find(|(idx, item)| {
+                                        *idx < *selected && item.depth < current.depth
+                                    })
+                                {
+                                    *selected = parent_idx;
+                                }
+                            }
                         }
                         InputEvent::Press(Button::Right) => {
-                            *selected = (*selected + page).min(items.len().saturating_sub(1));
+                            if collapsed.remove(selected) {
+                                visible_rows = Self::toc_visible_indices(items, collapsed);
+                            } else if Self::toc_has_children(items, *selected) {
+                                let current_depth = items[*selected].depth;
+                                if let Some((idx, _)) =
+                                    items.iter().enumerate().find(|(idx, item)| {
+                                        *idx > *selected && item.depth > current_depth
+                                    })
+                                {
+                                    *selected = idx;
+                                }
+                            }
                         }
                         InputEvent::Press(Button::Confirm) => {
                             let mut guard = match renderer.lock() {
@@ -645,10 +734,14 @@ impl FileBrowserActivity {
                         _ => {}
                     }
                     let visible = 6usize;
-                    if *selected < *scroll {
-                        *scroll = *selected;
-                    } else if *selected >= *scroll + visible {
-                        *scroll = selected.saturating_sub(visible - 1);
+                    let selected_visible = visible_rows
+                        .iter()
+                        .position(|idx| *idx == *selected)
+                        .unwrap_or(0);
+                    if selected_visible < *scroll {
+                        *scroll = selected_visible;
+                    } else if selected_visible >= *scroll + visible {
+                        *scroll = selected_visible.saturating_sub(visible - 1);
                     }
                 }
                 EpubOverlay::JumpLocation { chapter, page } => match event {
@@ -688,6 +781,45 @@ impl FileBrowserActivity {
                         let max_pages = guard.estimated_pages_for_chapter(target_chapter).max(1);
                         *page = (*page).clamp(1, max_pages);
                         if !guard.restore_position(target_chapter, page.saturating_sub(1)) {
+                            self.browser.set_status_message(
+                                "Unable to jump to selected location".to_string(),
+                            );
+                        }
+                        put_back = false;
+                    }
+                    _ => {}
+                },
+                EpubOverlay::JumpGlobalLocation { location } => match event {
+                    InputEvent::Press(Button::Left) => {
+                        *location = location.saturating_sub(1).max(1);
+                    }
+                    InputEvent::Press(Button::Right) => {
+                        let guard = match renderer.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        let max_location = guard.total_book_locations().max(1);
+                        *location = location.saturating_add(1).min(max_location);
+                    }
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                        *location = location.saturating_sub(10).max(1);
+                    }
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                        let guard = match renderer.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        let max_location = guard.total_book_locations().max(1);
+                        *location = location.saturating_add(10).min(max_location);
+                    }
+                    InputEvent::Press(Button::Confirm) => {
+                        let mut guard = match renderer.lock() {
+                            Ok(guard) => guard,
+                            Err(poisoned) => poisoned.into_inner(),
+                        };
+                        let max_location = guard.total_book_locations().max(1);
+                        *location = (*location).clamp(1, max_location);
+                        if !guard.jump_to_global_location(*location) {
                             self.browser.set_status_message(
                                 "Unable to jump to selected location".to_string(),
                             );
@@ -985,8 +1117,8 @@ impl FileBrowserActivity {
     #[inline(never)]
     fn process_open_image_file_task(&mut self, fs: &mut dyn FileSystem, path: &str) -> bool {
         let title = basename(path).to_string();
-        let max_w = crate::DISPLAY_WIDTH as u32;
-        let max_h = (crate::DISPLAY_HEIGHT as u32).saturating_sub(44).max(1);
+        let max_w = crate::DISPLAY_WIDTH;
+        let max_h = crate::DISPLAY_HEIGHT.saturating_sub(44).max(1);
         #[cfg(target_os = "espidf")]
         let mut path_error: Option<String> = None;
 
@@ -1616,6 +1748,7 @@ impl FileBrowserActivity {
                     "Resume",
                     "Table of Contents",
                     "Go to Chapter/Page",
+                    "Go to Location",
                     "Go to Position",
                     "Reader Settings",
                     "Footer: ",
@@ -1626,8 +1759,8 @@ impl FileBrowserActivity {
                     let y =
                         panel_y + layout::OVERLAY_CONTENT_Y + (i as i32 * layout::OVERLAY_ROW_H);
                     let label = match i {
-                        5 => format!("{}{}", item, self.reader_settings.footer_density.label()),
-                        6 => format!("{}{}", item, self.reader_settings.footer_auto_hide.label()),
+                        6 => format!("{}{}", item, self.reader_settings.footer_density.label()),
+                        7 => format!("{}{}", item, self.reader_settings.footer_auto_hide.label()),
                         _ => item.to_string(),
                     };
                     if i == *selected {
@@ -1672,6 +1805,7 @@ impl FileBrowserActivity {
                 items,
                 selected,
                 scroll,
+                collapsed,
             } => {
                 Text::new(
                     "Table of Contents",
@@ -1679,12 +1813,14 @@ impl FileBrowserActivity {
                     title_style,
                 )
                 .draw(display)?;
+                let visible_indices = Self::toc_visible_indices(items, collapsed);
                 let visible = 6usize;
                 for row in 0..visible {
-                    let idx = scroll + row;
-                    if idx >= items.len() {
+                    let visible_idx = scroll + row;
+                    if visible_idx >= visible_indices.len() {
                         break;
                     }
+                    let idx = visible_indices[visible_idx];
                     let item = &items[idx];
                     let y =
                         panel_y + layout::OVERLAY_CONTENT_Y + (row as i32 * layout::OVERLAY_ROW_H);
@@ -1698,8 +1834,17 @@ impl FileBrowserActivity {
                     let pct_x = panel_x + panel_w - 48;
                     let label_x = panel_x + layout::INNER_PAD + indent;
                     let label_max_px = (pct_x - layout::GAP_SM - label_x).max(16);
+                    let collapse_mark = if Self::toc_has_children(items, idx) {
+                        if collapsed.contains(&idx) {
+                            "+"
+                        } else {
+                            "-"
+                        }
+                    } else {
+                        " "
+                    };
                     let label = Self::truncate_to_px(
-                        &format!("{} {}", status, item.label),
+                        &format!("{}{} {}", status, collapse_mark, item.label),
                         label_max_px,
                         ui_font_body().character_size.height,
                     );
@@ -1733,7 +1878,12 @@ impl FileBrowserActivity {
                         Text::new(&pct, Point::new(pct_x, y), hint_style).draw(display)?;
                     }
                 }
-                let pos = format!("{}/{}", selected + 1, items.len());
+                let selected_visible = visible_indices
+                    .iter()
+                    .position(|idx| *idx == *selected)
+                    .map(|v| v + 1)
+                    .unwrap_or(1);
+                let pos = format!("{}/{}", selected_visible, visible_indices.len().max(1));
                 Text::new(
                     &pos,
                     Point::new(panel_x + panel_w - 72, panel_y + layout::OVERLAY_TITLE_Y),
@@ -1741,7 +1891,7 @@ impl FileBrowserActivity {
                 )
                 .draw(display)?;
                 Text::new(
-                    "U/D Move  L/R Pg  OK Jump  Back",
+                    "U/D Move  L/R Fold  OK Jump  Back",
                     Point::new(
                         panel_x + layout::GAP_SM,
                         panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM,
@@ -1788,6 +1938,42 @@ impl FileBrowserActivity {
                 .draw(display)?;
                 Text::new(
                     "Vol +/- chapter  Back Cancel",
+                    Point::new(
+                        panel_x + layout::GAP_SM,
+                        panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM + 8,
+                    ),
+                    hint_style,
+                )
+                .draw(display)?;
+            }
+            EpubOverlay::JumpGlobalLocation { location } => {
+                Text::new(
+                    "Go to Location",
+                    Point::new(panel_x + layout::GAP_SM, panel_y + layout::OVERLAY_TITLE_Y),
+                    title_style,
+                )
+                .draw(display)?;
+                let location_text = format!("Location {}", location);
+                Text::new(
+                    &location_text,
+                    Point::new(
+                        panel_x + layout::INNER_PAD,
+                        panel_y + layout::OVERLAY_CONTENT_Y,
+                    ),
+                    body_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    "L/R +/-1  U/D +/-10  OK Jump",
+                    Point::new(
+                        panel_x + layout::GAP_SM,
+                        panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM - layout::GAP_SM,
+                    ),
+                    hint_style,
+                )
+                .draw(display)?;
+                Text::new(
+                    "Back Cancel",
                     Point::new(
                         panel_x + layout::GAP_SM,
                         panel_y + panel_h - layout::OVERLAY_HINT_BOTTOM + 8,
@@ -2132,6 +2318,74 @@ mod tests {
         assert!(!activity.is_opening_epub());
         assert!(activity.epub_open_pending.is_none());
         assert!(activity.epub_open_started_tick.is_none());
+    }
+
+    #[test]
+    fn toc_visible_indices_hide_descendants_of_collapsed_rows() {
+        let items = vec![
+            EpubTocItem {
+                chapter_index: 0,
+                depth: 0,
+                label: "A".to_string(),
+                status: EpubTocStatus::Current,
+                start_percent: 0,
+            },
+            EpubTocItem {
+                chapter_index: 1,
+                depth: 1,
+                label: "A.1".to_string(),
+                status: EpubTocStatus::Upcoming,
+                start_percent: 10,
+            },
+            EpubTocItem {
+                chapter_index: 2,
+                depth: 2,
+                label: "A.1.a".to_string(),
+                status: EpubTocStatus::Upcoming,
+                start_percent: 20,
+            },
+            EpubTocItem {
+                chapter_index: 3,
+                depth: 0,
+                label: "B".to_string(),
+                status: EpubTocStatus::Upcoming,
+                start_percent: 30,
+            },
+        ];
+        let mut collapsed = BTreeSet::new();
+        collapsed.insert(0usize);
+        let visible = FileBrowserActivity::toc_visible_indices(&items, &collapsed);
+        assert_eq!(visible, vec![0, 3]);
+    }
+
+    #[test]
+    fn toc_has_children_detects_next_deeper_item() {
+        let items = vec![
+            EpubTocItem {
+                chapter_index: 0,
+                depth: 0,
+                label: "A".to_string(),
+                status: EpubTocStatus::Current,
+                start_percent: 0,
+            },
+            EpubTocItem {
+                chapter_index: 1,
+                depth: 1,
+                label: "A.1".to_string(),
+                status: EpubTocStatus::Upcoming,
+                start_percent: 10,
+            },
+            EpubTocItem {
+                chapter_index: 2,
+                depth: 0,
+                label: "B".to_string(),
+                status: EpubTocStatus::Upcoming,
+                start_percent: 30,
+            },
+        ];
+        assert!(FileBrowserActivity::toc_has_children(&items, 0));
+        assert!(!FileBrowserActivity::toc_has_children(&items, 1));
+        assert!(!FileBrowserActivity::toc_has_children(&items, 2));
     }
 
     // TODO: Fix this test - Cursor not imported

@@ -1,4 +1,5 @@
 use super::*;
+use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -160,6 +161,7 @@ impl EpubReadingState {
             chapter_page_counts: BTreeMap::new(),
             chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
+            inline_image_cache: BTreeMap::new(),
             chapter_idx: 0,
             page_idx: 0,
             last_next_page_reached_end: false,
@@ -222,6 +224,7 @@ impl EpubReadingState {
             chapter_page_counts: BTreeMap::new(),
             chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
+            inline_image_cache: BTreeMap::new(),
             chapter_idx: 0,
             page_idx: 0,
             last_next_page_reached_end: false,
@@ -428,6 +431,26 @@ impl EpubReadingState {
         )
     }
 
+    pub(super) fn current_global_location(&self) -> usize {
+        let (pages_before, current_pages, _total_pages, _on_final_exact_page) =
+            self.estimated_global_page_metrics();
+        let clamped = self.page_idx.min(current_pages.saturating_sub(1));
+        pages_before.saturating_add(clamped).saturating_add(1)
+    }
+
+    pub(super) fn total_book_locations(&self) -> usize {
+        let (_, _, total_pages, _) = self.estimated_global_page_metrics();
+        total_pages.max(1)
+    }
+
+    pub(super) fn jump_to_global_location(&mut self, location: usize) -> bool {
+        let target = location.saturating_sub(1);
+        let Some((chapter_idx, page_idx)) = self.locate_from_global_location(target) else {
+            return false;
+        };
+        self.restore_position(chapter_idx, page_idx)
+    }
+
     fn compute_default_page_estimate(sum: usize, count: usize) -> usize {
         if count == 0 {
             8
@@ -464,6 +487,35 @@ impl EpubReadingState {
             self.chapter_page_counts.get(&chapter_idx).copied(),
             default_estimate,
         )
+    }
+
+    pub(super) fn estimated_pages_for_chapter(&self, chapter_idx: usize) -> usize {
+        if chapter_idx >= self.book.chapter_count() {
+            return 1;
+        }
+        let fallback = self.default_chapter_page_estimate();
+        self.chapter_page_estimate_or_default(chapter_idx, fallback)
+            .max(1)
+    }
+
+    fn estimated_book_start_percent_for_chapter(&self, chapter_idx: usize) -> u8 {
+        let fallback_pages = self.default_chapter_page_estimate();
+        let mut pages_before = 0usize;
+        let mut total_pages = 0usize;
+        for idx in 0..self.book.chapter_count() {
+            if self.non_renderable_chapters.contains(&idx) {
+                continue;
+            }
+            let pages = self.chapter_page_estimate_or_default(idx, fallback_pages);
+            if idx < chapter_idx {
+                pages_before = pages_before.saturating_add(pages);
+            }
+            total_pages = total_pages.saturating_add(pages);
+        }
+        if total_pages == 0 {
+            return 0;
+        }
+        ((pages_before as f32 / total_pages as f32) * 100.0).clamp(0.0, 100.0) as u8
     }
 
     fn estimated_global_page_metrics(&self) -> (usize, usize, usize, bool) {
@@ -505,6 +557,37 @@ impl EpubReadingState {
             total_pages,
             on_final_exact_page,
         )
+    }
+
+    fn locate_from_global_location(&self, target_global_page_idx: usize) -> Option<(usize, usize)> {
+        let fallback_pages = self.default_chapter_page_estimate();
+        let mut weighted = Vec::with_capacity(self.book.chapter_count());
+        for chapter_idx in 0..self.book.chapter_count() {
+            if self.non_renderable_chapters.contains(&chapter_idx) {
+                continue;
+            }
+            let chapter_pages = self.chapter_page_estimate_or_default(chapter_idx, fallback_pages);
+            weighted.push((chapter_idx, chapter_pages.max(1)));
+        }
+        Self::locate_in_weighted_pages(target_global_page_idx, &weighted)
+    }
+
+    fn locate_in_weighted_pages(
+        target_global_page_idx: usize,
+        weighted: &[(usize, usize)],
+    ) -> Option<(usize, usize)> {
+        let mut cursor = 0usize;
+        let mut last: Option<(usize, usize)> = None;
+        for (chapter_idx, units) in weighted.iter().copied() {
+            let units = units.max(1);
+            let chapter_end = cursor.saturating_add(units);
+            if target_global_page_idx < chapter_end {
+                return Some((chapter_idx, target_global_page_idx.saturating_sub(cursor)));
+            }
+            cursor = chapter_end;
+            last = Some((chapter_idx, units.saturating_sub(1)));
+        }
+        last
     }
 
     fn compute_book_progress_percent_from_pages(
@@ -804,6 +887,7 @@ impl EpubReadingState {
 
     pub(super) fn toc_items(&mut self) -> Vec<EpubTocItem> {
         let mut out = Vec::new();
+        let current = self.chapter_idx;
         let mut flat_points: Vec<(usize, String, String)> = Vec::new();
         if let Ok(Some(nav)) = self.book.ensure_navigation() {
             for (depth, point) in nav.toc_flat() {
@@ -827,6 +911,15 @@ impl EpubReadingState {
                         chapter_index: loc.chapter.index,
                         depth,
                         label,
+                        status: if loc.chapter.index < current {
+                            EpubTocStatus::Done
+                        } else if loc.chapter.index == current {
+                            EpubTocStatus::Current
+                        } else {
+                            EpubTocStatus::Upcoming
+                        },
+                        start_percent: self
+                            .estimated_book_start_percent_for_chapter(loc.chapter.index),
                     });
                 }
             }
@@ -837,6 +930,14 @@ impl EpubReadingState {
                     chapter_index: chapter.index,
                     depth: 0,
                     label: chapter.href,
+                    status: if chapter.index < current {
+                        EpubTocStatus::Done
+                    } else if chapter.index == current {
+                        EpubTocStatus::Current
+                    } else {
+                        EpubTocStatus::Upcoming
+                    },
+                    start_percent: self.estimated_book_start_percent_for_chapter(chapter.index),
                 });
             }
         }
@@ -851,6 +952,7 @@ impl EpubReadingState {
         self.chapter_events_opts = chapter_events_opts;
         self.current_page = None;
         self.page_cache.clear();
+        self.inline_image_cache.clear();
         self.chapter_page_counts.clear();
         self.chapter_page_counts_exact.clear();
 
@@ -1085,10 +1187,166 @@ impl EpubReadingState {
         display: &mut D,
     ) -> Result<(), D::Error> {
         if let Some(page) = self.current_page.as_ref() {
-            self.eg_renderer.render_page(page, display)
+            self.eg_renderer.render_page(page, display)?;
+            self.render_inline_images(page, display)?;
+            Ok(())
         } else {
             display.clear(BinaryColor::Off)
         }
+    }
+
+    fn inline_image_cache_key(src: &str, width: u32, height: u32) -> String {
+        format!("{}@{}x{}", src, width.max(1), height.max(1))
+    }
+
+    fn adaptive_inline_threshold(pixels: &[u8]) -> u8 {
+        if pixels.is_empty() {
+            return 128;
+        }
+        let sum: u64 = pixels.iter().map(|px| *px as u64).sum();
+        let avg = (sum / pixels.len() as u64) as i32;
+        avg.clamp(78, 178) as u8
+    }
+
+    fn decode_inline_image_bitmap(
+        bytes: &[u8],
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<InlineImageBitmap> {
+        let decoded = image::load_from_memory(bytes).ok()?;
+        let resized = decoded.thumbnail(max_width.max(1), max_height.max(1));
+        let gray = resized.to_luma8();
+        let (width, height) = gray.dimensions();
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let pixels = gray.into_raw();
+        if pixels.is_empty() {
+            return None;
+        }
+        Some(InlineImageBitmap {
+            width,
+            height,
+            threshold: Self::adaptive_inline_threshold(&pixels),
+            pixels,
+        })
+    }
+
+    fn prefetch_inline_images_for_page(&mut self, page: &RenderPage) {
+        let commands: &[DrawCommand] = if !page.content_commands.is_empty() {
+            &page.content_commands
+        } else {
+            &page.commands
+        };
+        for cmd in commands {
+            let DrawCommand::ImageObject(obj) = cmd else {
+                continue;
+            };
+            if obj.src.is_empty() || obj.width == 0 || obj.height == 0 {
+                continue;
+            }
+            let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
+            if self.inline_image_cache.contains_key(&key) {
+                continue;
+            }
+            let bytes = match self.book.read_resource(&obj.src) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    log::debug!(
+                        "[EPUB] inline image resource read failed src={} err={}",
+                        obj.src,
+                        err
+                    );
+                    continue;
+                }
+            };
+            if let Some(bitmap) = Self::decode_inline_image_bitmap(&bytes, obj.width, obj.height) {
+                self.inline_image_cache.insert(key, bitmap);
+            }
+        }
+        while self.inline_image_cache.len() > 24 {
+            let Some(first_key) = self.inline_image_cache.keys().next().cloned() else {
+                break;
+            };
+            self.inline_image_cache.remove(&first_key);
+        }
+    }
+
+    fn render_inline_image_object<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        obj: &ImageObjectCommand,
+        bitmap: &InlineImageBitmap,
+    ) -> Result<(), D::Error> {
+        if obj.width == 0 || obj.height == 0 || bitmap.width == 0 || bitmap.height == 0 {
+            return Ok(());
+        }
+        let inner_x = obj.x + 1;
+        let inner_y = obj.y + 1;
+        let inner_w = obj.width.saturating_sub(2).max(1);
+        let inner_h = obj.height.saturating_sub(2).max(1);
+        let draw_w = inner_w.min(bitmap.width);
+        let draw_h = inner_h.min(bitmap.height);
+        let offset_x = ((inner_w as i32 - draw_w as i32).max(0)) / 2;
+        let offset_y = ((inner_h as i32 - draw_h as i32).max(0)) / 2;
+
+        Rectangle::new(Point::new(inner_x, inner_y), Size::new(inner_w, inner_h))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+            .draw(display)?;
+
+        for dy in 0..draw_h {
+            let src_y = (dy as u64 * bitmap.height as u64 / draw_h as u64) as u32;
+            for dx in 0..draw_w {
+                let src_x = (dx as u64 * bitmap.width as u64 / draw_w as u64) as u32;
+                let idx = (src_y * bitmap.width + src_x) as usize;
+                if idx >= bitmap.pixels.len() {
+                    continue;
+                }
+                let color = if bitmap.pixels[idx] < bitmap.threshold {
+                    BinaryColor::On
+                } else {
+                    BinaryColor::Off
+                };
+                Pixel(
+                    Point::new(
+                        inner_x + offset_x + dx as i32,
+                        inner_y + offset_y + dy as i32,
+                    ),
+                    color,
+                )
+                .draw(display)?;
+            }
+        }
+
+        Rectangle::new(
+            Point::new(obj.x, obj.y),
+            Size::new(obj.width.max(1), obj.height.max(1)),
+        )
+        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+        .draw(display)?;
+        Ok(())
+    }
+
+    fn render_inline_images<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        page: &RenderPage,
+        display: &mut D,
+    ) -> Result<(), D::Error> {
+        let commands: &[DrawCommand] = if !page.content_commands.is_empty() {
+            &page.content_commands
+        } else {
+            &page.commands
+        };
+        for cmd in commands {
+            let DrawCommand::ImageObject(obj) = cmd else {
+                continue;
+            };
+            let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
+            if let Some(bitmap) = self.inline_image_cache.get(&key) {
+                self.render_inline_image_object(display, obj, bitmap)?;
+            }
+        }
+        Ok(())
     }
 
     fn load_current_page(&mut self) -> Result<(), String> {
@@ -1301,6 +1559,7 @@ impl EpubReadingState {
             page_idx,
             page.metrics.chapter_page_count
         );
+        self.prefetch_inline_images_for_page(&page);
 
         if let Some(count) = page.metrics.chapter_page_count {
             self.chapter_page_counts.insert(chapter_idx, count.max(1));
@@ -1605,6 +1864,37 @@ mod tests {
             .expect("target should resolve");
         assert_eq!(ninety_nine.0, 2);
         assert_eq!(hundred.0, 3);
+    }
+
+    #[test]
+    fn locate_in_weighted_pages_maps_global_index_to_chapter_page() {
+        let weighted = [(0usize, 3usize), (1, 2), (2, 1)];
+        assert_eq!(
+            EpubReadingState::locate_in_weighted_pages(0, &weighted),
+            Some((0, 0))
+        );
+        assert_eq!(
+            EpubReadingState::locate_in_weighted_pages(2, &weighted),
+            Some((0, 2))
+        );
+        assert_eq!(
+            EpubReadingState::locate_in_weighted_pages(3, &weighted),
+            Some((1, 0))
+        );
+        assert_eq!(
+            EpubReadingState::locate_in_weighted_pages(5, &weighted),
+            Some((2, 0))
+        );
+    }
+
+    #[test]
+    fn locate_in_weighted_pages_clamps_out_of_range_to_last_known_page() {
+        let weighted = [(0usize, 4usize), (1, 1)];
+        assert_eq!(
+            EpubReadingState::locate_in_weighted_pages(999, &weighted),
+            Some((1, 0))
+        );
+        assert_eq!(EpubReadingState::locate_in_weighted_pages(0, &[]), None);
     }
 }
 

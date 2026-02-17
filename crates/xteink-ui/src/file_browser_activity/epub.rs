@@ -2,9 +2,9 @@ use super::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::sync::mpsc::{self, TryRecvError};
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::thread;
 
 #[cfg(feature = "std")]
@@ -179,7 +179,7 @@ impl EpubReadingState {
 
     #[cfg(target_os = "espidf")]
     pub(super) fn from_sd_path_light(path: &str, settings: ReaderSettings) -> Result<Self, String> {
-        log::info!("[EPUB] opening reader (sd temp)");
+        log::debug!("[EPUB] opening reader (sd temp)");
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
         let open_cfg = OpenConfig {
@@ -199,10 +199,7 @@ impl EpubReadingState {
         })?;
         let book = EpubBook::open_with_temp_storage(path, Self::EPUB_TEMP_DIR, open_cfg)
             .map_err(|e| format!("Unable to parse EPUB: {}", e))?;
-        log::info!("[EPUB] open ok: chapters={}", book.chapter_count());
-        log::info!("[EPUB] creating render engine");
         let (engine, chapter_events_opts) = Self::create_engine(settings);
-        log::info!("[EPUB] render engine ready");
         #[cfg(feature = "fontdue")]
         let (eg_renderer, layout_text_measurer) = Self::create_renderer();
         #[cfg(not(feature = "fontdue"))]
@@ -239,9 +236,7 @@ impl EpubReadingState {
             last_next_page_reached_end: false,
         };
         state.initialize_cover_image_cache();
-        log::info!("[EPUB] reader state allocated (lazy buffers)");
         state.register_embedded_fonts();
-        log::info!("[EPUB] reader state ready");
         Ok(state)
     }
 
@@ -2331,7 +2326,7 @@ impl FileBrowserActivity {
             self.active_epub_path = Some(path.to_string());
         }
         self.invalidate_browser_tasks();
-        #[cfg(feature = "std")]
+        #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             self.mode = BrowserMode::OpeningEpub;
             self.browser
@@ -2350,6 +2345,42 @@ impl FileBrowserActivity {
             }
         }
 
+        #[cfg(all(feature = "std", target_os = "espidf"))]
+        {
+            self.mode = BrowserMode::OpeningEpub;
+            self.browser
+                .set_status_message("Opening EPUB...".to_string());
+            match Self::prepare_epub_open_source(fs, path) {
+                Ok(EpubOpenSource::HostPath(host_path)) => {
+                    match EpubReadingState::from_sd_path_light(&host_path, self.reader_settings) {
+                        Ok(state) => {
+                            let renderer = Arc::new(Mutex::new(state));
+                            self.invalidate_browser_tasks();
+                            self.pending_epub_initial_load = true;
+                            self.mode = BrowserMode::ReadingEpub { renderer };
+                        }
+                        Err(error) => {
+                            self.mode = BrowserMode::Browsing;
+                            self.browser.set_status_message(error);
+                            self.active_epub_path = None;
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.mode = BrowserMode::Browsing;
+                    self.browser.set_status_message(error);
+                    self.active_epub_path = None;
+                }
+                #[allow(unreachable_patterns)]
+                _ => {
+                    self.mode = BrowserMode::Browsing;
+                    self.browser
+                        .set_status_message("Unable to open EPUB: unsupported source".to_string());
+                    self.active_epub_path = None;
+                }
+            }
+        }
+
         #[cfg(not(feature = "std"))]
         {
             let _ = path;
@@ -2360,7 +2391,7 @@ impl FileBrowserActivity {
         true
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     pub(super) fn poll_epub_open_result(&mut self) -> bool {
         let recv_result = match self.epub_open_pending.as_mut() {
             Some(pending) => pending.receiver.try_recv(),
@@ -2428,6 +2459,39 @@ impl FileBrowserActivity {
                 true
             }
         }
+    }
+
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    pub(super) fn poll_epub_open_result(&mut self) -> bool {
+        false
+    }
+
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    pub(super) fn process_pending_epub_initial_load(&mut self) -> bool {
+        if !self.pending_epub_initial_load {
+            return false;
+        }
+        self.pending_epub_initial_load = false;
+        let renderer = match &self.mode {
+            BrowserMode::ReadingEpub { renderer } => Arc::clone(renderer),
+            _ => return false,
+        };
+        let initial_result = match renderer.lock() {
+            Ok(mut guard) => guard.ensure_initial_page_loaded(),
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.ensure_initial_page_loaded()
+            }
+        };
+        if let Err(err) = initial_result {
+            self.mode = BrowserMode::Browsing;
+            self.browser
+                .set_status_message(format!("Unable to open EPUB: {}", err));
+            self.active_epub_path = None;
+            return true;
+        }
+        self.restore_active_epub_position(&renderer);
+        true
     }
 
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -2506,6 +2570,7 @@ impl FileBrowserActivity {
         }
     }
 
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     #[inline(never)]
     fn spawn_epub_open_worker(
         fs: &mut dyn FileSystem,

@@ -1285,6 +1285,14 @@ impl EpubReadingState {
     }
 
     fn initialize_cover_image_cache(&mut self) {
+        #[cfg(target_os = "espidf")]
+        {
+            // Keep EPUB open path deterministic on constrained heaps.
+            // Cover-page image rendering falls back to placeholder on device.
+            return;
+        }
+        #[cfg(not(target_os = "espidf"))]
+        {
         let mut cover_bytes = Vec::new();
         let cover_ref = match self.book.read_cover_image_into(&mut cover_bytes) {
             Ok(Some(cover)) => Some(cover),
@@ -1312,6 +1320,7 @@ impl EpubReadingState {
                 self.cover_image_sources
                     .insert(Self::normalize_image_src_key(file_name));
             }
+        }
         }
     }
 

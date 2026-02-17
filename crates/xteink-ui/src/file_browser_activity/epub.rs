@@ -1,6 +1,10 @@
 use super::*;
 use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use std::sync::mpsc::{self, TryRecvError};
+#[cfg(all(feature = "std", not(target_os = "espidf")))]
+use std::thread;
 
 #[cfg(feature = "std")]
 #[derive(Clone)]
@@ -2003,15 +2007,15 @@ impl FileBrowserActivity {
         }
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", target_os = "espidf"))]
     pub(super) fn restore_active_epub_position(&mut self, renderer: &Arc<Mutex<EpubReadingState>>) {
-        #[cfg(target_os = "espidf")]
-        {
-            let _ = renderer;
-            // ESP32-C3 heap is too constrained for restore-time speculative
-            // page loads during open; keep open path deterministic and stable.
-            return;
-        }
+        let _ = renderer;
+        // ESP32-C3 heap is too constrained for restore-time speculative
+        // page loads during open; keep open path deterministic and stable.
+    }
+
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    pub(super) fn restore_active_epub_position(&mut self, renderer: &Arc<Mutex<EpubReadingState>>) {
         let Some(path) = self.active_epub_path.as_ref() else {
             return;
         };

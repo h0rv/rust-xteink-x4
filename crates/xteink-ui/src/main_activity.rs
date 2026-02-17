@@ -310,6 +310,11 @@ impl MainActivity {
             .set_reader_settings(settings.to_reader_settings());
     }
 
+    /// Queue opening a content path (epub/text/image) in the reader subsystem.
+    pub fn queue_open_content_path(&mut self, path: impl Into<String>) {
+        self.files_tab.request_open_path(path);
+    }
+
     pub fn auto_sleep_duration_ms(&self) -> u32 {
         self.settings_tab
             .settings

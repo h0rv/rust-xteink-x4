@@ -64,6 +64,7 @@ pub struct App {
     pending_file_transfer_request: Option<bool>,
     pending_wifi_mode_ap: Option<bool>,
     pending_wifi_ap_config: Option<(String, String)>,
+    pending_content_open_path: Option<String>,
 }
 
 impl App {
@@ -101,6 +102,7 @@ impl App {
             pending_file_transfer_request: None,
             pending_wifi_mode_ap: None,
             pending_wifi_ap_config: None,
+            pending_content_open_path: None,
         };
         // Initialize library with loading state
         app.main_activity.library_tab.begin_loading_scan();
@@ -125,7 +127,7 @@ impl App {
                 if let Some(path) =
                     crate::file_browser_activity::FileBrowserActivity::load_last_active_epub_path()
                 {
-                    app.main_activity.files_tab.request_open_path(path);
+                    app.main_activity.queue_open_content_path(path);
                     app.main_activity
                         .switch_to_tab(crate::main_activity::Tab::Files);
                 }
@@ -160,26 +162,7 @@ impl App {
         let mut redraw = self.process_result(result);
         redraw |= self.sync_runtime_settings();
 
-        // Check if library wants to open a book
-        if let Some(path) = self.main_activity.library_tab.take_open_request() {
-            if !self.main_activity.library_tab.is_transfer_screen_open() {
-                // Forward the open request to file browser
-                self.main_activity.files_tab.request_open_path(path);
-            }
-            redraw = true;
-        }
-        if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
-            self.pending_file_transfer_request = Some(request);
-            redraw = true;
-        }
-        if let Some(mode_ap) = self.main_activity.library_tab.take_wifi_mode_request() {
-            self.pending_wifi_mode_ap = Some(mode_ap);
-            redraw = true;
-        }
-        if let Some(config) = self.main_activity.library_tab.take_wifi_ap_config_request() {
-            self.pending_wifi_ap_config = Some(config);
-            redraw = true;
-        }
+        redraw |= self.pull_library_requests();
 
         redraw
     }
@@ -351,19 +334,9 @@ impl App {
     /// Run all deferred app tasks.
     pub fn process_deferred_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
         let settings_updated = self.sync_runtime_settings();
-        if self.main_activity.library_tab.take_refresh_request() {
-            self.force_rescan_library();
-        }
-        if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
-            self.pending_file_transfer_request = Some(request);
-        }
-        if let Some(mode_ap) = self.main_activity.library_tab.take_wifi_mode_request() {
-            self.pending_wifi_mode_ap = Some(mode_ap);
-        }
-        if let Some(config) = self.main_activity.library_tab.take_wifi_ap_config_request() {
-            self.pending_wifi_ap_config = Some(config);
-        }
+        let library_request_updated = self.pull_library_requests();
         let library_updated = self.process_library_scan(fs);
+        let content_open_updated = self.process_pending_content_open_request();
         let file_browser_updated = self.process_file_browser_tasks(fs);
         let mut switched_to_reader = false;
         if self.main_activity.current_tab() != crate::main_activity::Tab::Files
@@ -374,10 +347,47 @@ impl App {
         }
         let library_progress_updated = self.sync_active_book_progress();
         settings_updated
+            || library_request_updated
             || library_updated
+            || content_open_updated
             || file_browser_updated
             || switched_to_reader
             || library_progress_updated
+    }
+
+    fn pull_library_requests(&mut self) -> bool {
+        let mut updated = false;
+        if self.main_activity.library_tab.take_refresh_request() {
+            self.force_rescan_library();
+            updated = true;
+        }
+        if let Some(path) = self.main_activity.library_tab.take_open_request() {
+            if !self.main_activity.library_tab.is_transfer_screen_open() {
+                self.pending_content_open_path = Some(path);
+                updated = true;
+            }
+        }
+        if let Some(request) = self.main_activity.library_tab.take_file_transfer_request() {
+            self.pending_file_transfer_request = Some(request);
+            updated = true;
+        }
+        if let Some(mode_ap) = self.main_activity.library_tab.take_wifi_mode_request() {
+            self.pending_wifi_mode_ap = Some(mode_ap);
+            updated = true;
+        }
+        if let Some(config) = self.main_activity.library_tab.take_wifi_ap_config_request() {
+            self.pending_wifi_ap_config = Some(config);
+            updated = true;
+        }
+        updated
+    }
+
+    fn process_pending_content_open_request(&mut self) -> bool {
+        let Some(path) = self.pending_content_open_path.take() else {
+            return false;
+        };
+        self.main_activity.queue_open_content_path(path);
+        true
     }
 
     #[cfg(feature = "std")]
@@ -860,13 +870,13 @@ mod tests {
 
     #[test]
     fn app_creates_main_activity() {
-        let app = App::new();
+        let app = App::new_with_epub_resume(false);
         assert_eq!(app.current_tab() as usize, 0);
     }
 
     #[test]
     fn app_left_right_cycles_tabs() {
-        let mut app = App::new();
+        let mut app = App::new_with_epub_resume(false);
         assert_eq!(app.current_tab() as usize, 0);
         app.handle_input(InputEvent::Press(Button::Right));
         assert_eq!(app.current_tab() as usize, 1);
@@ -880,7 +890,7 @@ mod tests {
 
     #[test]
     fn app_render_does_not_panic() {
-        let app = App::new();
+        let app = App::new_with_epub_resume(false);
         let mut display = crate::test_display::TestDisplay::default_size();
         let result = app.render(&mut display);
         assert!(result.is_ok());
@@ -888,7 +898,7 @@ mod tests {
 
     #[test]
     fn app_forces_full_refresh_on_first_draw() {
-        let mut app = App::new();
+        let mut app = App::new_with_epub_resume(false);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
     }

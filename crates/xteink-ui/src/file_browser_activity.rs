@@ -16,11 +16,9 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::fs::File;
 #[cfg(feature = "std")]
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::Receiver;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
-#[cfg(feature = "std")]
-use std::thread;
 
 #[cfg(feature = "std")]
 use embedded_graphics::{
@@ -28,9 +26,9 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
+use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use image::ImageReader;
-use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use mu_epub::book::{ChapterEventsOptions, OpenConfig};
 #[cfg(feature = "std")]
@@ -151,25 +149,14 @@ impl ImageViewer {
 
     #[cfg(target_os = "espidf")]
     fn from_path(path: &str, max_width: u32, max_height: u32) -> Result<Self, String> {
-        let reader = ImageReader::open(path)
-            .map_err(|e| format!("Unable to open image: {}", e))?
-            .with_guessed_format()
-            .map_err(|e| format!("Unable to detect image format: {}", e))?;
-        let (src_w, src_h) = reader
-            .into_dimensions()
-            .map_err(|e| format!("Unable to read image dimensions: {}", e))?;
+        let decoded = image::open(path).map_err(|e| format!("Unable to decode image: {}", e))?;
+        let (src_w, src_h) = image::GenericImageView::dimensions(&decoded);
         if src_w == 0 || src_h == 0 {
             return Err("Image has invalid dimensions".to_string());
         }
         if (src_w as u64).saturating_mul(src_h as u64) > Self::MAX_DECODED_PIXELS {
             return Err("Image dimensions are too large".to_string());
         }
-        let decoded = ImageReader::open(path)
-            .map_err(|e| format!("Unable to open image: {}", e))?
-            .with_guessed_format()
-            .map_err(|e| format!("Unable to detect image format: {}", e))?
-            .decode()
-            .map_err(|e| format!("Unable to decode image: {}", e))?;
         let resized = decoded.thumbnail(max_width.max(1), max_height.max(1));
         let gray = resized.to_luma8();
         let (width, height) = gray.dimensions();
@@ -215,17 +202,9 @@ impl ImageViewer {
         display.clear(BinaryColor::Off)?;
         let header_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
         let footer_style = MonoTextStyle::new(ui_font_small(), BinaryColor::On);
-        let title = FileBrowserActivity::truncate_to_px(
-            title,
-            width as i32 - 2 * layout::GAP_SM,
-            12,
-        );
-        Text::new(
-            &title,
-            Point::new(layout::GAP_SM, 14),
-            header_style,
-        )
-        .draw(display)?;
+        let title =
+            FileBrowserActivity::truncate_to_px(title, width as i32 - 2 * layout::GAP_SM, 12);
+        Text::new(&title, Point::new(layout::GAP_SM, 14), header_style).draw(display)?;
         Rectangle::new(Point::new(0, header_h), Size::new(width, 1))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)?;
@@ -932,6 +911,8 @@ impl FileBrowserActivity {
         let title = basename(path).to_string();
         let max_w = crate::DISPLAY_WIDTH as u32;
         let max_h = (crate::DISPLAY_HEIGHT as u32).saturating_sub(44).max(1);
+        #[cfg(target_os = "espidf")]
+        let mut path_error: Option<String> = None;
 
         #[cfg(target_os = "espidf")]
         if let Some(host_path) = Self::resolve_host_backed_image_path(path) {
@@ -941,10 +922,7 @@ impl FileBrowserActivity {
                     return true;
                 }
                 Err(error) => {
-                    self.browser
-                        .set_status_message(format!("Unable to decode image: {}", error));
-                    self.mode = BrowserMode::Browsing;
-                    return true;
+                    path_error = Some(error);
                 }
             }
         }
@@ -963,6 +941,15 @@ impl FileBrowserActivity {
                 self.mode = BrowserMode::ViewingImage { title, viewer };
             }
             Err(error) => {
+                #[cfg(target_os = "espidf")]
+                if let Some(path_error) = path_error {
+                    self.browser.set_status_message(format!(
+                        "Unable to decode image: {} / fallback: {}",
+                        path_error, error
+                    ));
+                    self.mode = BrowserMode::Browsing;
+                    return true;
+                }
                 self.browser
                     .set_status_message(format!("Unable to decode image: {}", error));
                 self.mode = BrowserMode::Browsing;

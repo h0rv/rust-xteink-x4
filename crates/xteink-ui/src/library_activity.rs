@@ -294,7 +294,7 @@ impl LibraryActivity {
     const COVER_MAX_HEIGHT: u32 = layout::COVER_MAX_H;
     const MAX_BMP_PIXELS: u32 = 1_500_000;
     const MAX_BMP_BYTES: usize = 2_000_000;
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[cfg(feature = "std")]
     const MAX_JPEG_BYTES: usize = 2_000_000;
 
     /// Create a new library activity with empty book list
@@ -555,42 +555,135 @@ impl LibraryActivity {
         input_scratch: &mut [u8],
         output_scratch: &mut [u8],
     ) -> Option<CoverThumbnail> {
-        let cover_item = metadata.get_cover_item()?;
-        let is_bmp_media = cover_item
-            .media_type
-            .to_ascii_lowercase()
-            .contains("image/bmp");
-        let is_bmp_href = cover_item.href.to_ascii_lowercase().ends_with(".bmp");
-        if !is_bmp_media && !is_bmp_href {
-            return None;
+        let mut candidates: Vec<(String, Option<String>)> = Vec::new();
+        if let Some(item) = metadata.get_cover_item() {
+            candidates.push((item.href.clone(), Some(item.media_type.clone())));
+        }
+        for guide_ref in &metadata.guide {
+            if guide_ref.guide_type.eq_ignore_ascii_case("cover")
+                && !candidates.iter().any(|(href, _)| *href == guide_ref.href)
+            {
+                candidates.push((guide_ref.href.clone(), None));
+            }
         }
 
-        let cover_path = Self::resolve_epub_relative_path(opf_path, &cover_item.href);
-        let cover_entry = zip
-            .get_entry(&cover_path)
-            .or_else(|| zip.get_entry(&cover_item.href))
-            .or_else(|| zip.get_entry(cover_path.trim_start_matches('/')))?
-            .clone();
+        for (href, media_type) in candidates {
+            let Some((resolved_path, bytes)) = Self::read_epub_resource_with_hints(
+                zip,
+                opf_path,
+                &href,
+                input_scratch,
+                output_scratch,
+                Self::MAX_BMP_BYTES,
+            ) else {
+                continue;
+            };
 
-        if cover_entry.uncompressed_size > Self::MAX_BMP_BYTES as u64 {
-            return None;
+            if let Some(thumb) = Self::decode_cover_thumbnail_from_resource(
+                &bytes,
+                media_type.as_deref(),
+                &resolved_path,
+            ) {
+                return Some(thumb);
+            }
+
+            let lower_path = resolved_path.to_ascii_lowercase();
+            let is_xhtml = lower_path.ends_with(".xhtml")
+                || lower_path.ends_with(".html")
+                || media_type
+                    .as_deref()
+                    .is_some_and(|m| m.contains("xhtml") || m.contains("html"));
+            if !is_xhtml {
+                continue;
+            }
+
+            let Some(image_href) = mu_epub::metadata::extract_cover_image_href_from_xhtml(&bytes)
+            else {
+                continue;
+            };
+            let Some((image_path, image_bytes)) = Self::read_epub_resource_with_hints(
+                zip,
+                &resolved_path,
+                &image_href,
+                input_scratch,
+                output_scratch,
+                Self::MAX_BMP_BYTES,
+            ) else {
+                continue;
+            };
+
+            if let Some(thumb) =
+                Self::decode_cover_thumbnail_from_resource(&image_bytes, None, &image_path)
+            {
+                return Some(thumb);
+            }
         }
 
-        let mut cover_buf = Vec::new();
-        let cover_read = Self::read_zip_entry_with_scratch(
-            zip,
-            &cover_entry,
-            &mut cover_buf,
-            input_scratch,
-            output_scratch,
-            Self::MAX_BMP_BYTES,
-        )
-        .ok()?;
-        Self::decode_bmp_thumbnail(
-            &cover_buf[..cover_read],
-            Self::COVER_WIDTH,
-            Self::COVER_MAX_HEIGHT,
-        )
+        None
+    }
+
+    #[cfg(feature = "std")]
+    fn read_epub_resource_with_hints<F: std::io::Read + std::io::Seek>(
+        zip: &mut mu_epub::zip::StreamingZip<F>,
+        base_file_path: &str,
+        href: &str,
+        input_scratch: &mut [u8],
+        output_scratch: &mut [u8],
+        max_len: usize,
+    ) -> Option<(String, Vec<u8>)> {
+        let resolved = Self::resolve_epub_relative_path(base_file_path, href);
+        let mut candidates = Vec::with_capacity(3);
+        candidates.push(resolved.clone());
+        candidates.push(href.to_string());
+        candidates.push(resolved.trim_start_matches('/').to_string());
+
+        let mut output = Vec::new();
+        for candidate in candidates {
+            if candidate.is_empty() {
+                continue;
+            }
+            let Some(entry) = zip.get_entry(&candidate).cloned() else {
+                continue;
+            };
+            let read = Self::read_zip_entry_with_scratch(
+                zip,
+                &entry,
+                &mut output,
+                input_scratch,
+                output_scratch,
+                max_len,
+            )
+            .ok()?;
+            return Some((candidate, output[..read].to_vec()));
+        }
+        None
+    }
+
+    #[cfg(feature = "std")]
+    fn decode_cover_thumbnail_from_resource(
+        data: &[u8],
+        media_type: Option<&str>,
+        path_hint: &str,
+    ) -> Option<CoverThumbnail> {
+        let lower_media = media_type
+            .map(|m| m.to_ascii_lowercase())
+            .unwrap_or_default();
+        let lower_path = path_hint.to_ascii_lowercase();
+        let is_bmp = lower_media.contains("image/bmp")
+            || lower_path.ends_with(".bmp")
+            || data.starts_with(b"BM");
+        if is_bmp {
+            return Self::decode_bmp_thumbnail(data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT);
+        }
+
+        if lower_media.starts_with("image/")
+            || lower_path.ends_with(".jpg")
+            || lower_path.ends_with(".jpeg")
+            || lower_path.ends_with(".png")
+        {
+            return Self::decode_raster_thumbnail(data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT);
+        }
+        None
     }
 
     #[cfg(feature = "std")]
@@ -762,80 +855,41 @@ impl LibraryActivity {
         })
     }
 
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[cfg(feature = "std")]
+    fn decode_raster_thumbnail(
+        data: &[u8],
+        max_width: u32,
+        max_height: u32,
+    ) -> Option<CoverThumbnail> {
+        if data.len() > Self::MAX_JPEG_BYTES {
+            return None;
+        }
+        let decoded = image::load_from_memory(data).ok()?;
+        let gray = decoded.to_luma8();
+        let (width, height) = gray.dimensions();
+        if width == 0
+            || height == 0
+            || width.saturating_mul(height) > Self::MAX_BMP_PIXELS
+            || gray.len() > Self::MAX_BMP_BYTES
+        {
+            return None;
+        }
+        let decoded = LumaImage {
+            width,
+            height,
+            pixels: gray.into_raw(),
+        };
+        let threshold = Self::adaptive_thumbnail_threshold(&decoded);
+        Self::scale_luma_to_binary_thumbnail(&decoded, max_width, max_height, threshold)
+    }
+
+    #[cfg(feature = "std")]
     fn decode_jpeg_thumbnail(
         data: &[u8],
         max_width: u32,
         max_height: u32,
     ) -> Option<CoverThumbnail> {
-        use image::codecs::jpeg::JpegDecoder;
-        use image::ImageDecoder;
-        use std::io::Cursor;
-
-        if data.len() > Self::MAX_JPEG_BYTES {
-            return None;
-        }
-
-        let cursor = Cursor::new(data);
-        let decoder = JpegDecoder::new(cursor).ok()?;
-        let (width, height) = decoder.dimensions();
-        if width == 0 || height == 0 || width.saturating_mul(height) > Self::MAX_BMP_PIXELS {
-            return None;
-        }
-
-        let color_type = decoder.color_type();
-        let total_bytes = decoder.total_bytes() as usize;
-        if total_bytes > Self::MAX_BMP_BYTES {
-            return None;
-        }
-        let mut raw = vec![0u8; total_bytes];
-        decoder.read_image(&mut raw).ok()?;
-
-        let channels = color_type.channel_count() as usize;
-        if channels == 0 {
-            return None;
-        }
-        let pixels_len = (width as usize).checked_mul(height as usize)?;
-        if raw.len() < pixels_len.checked_mul(channels)? {
-            return None;
-        }
-
-        let mut pixels = vec![0u8; pixels_len];
-        match channels {
-            1 => pixels.copy_from_slice(&raw[..pixels_len]),
-            2 => {
-                for (idx, dst) in pixels.iter_mut().enumerate() {
-                    *dst = raw[idx * 2];
-                }
-            }
-            3 => {
-                for (idx, dst) in pixels.iter_mut().enumerate() {
-                    let base = idx * 3;
-                    let r = raw[base];
-                    let g = raw[base + 1];
-                    let b = raw[base + 2];
-                    *dst = Self::luma_from_bgr(b, g, r);
-                }
-            }
-            4 => {
-                for (idx, dst) in pixels.iter_mut().enumerate() {
-                    let base = idx * 4;
-                    let r = raw[base];
-                    let g = raw[base + 1];
-                    let b = raw[base + 2];
-                    *dst = Self::luma_from_bgr(b, g, r);
-                }
-            }
-            _ => return None,
-        }
-
-        let decoded = LumaImage {
-            width,
-            height,
-            pixels,
-        };
-        let threshold = Self::adaptive_thumbnail_threshold(&decoded);
-        Self::scale_luma_to_binary_thumbnail(&decoded, max_width, max_height, threshold)
+        Self::decode_raster_thumbnail(data, max_width, max_height)
     }
 
     fn adaptive_thumbnail_threshold(source: &LumaImage) -> u8 {
@@ -859,16 +913,6 @@ impl LibraryActivity {
             threshold -= 10;
         }
         threshold.clamp(78, 178) as u8
-    }
-
-    #[allow(dead_code)]
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    fn decode_jpeg_thumbnail(
-        _data: &[u8],
-        _max_width: u32,
-        _max_height: u32,
-    ) -> Option<CoverThumbnail> {
-        None
     }
 
     #[allow(dead_code)]
@@ -2181,6 +2225,61 @@ mod tests {
             .expect("nested markdown should be discovered");
         assert_eq!(markdown.author, "Unknown");
         assert_eq!(markdown.title, "Notes");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn extract_epub_cover_thumbnail_supports_cover_xhtml_img_reference() {
+        use mu_epub::metadata::{parse_container_xml, parse_opf};
+        use mu_epub::zip::StreamingZip;
+        use std::io::Cursor;
+
+        let data =
+            include_bytes!("../../../sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub")
+                .to_vec();
+        let mut zip = StreamingZip::new(Cursor::new(data)).expect("zip should open");
+        let mut input_scratch = vec![0u8; 4096];
+        let mut output_scratch = vec![0u8; 4096];
+
+        let container_entry = zip
+            .get_entry("META-INF/container.xml")
+            .or_else(|| zip.get_entry("meta-inf/container.xml"))
+            .expect("container.xml must exist")
+            .clone();
+        let mut container_buf = Vec::new();
+        let container_read = LibraryActivity::read_zip_entry_with_scratch(
+            &mut zip,
+            &container_entry,
+            &mut container_buf,
+            &mut input_scratch,
+            &mut output_scratch,
+            LibraryActivity::MAX_EPUB_METADATA_BYTES as usize,
+        )
+        .expect("container should read");
+        let opf_path =
+            parse_container_xml(&container_buf[..container_read]).expect("opf path should parse");
+
+        let opf_entry = zip.get_entry(&opf_path).expect("opf entry should exist").clone();
+        let mut opf_buf = Vec::new();
+        let opf_read = LibraryActivity::read_zip_entry_with_scratch(
+            &mut zip,
+            &opf_entry,
+            &mut opf_buf,
+            &mut input_scratch,
+            &mut output_scratch,
+            LibraryActivity::MAX_EPUB_METADATA_BYTES as usize,
+        )
+        .expect("opf should read");
+        let metadata = parse_opf(&opf_buf[..opf_read]).expect("opf should parse");
+
+        let thumb = LibraryActivity::extract_epub_cover_thumbnail(
+            &mut zip,
+            &opf_path,
+            &metadata,
+            &mut input_scratch,
+            &mut output_scratch,
+        );
+        assert!(thumb.is_some(), "cover thumbnail should resolve via cover.xhtml");
     }
 
     #[test]

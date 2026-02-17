@@ -342,7 +342,11 @@ impl App {
         if self.main_activity.current_tab() != crate::main_activity::Tab::Files
             && self.main_activity.files_tab.is_reading()
         {
-            self.main_activity.set_tab(crate::main_activity::Tab::Files);
+            // Reader became active via deferred work while user was on another tab.
+            // Switch visible tab without re-running Files tab enter/exit lifecycle,
+            // otherwise we can reset reader state and queue directory reload tasks.
+            self.main_activity
+                .switch_to_tab(crate::main_activity::Tab::Files);
             switched_to_reader = true;
         }
         let library_progress_updated = self.sync_active_book_progress();
@@ -867,6 +871,7 @@ impl Default for App {
 mod tests {
     use super::*;
     use crate::input::Button;
+    use crate::MockFileSystem;
 
     #[test]
     fn app_creates_main_activity() {
@@ -901,5 +906,28 @@ mod tests {
         let mut app = App::new_with_epub_resume(false);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Fast);
+    }
+
+    #[test]
+    fn deferred_reader_open_switches_tab_without_resetting_reader() {
+        let mut app = App::new_with_epub_resume(false);
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/docs");
+        fs.add_file("/docs/readme.txt", b"hello");
+
+        assert_eq!(app.current_tab(), crate::main_activity::Tab::Library);
+        app.main_activity
+            .queue_open_content_path("/docs/readme.txt");
+
+        for _ in 0..8 {
+            let _ = app.process_deferred_tasks(&mut fs);
+            if app.main_activity.files_tab.is_reading_text() {
+                break;
+            }
+        }
+
+        assert_eq!(app.current_tab(), crate::main_activity::Tab::Files);
+        assert!(app.main_activity.files_tab.is_reading_text());
     }
 }

@@ -79,6 +79,12 @@ enum FileBrowserTask {
     OpenEpubFile { path: String },
 }
 
+#[derive(Debug, Clone)]
+struct PendingBrowserTask {
+    epoch: u32,
+    task: FileBrowserTask,
+}
+
 enum BrowserMode {
     Browsing,
     #[cfg(feature = "std")]
@@ -454,7 +460,8 @@ pub struct FileBrowserActivity {
     epub_overlay: Option<EpubOverlay>,
     #[cfg(feature = "std")]
     active_epub_path: Option<String>,
-    pending_task: Option<FileBrowserTask>,
+    pending_task: Option<PendingBrowserTask>,
+    browser_task_epoch: u32,
     return_to_previous_on_back: bool,
     #[cfg(feature = "std")]
     epub_open_pending: Option<PendingEpubOpen>,
@@ -536,6 +543,7 @@ impl FileBrowserActivity {
             }
         }
         self.mode = BrowserMode::Browsing;
+        self.invalidate_browser_tasks();
         #[cfg(feature = "std")]
         {
             self.epub_overlay = None;
@@ -922,6 +930,7 @@ impl FileBrowserActivity {
             #[cfg(feature = "std")]
             active_epub_path: None,
             pending_task: None,
+            browser_task_epoch: 1,
             return_to_previous_on_back: false,
             #[cfg(feature = "std")]
             epub_open_pending: None,
@@ -1060,11 +1069,15 @@ impl FileBrowserActivity {
         #[cfg(not(feature = "std"))]
         let mut updated = false;
 
-        let Some(task) = self.pending_task.take() else {
+        let Some(pending) = self.pending_task.take() else {
             return updated;
         };
 
-        let task_updated = match task {
+        if pending.epoch != self.browser_task_epoch {
+            return updated;
+        }
+
+        let task_updated = match pending.task {
             FileBrowserTask::LoadCurrentDirectory => self.process_load_current_directory_task(fs),
             FileBrowserTask::OpenPath { path } => self.process_open_path_task(fs, &path),
             FileBrowserTask::OpenTextFile { path } => self.process_open_text_file_task(fs, &path),
@@ -1218,8 +1231,16 @@ impl FileBrowserActivity {
         true
     }
 
+    fn invalidate_browser_tasks(&mut self) {
+        self.browser_task_epoch = self.browser_task_epoch.wrapping_add(1);
+        self.pending_task = None;
+    }
+
     fn queue_task(&mut self, task: FileBrowserTask) {
-        self.pending_task = Some(task);
+        self.pending_task = Some(PendingBrowserTask {
+            epoch: self.browser_task_epoch,
+            task,
+        });
     }
 
     fn queue_load_current_directory(&mut self) {
@@ -1473,6 +1494,7 @@ impl FileBrowserActivity {
 impl Activity for FileBrowserActivity {
     fn on_enter(&mut self) {
         self.mode = BrowserMode::Browsing;
+        self.invalidate_browser_tasks();
         #[cfg(feature = "std")]
         {
             self.epub_overlay = None;
@@ -1488,9 +1510,7 @@ impl Activity for FileBrowserActivity {
                 self.epub_navigation_pending = None;
             }
         }
-        if self.pending_task.is_none() {
-            self.queue_load_current_directory();
-        }
+        self.queue_load_current_directory();
     }
 
     fn on_exit(&mut self) {
@@ -1504,7 +1524,7 @@ impl Activity for FileBrowserActivity {
             self.epub_overlay = None;
             self.active_epub_path = None;
         }
-        self.pending_task = None;
+        self.invalidate_browser_tasks();
         self.return_to_previous_on_back = false;
         #[cfg(feature = "std")]
         {
@@ -2303,6 +2323,28 @@ mod tests {
         assert!(!activity.is_opening_epub());
         assert!(activity.epub_open_pending.is_none());
         assert!(activity.epub_open_started_tick.is_none());
+    }
+
+    #[test]
+    fn process_pending_task_ignores_stale_task_epoch() {
+        let mut activity = FileBrowserActivity::new();
+        let mut fs = create_fs();
+        activity.on_enter();
+        assert!(activity.process_pending_task(&mut fs));
+
+        activity.mode = BrowserMode::ReadingText {
+            title: "sample".to_string(),
+            viewer: TextViewer::new("body".to_string()),
+        };
+        let stale_epoch = activity.browser_task_epoch;
+        activity.pending_task = Some(PendingBrowserTask {
+            epoch: stale_epoch,
+            task: FileBrowserTask::LoadCurrentDirectory,
+        });
+        activity.browser_task_epoch = activity.browser_task_epoch.wrapping_add(1);
+
+        assert!(!activity.process_pending_task(&mut fs));
+        assert!(activity.is_viewing_text());
     }
 
     #[test]

@@ -1056,19 +1056,37 @@ impl EpubReadingState {
                 let candidate = idx as usize;
                 match self.load_chapter_exact(candidate) {
                     Ok(()) => {
-                        // `load_chapter_exact` loads page 0. If we know an exact chapter
-                        // total, jump to its final page; otherwise keep page 0.
+                        // `load_chapter_exact` loads page 0. Prefer jumping to the
+                        // final page of this chapter. If exact totals are unknown,
+                        // probe for the true last page index to avoid 0<->0 boundary loops.
                         let loaded_chapter = self.chapter_idx;
-                        let total_prev = self
+                        let mut last_page_idx = self
                             .chapter_page_counts
                             .get(&loaded_chapter)
                             .copied()
                             .unwrap_or(1)
-                            .max(1);
-                        if total_prev <= 1 {
+                            .max(1)
+                            .saturating_sub(1);
+                        if !self.chapter_page_counts_exact.contains(&loaded_chapter) {
+                            match self.discover_last_page_index(loaded_chapter) {
+                                Ok(idx) => {
+                                    last_page_idx = idx;
+                                    self.chapter_page_counts.insert(loaded_chapter, idx + 1);
+                                    self.chapter_page_counts_exact.insert(loaded_chapter);
+                                }
+                                Err(err) => {
+                                    log::warn!(
+                                        "[EPUB] prev_page unable to discover last page chapter={} err={}",
+                                        loaded_chapter,
+                                        err
+                                    );
+                                }
+                            }
+                        }
+                        if last_page_idx == 0 {
                             return true;
                         }
-                        self.page_idx = total_prev.saturating_sub(1);
+                        self.page_idx = last_page_idx;
                         match self.load_page_with_retries(
                             loaded_chapter,
                             self.page_idx,
@@ -1130,6 +1148,49 @@ impl EpubReadingState {
             previous_page
         );
         false
+    }
+
+    fn discover_last_page_index(&mut self, chapter_idx: usize) -> Result<usize, String> {
+        const MAX_PROBE_PAGE_INDEX: usize = 4096;
+
+        let mut last_valid = 0usize;
+        let mut invalid_upper = 1usize;
+
+        loop {
+            match self.load_page_with_retries(
+                chapter_idx,
+                invalid_upper,
+                Self::PAGE_LOAD_MAX_RETRIES,
+            ) {
+                Ok(_) => {
+                    last_valid = invalid_upper;
+                    if invalid_upper >= MAX_PROBE_PAGE_INDEX {
+                        return Ok(last_valid);
+                    }
+                    let next = invalid_upper.saturating_mul(2).min(MAX_PROBE_PAGE_INDEX);
+                    if next == invalid_upper {
+                        return Ok(last_valid);
+                    }
+                    invalid_upper = next;
+                }
+                Err(err) if Self::is_out_of_range_error(&err) => {
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        let mut lo = last_valid;
+        let mut hi = invalid_upper;
+        while lo + 1 < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.load_page_with_retries(chapter_idx, mid, Self::PAGE_LOAD_MAX_RETRIES) {
+                Ok(_) => lo = mid,
+                Err(err) if Self::is_out_of_range_error(&err) => hi = mid,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(lo)
     }
 
     pub(super) fn next_chapter(&mut self) -> bool {
@@ -1233,42 +1294,54 @@ impl EpubReadingState {
     }
 
     fn prefetch_inline_images_for_page(&mut self, page: &RenderPage) {
-        let commands: &[DrawCommand] = if !page.content_commands.is_empty() {
-            &page.content_commands
-        } else {
-            &page.commands
-        };
-        for cmd in commands {
-            let DrawCommand::ImageObject(obj) = cmd else {
-                continue;
+        #[cfg(target_os = "espidf")]
+        {
+            let _ = page;
+            // Inline image prefetch/decode is too memory-expensive on ESP heaps
+            // during page load; keep the lightweight fallback path on device.
+            return;
+        }
+        #[cfg(not(target_os = "espidf"))]
+        {
+            let commands: &[DrawCommand] = if !page.content_commands.is_empty() {
+                &page.content_commands
+            } else {
+                &page.commands
             };
-            if obj.src.is_empty() || obj.width == 0 || obj.height == 0 {
-                continue;
-            }
-            let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
-            if self.inline_image_cache.contains_key(&key) {
-                continue;
-            }
-            let bytes = match self.book.read_resource(&obj.src) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    log::debug!(
-                        "[EPUB] inline image resource read failed src={} err={}",
-                        obj.src,
-                        err
-                    );
+            for cmd in commands {
+                let DrawCommand::ImageObject(obj) = cmd else {
+                    continue;
+                };
+                if obj.src.is_empty() || obj.width == 0 || obj.height == 0 {
                     continue;
                 }
-            };
-            if let Some(bitmap) = Self::decode_inline_image_bitmap(&bytes, obj.width, obj.height) {
-                self.inline_image_cache.insert(key, bitmap);
+                let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
+                if self.inline_image_cache.contains_key(&key) {
+                    continue;
+                }
+                let bytes = match self.book.read_resource(&obj.src) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        log::debug!(
+                            "[EPUB] inline image resource read failed src={} err={}",
+                            obj.src,
+                            err
+                        );
+                        continue;
+                    }
+                };
+                if let Some(bitmap) =
+                    Self::decode_inline_image_bitmap(&bytes, obj.width, obj.height)
+                {
+                    self.inline_image_cache.insert(key, bitmap);
+                }
             }
-        }
-        while self.inline_image_cache.len() > 24 {
-            let Some(first_key) = self.inline_image_cache.keys().next().cloned() else {
-                break;
-            };
-            self.inline_image_cache.remove(&first_key);
+            while self.inline_image_cache.len() > 24 {
+                let Some(first_key) = self.inline_image_cache.keys().next().cloned() else {
+                    break;
+                };
+                self.inline_image_cache.remove(&first_key);
+            }
         }
     }
 
@@ -1753,6 +1826,8 @@ impl EpubReadingState {
 #[cfg(test)]
 mod tests {
     use super::EpubReadingState;
+    use crate::reader_settings_activity::ReaderSettings;
+    use std::io::Cursor;
 
     #[test]
     fn current_chapter_skips_non_renderable_before_current() {
@@ -1896,6 +1971,85 @@ mod tests {
         );
         assert_eq!(EpubReadingState::locate_in_weighted_pages(0, &[]), None);
     }
+
+    #[test]
+    fn prev_page_discovers_last_page_for_unknown_previous_chapter_total() {
+        let bytes = include_bytes!("../../../../sample_books/pg84-frankenstein.epub").to_vec();
+        let mut state =
+            EpubReadingState::from_reader(Box::new(Cursor::new(bytes)), ReaderSettings::default())
+                .expect("frankenstein should open");
+        state
+            .load_chapter_forward(0)
+            .expect("first renderable chapter should load");
+
+        let chapter_count = state.book.chapter_count();
+        let mut picked: Option<(usize, usize, usize)> = None;
+        for chapter_idx in 0..chapter_count.saturating_sub(1) {
+            let Ok(page_total) = state.compute_chapter_page_count(chapter_idx) else {
+                continue;
+            };
+            if page_total <= 1 {
+                continue;
+            }
+            if state.load_chapter_forward(chapter_idx + 1).is_ok() {
+                let next_renderable = state.chapter_idx;
+                if next_renderable > chapter_idx {
+                    picked = Some((chapter_idx, page_total, next_renderable));
+                    break;
+                }
+            }
+        }
+        let (prev_chapter, prev_page_total, next_renderable) =
+            picked.expect("need a multi-page chapter followed by renderable chapter");
+
+        // Simulate unknown chapter total as seen on constrained devices.
+        state.chapter_page_counts.insert(prev_chapter, 1);
+        state.chapter_page_counts_exact.remove(&prev_chapter);
+        state
+            .load_chapter_forward(next_renderable)
+            .expect("target next renderable chapter should load");
+        assert_eq!(state.chapter_idx, next_renderable);
+        assert_eq!(state.page_idx, 0);
+
+        assert!(state.prev_page(), "prev_page should cross chapter boundary");
+        assert_eq!(state.chapter_idx, prev_chapter);
+        assert_eq!(state.page_idx, prev_page_total - 1);
+
+        assert!(state.next_page(), "next_page should return to next chapter");
+        assert_eq!(state.chapter_idx, next_renderable);
+        assert_eq!(state.page_idx, 0);
+    }
+
+    #[test]
+    fn chapter_navigation_progresses_monotonically_without_looping() {
+        let bytes = include_bytes!("../../../../sample_books/pg84-frankenstein.epub").to_vec();
+        let mut state =
+            EpubReadingState::from_reader(Box::new(Cursor::new(bytes)), ReaderSettings::default())
+                .expect("frankenstein should open");
+        state
+            .load_chapter_forward(0)
+            .expect("first renderable chapter should load");
+
+        let start = state.chapter_idx;
+        assert!(state.next_chapter(), "next_chapter should advance");
+        let advanced = state.chapter_idx;
+        assert!(advanced > start, "chapter index should increase");
+
+        assert!(state.prev_chapter(), "prev_chapter should go back");
+        assert_eq!(state.chapter_idx, start);
+
+        let mut last = state.chapter_idx;
+        let mut steps = 0usize;
+        while state.next_chapter() {
+            assert!(
+                state.chapter_idx > last,
+                "chapter index must strictly increase"
+            );
+            last = state.chapter_idx;
+            steps += 1;
+            assert!(steps < 128, "chapter navigation loop detected");
+        }
+    }
 }
 
 impl FileBrowserActivity {
@@ -1909,6 +2063,7 @@ impl FileBrowserActivity {
         {
             self.active_epub_path = Some(path.to_string());
         }
+        self.invalidate_browser_tasks();
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             self.mode = BrowserMode::OpeningEpub;
@@ -1955,6 +2110,7 @@ impl FileBrowserActivity {
                                 return true;
                             }
                             self.restore_active_epub_position(&renderer);
+                            self.invalidate_browser_tasks();
                             self.mode = BrowserMode::ReadingEpub { renderer };
                         }
                         Err(error) => {
@@ -2031,6 +2187,7 @@ impl FileBrowserActivity {
                 if let Ok(mut guard) = renderer.lock() {
                     guard.prewarm_next_page();
                 }
+                self.invalidate_browser_tasks();
                 self.mode = BrowserMode::ReadingEpub { renderer };
                 true
             }

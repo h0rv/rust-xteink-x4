@@ -1293,34 +1293,34 @@ impl EpubReadingState {
         }
         #[cfg(not(target_os = "espidf"))]
         {
-        let mut cover_bytes = Vec::new();
-        let cover_ref = match self.book.read_cover_image_into(&mut cover_bytes) {
-            Ok(Some(cover)) => Some(cover),
-            Ok(None) => None,
-            Err(err) => {
-                log::debug!("[EPUB] cover image read failed: {}", err);
-                None
-            }
-        };
-        let Some(cover_ref) = cover_ref else {
-            return;
-        };
-        if let Some(bitmap) = Self::decode_inline_image_bitmap(
-            &cover_bytes,
-            crate::DISPLAY_WIDTH,
-            crate::DISPLAY_HEIGHT,
-        ) {
-            self.cover_image_bitmap = Some(bitmap);
-            self.cover_image_sources
-                .insert(Self::normalize_image_src_key(&cover_ref.href));
-            self.cover_image_sources
-                .insert(Self::normalize_image_src_key(&cover_ref.zip_path));
-            let file_name = basename(&cover_ref.href);
-            if !file_name.is_empty() {
+            let mut cover_bytes = Vec::new();
+            let cover_ref = match self.book.read_cover_image_into(&mut cover_bytes) {
+                Ok(Some(cover)) => Some(cover),
+                Ok(None) => None,
+                Err(err) => {
+                    log::debug!("[EPUB] cover image read failed: {}", err);
+                    None
+                }
+            };
+            let Some(cover_ref) = cover_ref else {
+                return;
+            };
+            if let Some(bitmap) = Self::decode_inline_image_bitmap(
+                &cover_bytes,
+                crate::DISPLAY_WIDTH,
+                crate::DISPLAY_HEIGHT,
+            ) {
+                self.cover_image_bitmap = Some(bitmap);
                 self.cover_image_sources
-                    .insert(Self::normalize_image_src_key(file_name));
+                    .insert(Self::normalize_image_src_key(&cover_ref.href));
+                self.cover_image_sources
+                    .insert(Self::normalize_image_src_key(&cover_ref.zip_path));
+                let file_name = basename(&cover_ref.href);
+                if !file_name.is_empty() {
+                    self.cover_image_sources
+                        .insert(Self::normalize_image_src_key(file_name));
+                }
             }
-        }
         }
     }
 

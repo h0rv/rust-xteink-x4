@@ -161,11 +161,14 @@ impl EpubReadingState {
             chapter_page_counts: BTreeMap::new(),
             chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
+            cover_image_sources: BTreeSet::new(),
+            cover_image_bitmap: None,
             inline_image_cache: BTreeMap::new(),
             chapter_idx: 0,
             page_idx: 0,
             last_next_page_reached_end: false,
         };
+        state.initialize_cover_image_cache();
         state.register_embedded_fonts();
         state.load_chapter_forward(0)?;
         log::info!("[EPUB] initial chapter/page loaded");
@@ -224,11 +227,14 @@ impl EpubReadingState {
             chapter_page_counts: BTreeMap::new(),
             chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
+            cover_image_sources: BTreeSet::new(),
+            cover_image_bitmap: None,
             inline_image_cache: BTreeMap::new(),
             chapter_idx: 0,
             page_idx: 0,
             last_next_page_reached_end: false,
         };
+        state.initialize_cover_image_cache();
         log::info!("[EPUB] reader state allocated (lazy buffers)");
         state.register_embedded_fonts();
         log::info!("[EPUB] reader state ready");
@@ -1269,6 +1275,66 @@ impl EpubReadingState {
         avg.clamp(78, 178) as u8
     }
 
+    fn normalize_image_src_key(src: &str) -> String {
+        src.trim()
+            .split('#')
+            .next()
+            .unwrap_or(src)
+            .trim()
+            .to_ascii_lowercase()
+    }
+
+    fn initialize_cover_image_cache(&mut self) {
+        let mut cover_bytes = Vec::new();
+        let cover_ref = match self.book.read_cover_image_into(&mut cover_bytes) {
+            Ok(Some(cover)) => Some(cover),
+            Ok(None) => None,
+            Err(err) => {
+                log::debug!("[EPUB] cover image read failed: {}", err);
+                None
+            }
+        };
+        let Some(cover_ref) = cover_ref else {
+            return;
+        };
+        if let Some(bitmap) = Self::decode_inline_image_bitmap(
+            &cover_bytes,
+            crate::DISPLAY_WIDTH,
+            crate::DISPLAY_HEIGHT,
+        ) {
+            self.cover_image_bitmap = Some(bitmap);
+            self.cover_image_sources
+                .insert(Self::normalize_image_src_key(&cover_ref.href));
+            self.cover_image_sources
+                .insert(Self::normalize_image_src_key(&cover_ref.zip_path));
+            let file_name = basename(&cover_ref.href);
+            if !file_name.is_empty() {
+                self.cover_image_sources
+                    .insert(Self::normalize_image_src_key(file_name));
+            }
+        }
+    }
+
+    fn resolve_cover_image_bitmap_for_src(&self, src: &str) -> Option<&InlineImageBitmap> {
+        let bitmap = self.cover_image_bitmap.as_ref()?;
+        let key = Self::normalize_image_src_key(src);
+        if key.is_empty() {
+            return None;
+        }
+        if self.cover_image_sources.contains(&key) {
+            return Some(bitmap);
+        }
+        let file_name = basename(&key);
+        if !file_name.is_empty()
+            && self
+                .cover_image_sources
+                .contains(&Self::normalize_image_src_key(file_name))
+        {
+            return Some(bitmap);
+        }
+        None
+    }
+
     fn decode_inline_image_bitmap(
         bytes: &[u8],
         max_width: u32,
@@ -1296,9 +1362,13 @@ impl EpubReadingState {
     fn prefetch_inline_images_for_page(&mut self, page: &RenderPage) {
         #[cfg(target_os = "espidf")]
         {
+            // On ESP32-C3, inline-image prefetch is a frequent OOM source while opening
+            // chapters/pages (especially immediately after pagination when heap is fragmented).
+            // Keep page turn/open stable by skipping background image prefetch entirely.
+            //
+            // Image placeholders still render via layout commands; this only disables
+            // opportunistic bitmap decode/cache on constrained heaps.
             let _ = page;
-            // Inline image prefetch/decode is too memory-expensive on ESP heaps
-            // during page load; keep the lightweight fallback path on device.
             return;
         }
         #[cfg(not(target_os = "espidf"))]
@@ -1400,6 +1470,51 @@ impl EpubReadingState {
         Ok(())
     }
 
+    fn render_inline_image_placeholder<D: DrawTarget<Color = BinaryColor>>(
+        &self,
+        display: &mut D,
+        obj: &ImageObjectCommand,
+    ) -> Result<(), D::Error> {
+        let outer = Rectangle::new(
+            Point::new(obj.x, obj.y),
+            Size::new(obj.width.max(1), obj.height.max(1)),
+        );
+        outer
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+            .draw(display)?;
+        outer
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)?;
+
+        let inner_w = obj.width.saturating_sub(8).max(12);
+        let inner_h = obj.height.saturating_sub(10).max(12);
+        let icon_w = inner_w.min(20);
+        let icon_h = inner_h.min(24);
+        let icon_x = obj.x + ((obj.width as i32 - icon_w as i32).max(0) / 2);
+        let icon_y = obj.y + ((obj.height as i32 - icon_h as i32).max(0) / 2);
+
+        Rectangle::new(Point::new(icon_x, icon_y), Size::new(icon_w, icon_h))
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)?;
+
+        // Small top bar + two text lines for a simple "book page" icon.
+        Rectangle::new(
+            Point::new(icon_x + 2, icon_y + 2),
+            Size::new(icon_w.saturating_sub(4).max(1), 2),
+        )
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(display)?;
+
+        let line_w = icon_w.saturating_sub(6).max(2);
+        Rectangle::new(Point::new(icon_x + 3, icon_y + 8), Size::new(line_w, 1))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+        Rectangle::new(Point::new(icon_x + 3, icon_y + 12), Size::new(line_w, 1))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)?;
+        Ok(())
+    }
+
     fn render_inline_images<D: DrawTarget<Color = BinaryColor>>(
         &self,
         page: &RenderPage,
@@ -1417,6 +1532,10 @@ impl EpubReadingState {
             let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
             if let Some(bitmap) = self.inline_image_cache.get(&key) {
                 self.render_inline_image_object(display, obj, bitmap)?;
+            } else if let Some(bitmap) = self.resolve_cover_image_bitmap_for_src(&obj.src) {
+                self.render_inline_image_object(display, obj, bitmap)?;
+            } else {
+                self.render_inline_image_placeholder(display, obj)?;
             }
         }
         Ok(())
@@ -1483,14 +1602,14 @@ impl EpubReadingState {
 
     fn load_page(&mut self, chapter_idx: usize, page_idx: usize) -> Result<RenderPage, String> {
         if let Some(page) = self.page_cache.get(&(chapter_idx, page_idx)) {
-            log::info!(
+            log::debug!(
                 "[EPUB] page cache hit chapter={} page={}",
                 chapter_idx,
                 page_idx
             );
             return Ok(page.clone());
         }
-        log::info!(
+        log::debug!(
             "[EPUB] load_page start chapter={} page={} cache_entries={}",
             chapter_idx,
             page_idx,
@@ -1519,7 +1638,7 @@ impl EpubReadingState {
                         required_bytes
                     )
                 })?;
-                log::info!(
+                log::debug!(
                     "[EPUB] pre-sized chapter buffer to {} bytes for chapter={}",
                     self.chapter_buf.capacity(),
                     chapter_idx
@@ -1589,7 +1708,7 @@ impl EpubReadingState {
                 }
                 return Err(format!("Unable to stream EPUB chapter: {}", err_string));
             }
-            log::info!("[EPUB] chapter_events streamed chapter={}", chapter_idx);
+            log::debug!("[EPUB] chapter_events streamed chapter={}", chapter_idx);
 
             if let Some(err) = layout_error {
                 return Err(format!("Unable to layout EPUB chapter: {}", err));
@@ -1626,7 +1745,7 @@ impl EpubReadingState {
 
             break target_page.ok_or_else(|| Self::OUT_OF_RANGE_ERR.to_string())?;
         };
-        log::info!(
+        log::debug!(
             "[EPUB] load_page ok chapter={} page={} total_in_chapter={:?}",
             chapter_idx,
             page_idx,

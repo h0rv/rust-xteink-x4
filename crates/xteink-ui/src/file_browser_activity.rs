@@ -435,6 +435,8 @@ struct EpubReadingState {
     chapter_page_counts: BTreeMap<usize, usize>,
     chapter_page_counts_exact: BTreeSet<usize>,
     non_renderable_chapters: BTreeSet<usize>,
+    cover_image_sources: BTreeSet<String>,
+    cover_image_bitmap: Option<InlineImageBitmap>,
     inline_image_cache: BTreeMap<String, InlineImageBitmap>,
     chapter_idx: usize,
     page_idx: usize,

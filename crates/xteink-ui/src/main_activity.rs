@@ -928,11 +928,33 @@ impl LibraryTabContent {
                 let _ =
                     book.draw_cover_thumbnail_scaled(display, x + 1, y + 1, width - 2, height - 2)?;
             } else {
-                Text::new(
-                    "No",
-                    Point::new(x + 8, y + (height as i32 / 2) - 4),
-                    MonoTextStyle::new(ui_font_small(), BinaryColor::On),
+                let icon_w = width.saturating_sub(14).clamp(12, 28) as i32;
+                let icon_h = height.saturating_sub(14).clamp(16, 36) as i32;
+                let icon_x = x + ((width as i32 - icon_w) / 2);
+                let icon_y = y + ((height as i32 - icon_h) / 2);
+                Rectangle::new(
+                    Point::new(icon_x, icon_y),
+                    Size::new(icon_w as u32, icon_h as u32),
                 )
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(display)?;
+                Rectangle::new(
+                    Point::new(icon_x + 2, icon_y + 2),
+                    Size::new((icon_w as u32).saturating_sub(4).max(1), 2),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                Rectangle::new(
+                    Point::new(icon_x + 3, icon_y + 8),
+                    Size::new((icon_w as u32).saturating_sub(6).max(1), 1),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                Rectangle::new(
+                    Point::new(icon_x + 3, icon_y + 12),
+                    Size::new((icon_w as u32).saturating_sub(8).max(1), 1),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(display)?;
             }
         }
@@ -1351,19 +1373,7 @@ impl LibraryTabContent {
                         .text_color(BinaryColor::Off)
                         .background_color(BinaryColor::On)
                         .build();
-                    let row_cover_x = MARGIN + 2;
-                    let row_cover_y = y - body_h + 3;
-                    let row_cover_w = 26u32;
-                    let row_cover_h = (item_h as u32).saturating_sub(6);
-                    Self::render_cover_slot(
-                        display,
-                        Some(book),
-                        row_cover_x,
-                        row_cover_y,
-                        row_cover_w,
-                        row_cover_h,
-                    )?;
-                    let row_text_x = row_cover_x + row_cover_w as i32 + 8;
+                    let row_text_x = MARGIN + 4;
                     let row_right = DISPLAY_WIDTH as i32 - MARGIN;
                     let progress_text = Self::progress_label(book.progress_percent);
                     let progress_w = progress_text.len() as i32 * ui_font_small_char_width();
@@ -1390,19 +1400,7 @@ impl LibraryTabContent {
                     )
                     .draw(display)?;
                 } else {
-                    let row_cover_x = MARGIN + 2;
-                    let row_cover_y = y - body_h + 3;
-                    let row_cover_w = 26u32;
-                    let row_cover_h = (item_h as u32).saturating_sub(6);
-                    Self::render_cover_slot(
-                        display,
-                        Some(book),
-                        row_cover_x,
-                        row_cover_y,
-                        row_cover_w,
-                        row_cover_h,
-                    )?;
-                    let row_text_x = row_cover_x + row_cover_w as i32 + 8;
+                    let row_text_x = MARGIN + 4;
                     let row_right = DISPLAY_WIDTH as i32 - MARGIN;
                     let progress_text = Self::progress_label(book.progress_percent);
                     let progress_w = progress_text.len() as i32 * ui_font_small_char_width();

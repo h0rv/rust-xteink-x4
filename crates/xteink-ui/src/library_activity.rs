@@ -285,6 +285,9 @@ impl LibraryActivity {
     pub const DEFAULT_BOOKS_ROOT: &'static str = "/books";
     #[cfg(feature = "std")]
     const MAX_EPUB_METADATA_BYTES: u64 = 64 * 1024;
+    #[cfg(feature = "std")]
+    const MAX_COMPACT_COVER_CHARS: usize =
+        ((DISPLAY_WIDTH as usize) * (DISPLAY_HEIGHT as usize)).div_ceil(8) * 2 + 16;
 
     /// Toast display duration in frames
     const TOAST_DURATION: u32 = 120; // ~2 seconds at 60fps
@@ -373,18 +376,51 @@ impl LibraryActivity {
             .rsplit_once('.')
             .map(|(_, ext)| ext)
             .unwrap_or_default();
+        #[cfg(feature = "std")]
+        let file_size = fs.file_info(path).map(|info| info.size).unwrap_or(0);
+        #[cfg(feature = "std")]
+        let cached_cover = Self::load_cached_cover_thumbnail(path, file_size);
+        #[cfg(feature = "std")]
+        let include_epub_cover_decode = cached_cover.is_none();
+        #[cfg(not(feature = "std"))]
+        let include_epub_cover_decode = true;
 
         if extension.eq_ignore_ascii_case("epub") || extension.eq_ignore_ascii_case("epu") {
-            if let Some((title, author, cover_thumbnail)) = Self::extract_epub_book_info(fs, path) {
+            if let Some((title, author, cover_thumbnail)) =
+                Self::extract_epub_book_info(fs, path, include_epub_cover_decode)
+            {
                 let mut book = BookInfo::new(title, author, path, 0, None);
-                book.cover_thumbnail =
-                    cover_thumbnail.or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+                #[cfg(feature = "std")]
+                {
+                    book.cover_thumbnail = cached_cover
+                        .or(cover_thumbnail)
+                        .or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+                    if let Some(thumb) = book.cover_thumbnail.as_ref() {
+                        let _ = Self::persist_cached_cover_thumbnail(path, file_size, thumb);
+                    }
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    book.cover_thumbnail =
+                        cover_thumbnail.or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+                }
                 return book;
             }
         }
 
         let mut book = BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None);
-        book.cover_thumbnail = Self::load_sidecar_cover_thumbnail(fs, path);
+        #[cfg(feature = "std")]
+        {
+            book.cover_thumbnail =
+                cached_cover.or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+            if let Some(thumb) = book.cover_thumbnail.as_ref() {
+                let _ = Self::persist_cached_cover_thumbnail(path, file_size, thumb);
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            book.cover_thumbnail = Self::load_sidecar_cover_thumbnail(fs, path);
+        }
         book
     }
 
@@ -392,16 +428,11 @@ impl LibraryActivity {
     fn extract_epub_book_info(
         fs: &mut dyn FileSystem,
         path: &str,
+        include_cover: bool,
     ) -> Option<(String, String, Option<CoverThumbnail>)> {
         use mu_epub::metadata::{parse_container_xml, parse_opf};
         use mu_epub::zip::StreamingZip;
         use std::io::Cursor;
-
-        if let Ok(info) = fs.file_info(path) {
-            if info.size > Self::MAX_EPUB_METADATA_BYTES {
-                return None;
-            }
-        }
 
         let data = fs.read_file_bytes(path).ok()?;
         let mut zip = StreamingZip::new(Cursor::new(data)).ok()?;
@@ -448,13 +479,17 @@ impl LibraryActivity {
         } else {
             metadata.author.clone()
         };
-        let cover_thumbnail = Self::extract_epub_cover_thumbnail(
-            &mut zip,
-            &opf_path,
-            &metadata,
-            &mut input_scratch,
-            &mut output_scratch,
-        );
+        let cover_thumbnail = if include_cover {
+            Self::extract_epub_cover_thumbnail(
+                &mut zip,
+                &opf_path,
+                &metadata,
+                &mut input_scratch,
+                &mut output_scratch,
+            )
+        } else {
+            None
+        };
         Some((title, author, cover_thumbnail))
     }
 
@@ -462,6 +497,7 @@ impl LibraryActivity {
     fn extract_epub_book_info(
         _fs: &mut dyn FileSystem,
         _path: &str,
+        _include_cover: bool,
     ) -> Option<(String, String, Option<CoverThumbnail>)> {
         None
     }
@@ -489,23 +525,18 @@ impl LibraryActivity {
                 }
                 continue;
             }
-            #[cfg(not(target_os = "espidf"))]
-            {
-                if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-                    if let Some(thumb) = Self::decode_jpeg_thumbnail(
-                        &data,
-                        Self::COVER_WIDTH,
-                        Self::COVER_MAX_HEIGHT,
-                    ) {
-                        return Some(thumb);
-                    }
+            if lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") {
+                if let Some(thumb) =
+                    Self::decode_raster_thumbnail(&data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT)
+                {
+                    return Some(thumb);
                 }
             }
         }
         None
     }
 
-    fn sidecar_cover_candidates(book_path: &str) -> [String; 6] {
+    fn sidecar_cover_candidates(book_path: &str) -> [String; 8] {
         let stem = book_path
             .rsplit_once('.')
             .map(|(name, _)| name)
@@ -515,10 +546,80 @@ impl LibraryActivity {
             format!("{stem}.bmp"),
             format!("{stem}.jpg"),
             format!("{stem}.jpeg"),
+            format!("{stem}.png"),
             join_path(parent, "cover.bmp"),
             join_path(parent, "cover.jpg"),
             join_path(parent, "cover.jpeg"),
+            join_path(parent, "cover.png"),
         ]
+    }
+
+    #[cfg(feature = "std")]
+    fn cover_cache_root() -> &'static str {
+        if cfg!(target_os = "espidf") {
+            "/sd/.xteink/covers"
+        } else {
+            "target/.xteink-covers"
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn cover_cache_key(path: &str, size: u64) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut state = FNV_OFFSET;
+        for b in path.as_bytes() {
+            state ^= *b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
+        for b in size.to_le_bytes() {
+            state ^= b as u64;
+            state = state.wrapping_mul(FNV_PRIME);
+        }
+        state
+    }
+
+    #[cfg(feature = "std")]
+    fn cover_cache_path(path: &str, size: u64) -> String {
+        format!(
+            "{}/{:016x}.compact",
+            Self::cover_cache_root(),
+            Self::cover_cache_key(path, size)
+        )
+    }
+
+    #[cfg(feature = "std")]
+    fn load_cached_cover_thumbnail(path: &str, size: u64) -> Option<CoverThumbnail> {
+        let cache_path = Self::cover_cache_path(path, size);
+        let encoded = std::fs::read_to_string(cache_path).ok()?;
+        if encoded.len() > Self::MAX_COMPACT_COVER_CHARS {
+            return None;
+        }
+        let mut probe = BookInfo::new("", "", "", 0, None);
+        if probe.set_cover_thumbnail_from_compact(encoded.trim()) {
+            probe.cover_thumbnail
+        } else {
+            None
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_cached_cover_thumbnail(path: &str, size: u64, thumb: &CoverThumbnail) -> bool {
+        let mut probe = BookInfo::new("", "", "", 0, None);
+        probe.cover_thumbnail = Some(thumb.clone());
+        let Some(encoded) = probe.cover_thumbnail_compact() else {
+            return false;
+        };
+        if encoded.len() > Self::MAX_COMPACT_COVER_CHARS {
+            return false;
+        }
+        let cache_path = Self::cover_cache_path(path, size);
+        if let Some(parent) = std::path::Path::new(&cache_path).parent() {
+            if std::fs::create_dir_all(parent).is_err() {
+                return false;
+            }
+        }
+        std::fs::write(cache_path, encoded).is_ok()
     }
 
     /// Convert filename to title (remove extension, replace underscores/hyphens with spaces)
@@ -883,15 +984,6 @@ impl LibraryActivity {
         Self::scale_luma_to_binary_thumbnail(&decoded, max_width, max_height, threshold)
     }
 
-    #[cfg(feature = "std")]
-    fn decode_jpeg_thumbnail(
-        data: &[u8],
-        max_width: u32,
-        max_height: u32,
-    ) -> Option<CoverThumbnail> {
-        Self::decode_raster_thumbnail(data, max_width, max_height)
-    }
-
     fn adaptive_thumbnail_threshold(source: &LumaImage) -> u8 {
         if source.pixels.is_empty() {
             return 128;
@@ -913,16 +1005,6 @@ impl LibraryActivity {
             threshold -= 10;
         }
         threshold.clamp(78, 178) as u8
-    }
-
-    #[allow(dead_code)]
-    #[cfg(not(feature = "std"))]
-    fn decode_jpeg_thumbnail(
-        _data: &[u8],
-        _max_width: u32,
-        _max_height: u32,
-    ) -> Option<CoverThumbnail> {
-        None
     }
 
     fn scale_luma_to_binary_thumbnail(
@@ -1478,8 +1560,35 @@ impl LibraryActivity {
                 Point::new(cover_x, cover_y),
                 Size::new(cover_width, cover_height),
             )
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
+            .draw(display)?;
+            Rectangle::new(
+                Point::new(cover_x, cover_y),
+                Size::new(cover_width, cover_height),
+            )
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)?;
+
+            let icon_w = cover_width.saturating_sub(12).min(20).max(12);
+            let icon_h = cover_height.saturating_sub(12).min(24).max(14);
+            let icon_x = cover_x + ((cover_width as i32 - icon_w as i32).max(0) / 2);
+            let icon_y = cover_y + ((cover_height as i32 - icon_h as i32).max(0) / 2);
+            Rectangle::new(Point::new(icon_x, icon_y), Size::new(icon_w, icon_h))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(display)?;
+            Rectangle::new(
+                Point::new(icon_x + 2, icon_y + 2),
+                Size::new(icon_w.saturating_sub(4).max(1), 2),
+            )
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(display)
+            .draw(display)?;
+            let line_w = icon_w.saturating_sub(6).max(2);
+            Rectangle::new(Point::new(icon_x + 3, icon_y + 8), Size::new(line_w, 1))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+            Rectangle::new(Point::new(icon_x + 3, icon_y + 12), Size::new(line_w, 1))
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)
         }
     }
 
@@ -2200,7 +2309,7 @@ mod tests {
         let result = activity.handle_input(InputEvent::Press(Button::Confirm));
         assert_eq!(result, ActivityResult::Consumed);
         assert!(!activity.show_context_menu);
-        assert!(activity.show_toast);
+        assert!(activity.pending_open_path.is_some());
     }
 
     #[cfg(feature = "std")]
@@ -2225,6 +2334,28 @@ mod tests {
             .expect("nested markdown should be discovered");
         assert_eq!(markdown.author, "Unknown");
         assert_eq!(markdown.title, "Notes");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn discover_books_extracts_cover_for_large_epub_file() {
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/books");
+        fs.add_file(
+            "/books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub",
+            include_bytes!("../../../sample_books/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub"),
+        );
+
+        let books = LibraryActivity::discover_books(&mut fs, "/books");
+        let book = books
+            .iter()
+            .find(|book| {
+                book.path
+                    .ends_with("Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub")
+            })
+            .expect("sample EPUB should be discovered");
+        assert!(book.cover_thumbnail.is_some());
     }
 
     #[cfg(feature = "std")]
@@ -2418,5 +2549,29 @@ mod tests {
             .find(|book| book.path.ends_with("Book - Author.epub"))
             .expect("calibre-style book should exist");
         assert!(book.cover_thumbnail.is_some());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn cover_cache_roundtrip_persists_thumbnail_artifact() {
+        let bmp = build_test_bmp_24(
+            2,
+            2,
+            &[[0, 0, 0], [255, 255, 255], [255, 255, 255], [0, 0, 0]],
+        );
+        let thumb = LibraryActivity::decode_bmp_thumbnail(&bmp, 40, 40)
+            .expect("bmp decode should produce a thumbnail");
+        let book_path = "/books/test-cache-roundtrip.epub";
+        let size = 4242u64;
+        let cache_path = LibraryActivity::cover_cache_path(book_path, size);
+        let _ = std::fs::remove_file(&cache_path);
+
+        assert!(LibraryActivity::persist_cached_cover_thumbnail(
+            book_path, size, &thumb
+        ));
+        let loaded = LibraryActivity::load_cached_cover_thumbnail(book_path, size);
+        assert!(loaded.is_some(), "cached artifact should round-trip");
+
+        let _ = std::fs::remove_file(&cache_path);
     }
 }

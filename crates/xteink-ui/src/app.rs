@@ -240,6 +240,13 @@ impl App {
 
     /// Run deferred library scan work.
     pub fn process_library_scan(&mut self, fs: &mut dyn FileSystem) -> bool {
+        #[cfg(target_os = "espidf")]
+        if self.main_activity.current_tab() != crate::main_activity::Tab::Library {
+            // Keep heavy metadata/cover extraction off the main loop unless the user is
+            // actively viewing Library. This avoids stack spikes during unrelated actions.
+            return false;
+        }
+
         if !self.library_scan_pending && self.pending_library_scan.is_none() {
             return false;
         }

@@ -381,7 +381,16 @@ impl LibraryActivity {
         #[cfg(feature = "std")]
         let cached_cover = Self::load_cached_cover_thumbnail(path, file_size);
         #[cfg(feature = "std")]
-        let include_epub_cover_decode = cached_cover.is_none();
+        let include_epub_cover_decode = {
+            #[cfg(target_os = "espidf")]
+            {
+                false
+            }
+            #[cfg(not(target_os = "espidf"))]
+            {
+                cached_cover.is_none()
+            }
+        };
         #[cfg(not(feature = "std"))]
         let include_epub_cover_decode = true;
 
@@ -392,9 +401,17 @@ impl LibraryActivity {
                 let mut book = BookInfo::new(title, author, path, 0, None);
                 #[cfg(feature = "std")]
                 {
-                    book.cover_thumbnail = cached_cover
-                        .or(cover_thumbnail)
-                        .or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+                    #[cfg(target_os = "espidf")]
+                    {
+                        let _ = cover_thumbnail;
+                        book.cover_thumbnail = cached_cover;
+                    }
+                    #[cfg(not(target_os = "espidf"))]
+                    {
+                        book.cover_thumbnail = cached_cover
+                            .or(cover_thumbnail)
+                            .or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+                    }
                     if let Some(thumb) = book.cover_thumbnail.as_ref() {
                         let _ = Self::persist_cached_cover_thumbnail(path, file_size, thumb);
                     }
@@ -411,8 +428,15 @@ impl LibraryActivity {
         let mut book = BookInfo::new(Self::filename_to_title(filename), "Unknown", path, 0, None);
         #[cfg(feature = "std")]
         {
-            book.cover_thumbnail =
-                cached_cover.or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+            #[cfg(target_os = "espidf")]
+            {
+                book.cover_thumbnail = cached_cover;
+            }
+            #[cfg(not(target_os = "espidf"))]
+            {
+                book.cover_thumbnail =
+                    cached_cover.or_else(|| Self::load_sidecar_cover_thumbnail(fs, path));
+            }
             if let Some(thumb) = book.cover_thumbnail.as_ref() {
                 let _ = Self::persist_cached_cover_thumbnail(path, file_size, thumb);
             }

@@ -1491,11 +1491,14 @@ impl FileBrowserActivity {
                     ActivityResult::Ignored
                 }
             }
-            #[cfg(all(feature = "std", not(target_os = "espidf")))]
+            #[cfg(feature = "std")]
             BrowserMode::OpeningEpub => {
                 if matches!(event, InputEvent::Press(Button::Back)) {
-                    self.epub_open_pending = None;
-                    self.epub_open_started_tick = None;
+                    #[cfg(not(target_os = "espidf"))]
+                    {
+                        self.epub_open_pending = None;
+                        self.epub_open_started_tick = None;
+                    }
                     self.mode = BrowserMode::Browsing;
                     self.browser
                         .set_status_message("Canceled EPUB open".to_string());
@@ -1515,7 +1518,6 @@ impl Activity for FileBrowserActivity {
         {
             self.epub_overlay = None;
             self.active_epub_path = None;
-            self.epub_open_started_tick = None;
         }
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {

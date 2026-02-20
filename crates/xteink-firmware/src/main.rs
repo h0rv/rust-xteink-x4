@@ -52,6 +52,8 @@ const ENABLE_WEB_UPLOAD_SERVER: bool = false;
 const UI_STALL_WARN_MS: i64 = 1200;
 const UI_STALL_WINDOW_MS: i64 = 15_000;
 const UI_STALL_RECOVER_STREAK: u8 = 3;
+const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
+const DISPLAY_FAIL_RESET_STREAK: u8 = 3;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -128,7 +130,8 @@ fn apply_update<I, D>(
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     current: &[u8],
-) where
+) -> bool
+where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
 {
@@ -140,7 +143,9 @@ fn apply_update<I, D>(
                 .is_err()
             {
                 log::warn!("UI: full refresh failed");
+                return false;
             }
+            true
         }
         UpdateStrategy::PartialFull => {
             log::info!("UI: applying partial full-screen refresh");
@@ -149,7 +154,9 @@ fn apply_update<I, D>(
                 .is_err()
             {
                 log::warn!("UI: partial full-screen refresh failed");
+                return false;
             }
+            true
         }
         UpdateStrategy::FastFull => {
             log::info!("UI: applying fast full-screen refresh");
@@ -158,7 +165,9 @@ fn apply_update<I, D>(
                 .is_err()
             {
                 log::warn!("UI: fast full-screen refresh failed");
+                return false;
             }
+            true
         }
     }
 }
@@ -174,24 +183,65 @@ fn apply_update_with_mode<I, D>(
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     current: &[u8],
-) where
+) -> bool
+where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
 {
     match mode {
         ActivityRefreshMode::Full => {
             log::info!("UI: Activity requested full refresh");
-            apply_update(UpdateStrategy::Full, display, delay, current);
+            apply_update(UpdateStrategy::Full, display, delay, current)
         }
         ActivityRefreshMode::Partial => {
             log::info!("UI: Periodic partial refresh for ghost cleanup");
-            apply_update(UpdateStrategy::PartialFull, display, delay, current);
+            apply_update(UpdateStrategy::PartialFull, display, delay, current)
         }
         ActivityRefreshMode::Fast => {
             // Driver handles single-buffer differential fast refresh.
-            apply_update(UpdateStrategy::FastFull, display, delay, current);
+            apply_update(UpdateStrategy::FastFull, display, delay, current)
         }
     }
+}
+
+fn handle_display_result<I, D>(
+    context: &str,
+    ok: bool,
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    display_fail_streak: &mut u8,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    if ok {
+        *display_fail_streak = 0;
+        return;
+    }
+    *display_fail_streak = display_fail_streak.saturating_add(1);
+    log::warn!(
+        "[DISPLAY] failed context={} streak={}",
+        context,
+        *display_fail_streak
+    );
+    append_diag(&format!(
+        "display_fail context={} streak={}",
+        context, *display_fail_streak
+    ));
+    if *display_fail_streak < DISPLAY_FAIL_RESET_STREAK {
+        return;
+    }
+
+    log::warn!(
+        "[DISPLAY] resetting panel after {} consecutive failures",
+        DISPLAY_FAIL_RESET_STREAK
+    );
+    append_diag("display_reset_after_failures");
+    if display.reset(delay).is_err() {
+        log::warn!("[DISPLAY] reset failed");
+        append_diag("display_reset_failed");
+    }
+    *display_fail_streak = 0;
 }
 
 struct CompactCover {
@@ -575,12 +625,24 @@ fn main() {
             STARTUP_DEFERRED_MAX_TICKS
         );
     }
+    let mut display_fail_streak: u8 = 0;
     buffered_display.clear();
-    app.render(&mut buffered_display).ok();
+    let first_render_ok = app.render(&mut buffered_display).is_ok();
     log_heap("before_first_render");
-    display
-        .update(buffered_display.buffer(), &[], &mut delay)
-        .ok();
+    let first_update_ok = if first_render_ok {
+        display
+            .update(buffered_display.buffer(), &[], &mut delay)
+            .is_ok()
+    } else {
+        false
+    };
+    handle_display_result(
+        "boot_first_render",
+        first_render_ok && first_update_ok,
+        &mut display,
+        &mut delay,
+        &mut display_fail_streak,
+    );
     log_heap("after_first_render");
 
     log::info!("Starting event loop with adaptive refresh strategy");
@@ -642,6 +704,7 @@ fn main() {
         }
 
         if let Some(server) = web_upload_server.as_mut() {
+            let mut processed_events = 0usize;
             loop {
                 match server.poll() {
                     Ok(Some(event)) => {
@@ -651,6 +714,15 @@ fn main() {
                             event.received_bytes
                         );
                         app.invalidate_library_cache();
+                        processed_events = processed_events.saturating_add(1);
+                        if processed_events >= WEB_UPLOAD_MAX_EVENTS_PER_LOOP {
+                            log::warn!(
+                                "[WEB] poll capped at {} events this loop",
+                                WEB_UPLOAD_MAX_EVENTS_PER_LOOP
+                            );
+                            append_diag("web_poll_capped");
+                            break;
+                        }
                     }
                     Ok(None) => break,
                     Err(PollError::QueueDisconnected) => {
@@ -767,15 +839,26 @@ fn main() {
                     );
                     log::info!("UI: redraw after power short press");
                     buffered_display.clear();
-                    app.render(&mut buffered_display).ok();
+                    let render_ok = app.render(&mut buffered_display).is_ok();
 
                     let refresh_mode = app.get_refresh_mode();
                     log::info!("UI: using refresh mode {:?}", refresh_mode);
-                    apply_update_with_mode(
-                        refresh_mode,
+                    let update_ok = if render_ok {
+                        apply_update_with_mode(
+                            refresh_mode,
+                            &mut display,
+                            &mut delay,
+                            buffered_display.buffer(),
+                        )
+                    } else {
+                        false
+                    };
+                    handle_display_result(
+                        "power_short_press",
+                        render_ok && update_ok,
                         &mut display,
                         &mut delay,
-                        buffered_display.buffer(),
+                        &mut display_fail_streak,
                     );
                 } else {
                     log::info!("UI: no redraw after power short press");
@@ -837,14 +920,25 @@ fn main() {
                     log::info!("UI: redraw after {:?}", btn);
                     log_heap("before_render");
                     buffered_display.clear();
-                    app.render(&mut buffered_display).ok();
+                    let render_ok = app.render(&mut buffered_display).is_ok();
                     let refresh_mode = app.get_refresh_mode();
                     log::info!("UI: using refresh mode {:?}", refresh_mode);
-                    apply_update_with_mode(
-                        refresh_mode,
+                    let update_ok = if render_ok {
+                        apply_update_with_mode(
+                            refresh_mode,
+                            &mut display,
+                            &mut delay,
+                            buffered_display.buffer(),
+                        )
+                    } else {
+                        false
+                    };
+                    handle_display_result(
+                        "button_press",
+                        render_ok && update_ok,
                         &mut display,
                         &mut delay,
-                        buffered_display.buffer(),
+                        &mut display_fail_streak,
                     );
                     log_heap("after_render");
                     if app.file_browser_is_reading_epub() {
@@ -895,13 +989,24 @@ fn main() {
                 reconcile_web_upload_server(&mut app, &mut wifi_manager, &mut web_upload_server);
             log_heap("before_deferred_render");
             buffered_display.clear();
-            app.render(&mut buffered_display).ok();
+            let render_ok = app.render(&mut buffered_display).is_ok();
             let refresh_mode = app.get_refresh_mode();
-            apply_update_with_mode(
-                refresh_mode,
+            let update_ok = if render_ok {
+                apply_update_with_mode(
+                    refresh_mode,
+                    &mut display,
+                    &mut delay,
+                    buffered_display.buffer(),
+                )
+            } else {
+                false
+            };
+            handle_display_result(
+                "deferred_render",
+                render_ok && update_ok,
                 &mut display,
                 &mut delay,
-                buffered_display.buffer(),
+                &mut display_fail_streak,
             );
             log_heap("after_deferred_render");
             if app.file_browser_is_reading_epub() {

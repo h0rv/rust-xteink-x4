@@ -323,7 +323,8 @@ impl App {
     pub fn process_file_browser_tasks(&mut self, fs: &mut dyn FileSystem) -> bool {
         let on_files_tab = self.main_activity.current_tab() == crate::main_activity::Tab::Files;
         let needs_background_work = self.main_activity.files_tab.has_pending_task()
-            || self.main_activity.files_tab.is_opening_epub();
+            || self.main_activity.files_tab.is_opening_epub()
+            || self.main_activity.files_tab.has_epub_runtime_work();
         if !on_files_tab && !needs_background_work {
             return false;
         }

@@ -1540,6 +1540,10 @@ impl FilesTabContent {
         self.file_browser.has_pending_task()
     }
 
+    pub fn has_epub_runtime_work(&self) -> bool {
+        self.file_browser.has_epub_runtime_work()
+    }
+
     pub fn epub_position(&self) -> Option<(usize, usize, usize, usize)> {
         self.file_browser.epub_position()
     }

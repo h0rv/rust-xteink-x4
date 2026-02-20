@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::fs::File;
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 use std::sync::mpsc::Receiver;
 #[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
@@ -313,13 +313,13 @@ struct PendingEpubOpen {
     receiver: Receiver<EpubOpenWorkerEvent>,
 }
 
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 struct PendingEpubNavigation {
     receiver: Receiver<Result<EpubNavigationOutcome, String>>,
     direction: EpubNavigationDirection,
 }
 
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 #[derive(Clone, Copy, Debug, Default)]
 struct EpubNavigationOutcome {
     advanced: bool,
@@ -473,8 +473,14 @@ pub struct FileBrowserActivity {
     epub_open_pending: Option<PendingEpubOpen>,
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     epub_open_started_tick: Option<u32>,
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[cfg(feature = "std")]
     epub_navigation_pending: Option<PendingEpubNavigation>,
+    #[cfg(feature = "std")]
+    epub_navigation_started_tick: Option<u32>,
+    #[cfg(feature = "std")]
+    epub_failure_streak: u8,
+    #[cfg(feature = "std")]
+    epub_failure_window_start_tick: u32,
 }
 
 impl FileBrowserActivity {
@@ -543,7 +549,12 @@ impl FileBrowserActivity {
         {
             self.epub_open_pending = None;
             self.epub_open_started_tick = None;
+        }
+        #[cfg(feature = "std")]
+        {
             self.epub_navigation_pending = None;
+            self.epub_navigation_started_tick = None;
+            self.reset_epub_failure_streak();
         }
         self.mode = BrowserMode::Browsing;
         self.invalidate_browser_tasks();
@@ -911,8 +922,12 @@ impl FileBrowserActivity {
     } else {
         2 * 1024 * 1024
     };
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
-    const EPUB_NAV_WORKER_STACK_BYTES: usize = 512 * 1024;
+    #[cfg(feature = "std")]
+    const EPUB_NAV_WORKER_STACK_BYTES: usize = if cfg!(target_os = "espidf") {
+        48 * 1024
+    } else {
+        512 * 1024
+    };
     #[cfg(feature = "std")]
     const EPUB_OPEN_TIMEOUT_TICKS: u32 = if cfg!(target_os = "espidf") {
         2400 // ~120s at 50ms loop delay
@@ -921,6 +936,16 @@ impl FileBrowserActivity {
     };
     #[cfg(feature = "std")]
     const EPUB_OPEN_HEARTBEAT_TICKS: u32 = 20; // ~1s at 50ms loop delay
+    #[cfg(feature = "std")]
+    const EPUB_NAV_TIMEOUT_TICKS: u32 = if cfg!(target_os = "espidf") {
+        240 // ~12s
+    } else {
+        120 // ~6s
+    };
+    #[cfg(feature = "std")]
+    const EPUB_FAILURE_STREAK_LIMIT: u8 = 3;
+    #[cfg(feature = "std")]
+    const EPUB_FAILURE_WINDOW_TICKS: u32 = 600; // ~30s
 
     pub fn new() -> Self {
         Self {
@@ -944,8 +969,14 @@ impl FileBrowserActivity {
             epub_open_pending: None,
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
             epub_open_started_tick: None,
-            #[cfg(all(feature = "std", not(target_os = "espidf")))]
+            #[cfg(feature = "std")]
             epub_navigation_pending: None,
+            #[cfg(feature = "std")]
+            epub_navigation_started_tick: None,
+            #[cfg(feature = "std")]
+            epub_failure_streak: 0,
+            #[cfg(feature = "std")]
+            epub_failure_window_start_tick: 0,
         }
     }
 
@@ -997,6 +1028,23 @@ impl FileBrowserActivity {
         self.pending_task.is_some()
     }
 
+    #[cfg(feature = "std")]
+    pub(crate) fn has_epub_runtime_work(&self) -> bool {
+        #[cfg(target_os = "espidf")]
+        {
+            self.pending_epub_initial_load || self.epub_navigation_pending.is_some()
+        }
+        #[cfg(not(target_os = "espidf"))]
+        {
+            self.epub_open_pending.is_some() || self.epub_navigation_pending.is_some()
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub(crate) fn has_epub_runtime_work(&self) -> bool {
+        false
+    }
+
     #[allow(dead_code)]
     pub(crate) fn status_message(&self) -> Option<&str> {
         self.browser.status_message()
@@ -1017,6 +1065,54 @@ impl FileBrowserActivity {
                 ));
             }
         }
+    }
+
+    #[cfg(feature = "std")]
+    fn reset_epub_failure_streak(&mut self) {
+        self.epub_failure_streak = 0;
+        self.epub_failure_window_start_tick = self.ui_tick;
+    }
+
+    #[cfg(feature = "std")]
+    fn handle_epub_runtime_failure(&mut self, message: String) {
+        let now = self.ui_tick;
+        if self.epub_failure_streak == 0
+            || now.saturating_sub(self.epub_failure_window_start_tick)
+                > Self::EPUB_FAILURE_WINDOW_TICKS
+        {
+            self.epub_failure_streak = 0;
+            self.epub_failure_window_start_tick = now;
+        }
+        self.epub_failure_streak = self.epub_failure_streak.saturating_add(1);
+
+        if self.epub_failure_streak >= Self::EPUB_FAILURE_STREAK_LIMIT {
+            log::warn!(
+                "[EPUB] safe fallback after repeated failures; last error: {}",
+                message
+            );
+            self.epub_failure_streak = 0;
+            self.epub_failure_window_start_tick = now;
+            self.epub_overlay = None;
+            #[cfg(target_os = "espidf")]
+            {
+                self.pending_epub_initial_load = false;
+            }
+            #[cfg(not(target_os = "espidf"))]
+            {
+                self.epub_open_pending = None;
+                self.epub_open_started_tick = None;
+            }
+            self.epub_navigation_pending = None;
+            self.epub_navigation_started_tick = None;
+            self.active_epub_path = None;
+            self.mode = BrowserMode::Browsing;
+            self.invalidate_browser_tasks();
+            self.browser
+                .set_status_message("Reader recovered from repeated errors".to_string());
+            return;
+        }
+
+        self.browser.set_status_message(message);
     }
 
     pub fn set_battery_percent(&mut self, battery_percent: u8) {
@@ -1074,7 +1170,7 @@ impl FileBrowserActivity {
         {
             updated |= self.process_pending_epub_initial_load();
         }
-        #[cfg(all(feature = "std", not(target_os = "espidf")))]
+        #[cfg(feature = "std")]
         {
             updated |= self.poll_epub_navigation_result();
         }
@@ -1397,95 +1493,51 @@ impl FileBrowserActivity {
                         self.epub_overlay = Some(EpubOverlay::QuickMenu { selected: 0 });
                         return ActivityResult::Consumed;
                     }
-                    #[cfg(target_os = "espidf")]
-                    {
-                        let mut advanced_position: Option<(usize, usize)> = None;
-                        let mut renderer = match renderer.lock() {
-                            Ok(guard) => guard,
-                            Err(poisoned) => poisoned.into_inner(),
-                        };
-                        let advanced = match action {
-                            EpubInputAction::Page(direction) => match direction {
-                                EpubNavigationDirection::Next => renderer.next_page(),
-                                EpubNavigationDirection::Prev => renderer.prev_page(),
-                            },
-                            EpubInputAction::ChapterNext => renderer.next_chapter(),
-                            EpubInputAction::ChapterPrev => renderer.prev_chapter(),
-                            EpubInputAction::OpenSettings => false,
-                        };
-                        let mut exact_chapter_counts: Vec<(usize, usize)> = Vec::new();
-                        let reached_end =
-                            matches!(action, EpubInputAction::Page(EpubNavigationDirection::Next))
-                                && renderer.take_last_next_page_reached_end();
-                        if !advanced {
-                            if reached_end {
-                                self.epub_overlay = Some(EpubOverlay::Finished);
-                            } else {
-                                log::warn!("[EPUB] unable to handle epub action");
+                    match action {
+                        EpubInputAction::Page(direction) => {
+                            if self.epub_navigation_pending.is_some() {
+                                return ActivityResult::Consumed;
                             }
-                        } else {
-                            advanced_position = Some(renderer.position_indices());
-                            exact_chapter_counts = renderer.exact_chapter_page_counts();
-                        }
-                        drop(renderer);
-                        if let (Some((chapter_idx, page_idx)), Some(path)) =
-                            (advanced_position, self.active_epub_path.as_ref())
-                        {
                             self.last_epub_interaction_tick = self.ui_tick;
-                            let _ = Self::persist_epub_position_for_path(
-                                path,
-                                chapter_idx,
-                                page_idx,
-                                &exact_chapter_counts,
-                            );
-                        }
-                        ActivityResult::Consumed
-                    }
-
-                    #[cfg(not(target_os = "espidf"))]
-                    {
-                        match action {
-                            EpubInputAction::Page(direction) => {
-                                if self.epub_navigation_pending.is_some() {
-                                    return ActivityResult::Consumed;
+                            let renderer = Arc::clone(renderer);
+                            match Self::spawn_epub_navigation_worker(renderer, direction) {
+                                Ok(receiver) => {
+                                    self.epub_navigation_pending = Some(PendingEpubNavigation {
+                                        receiver,
+                                        direction,
+                                    });
+                                    self.epub_navigation_started_tick = Some(self.ui_tick);
+                                    ActivityResult::Consumed
                                 }
-                                self.last_epub_interaction_tick = self.ui_tick;
-                                let renderer = Arc::clone(renderer);
-                                match Self::spawn_epub_navigation_worker(renderer, direction) {
-                                    Ok(receiver) => {
-                                        self.epub_navigation_pending =
-                                            Some(PendingEpubNavigation {
-                                                receiver,
-                                                direction,
-                                            });
-                                        ActivityResult::Consumed
-                                    }
-                                    Err(error) => {
-                                        self.browser.set_status_message(error);
-                                        ActivityResult::Consumed
-                                    }
+                                Err(error) => {
+                                    self.handle_epub_runtime_failure(error);
+                                    ActivityResult::Consumed
                                 }
                             }
-                            EpubInputAction::ChapterNext | EpubInputAction::ChapterPrev => {
-                                let mut renderer = match renderer.lock() {
-                                    Ok(guard) => guard,
-                                    Err(poisoned) => poisoned.into_inner(),
-                                };
-                                let advanced = match action {
-                                    EpubInputAction::ChapterNext => renderer.next_chapter(),
-                                    EpubInputAction::ChapterPrev => renderer.prev_chapter(),
-                                    _ => false,
-                                };
-                                if !advanced {
-                                    self.browser.set_status_message(
-                                        "No more chapters in this direction".to_string(),
-                                    );
-                                }
-                                self.last_epub_interaction_tick = self.ui_tick;
-                                ActivityResult::Consumed
-                            }
-                            EpubInputAction::OpenSettings => ActivityResult::Ignored,
                         }
+                        EpubInputAction::ChapterNext | EpubInputAction::ChapterPrev => {
+                            let mut renderer = match renderer.lock() {
+                                Ok(guard) => guard,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            let advanced = match action {
+                                EpubInputAction::ChapterNext => renderer.next_chapter(),
+                                EpubInputAction::ChapterPrev => renderer.prev_chapter(),
+                                _ => false,
+                            };
+                            if !advanced {
+                                self.browser.set_status_message(
+                                    "No more chapters in this direction".to_string(),
+                                );
+                            } else {
+                                drop(renderer);
+                                self.reset_epub_failure_streak();
+                                self.last_epub_interaction_tick = self.ui_tick;
+                                return ActivityResult::Consumed;
+                            }
+                            ActivityResult::Consumed
+                        }
+                        EpubInputAction::OpenSettings => ActivityResult::Ignored,
                     }
                 } else {
                     ActivityResult::Ignored
@@ -1499,6 +1551,8 @@ impl FileBrowserActivity {
                         self.epub_open_pending = None;
                         self.epub_open_started_tick = None;
                     }
+                    self.epub_navigation_pending = None;
+                    self.epub_navigation_started_tick = None;
                     self.mode = BrowserMode::Browsing;
                     self.browser
                         .set_status_message("Canceled EPUB open".to_string());
@@ -1523,7 +1577,12 @@ impl Activity for FileBrowserActivity {
         {
             self.epub_open_pending = None;
             self.epub_open_started_tick = None;
+        }
+        #[cfg(feature = "std")]
+        {
             self.epub_navigation_pending = None;
+            self.epub_navigation_started_tick = None;
+            self.reset_epub_failure_streak();
         }
         self.queue_load_current_directory();
     }
@@ -1544,7 +1603,12 @@ impl Activity for FileBrowserActivity {
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
         {
             self.epub_open_pending = None;
+        }
+        #[cfg(feature = "std")]
+        {
             self.epub_navigation_pending = None;
+            self.epub_navigation_started_tick = None;
+            self.reset_epub_failure_streak();
         }
     }
 
@@ -2372,6 +2436,47 @@ mod tests {
         assert!(!activity.is_opening_epub());
         assert!(activity.epub_open_pending.is_none());
         assert!(activity.epub_open_started_tick.is_none());
+    }
+
+    #[test]
+    fn repeated_epub_runtime_failures_trigger_safe_fallback() {
+        let mut activity = FileBrowserActivity::new();
+        activity.mode = BrowserMode::OpeningEpub;
+        activity.active_epub_path = Some("/books/failing.epub".to_string());
+        activity.epub_overlay = Some(EpubOverlay::Finished);
+        activity.epub_failure_window_start_tick = 0;
+        activity.ui_tick = 10;
+
+        for idx in 0..FileBrowserActivity::EPUB_FAILURE_STREAK_LIMIT {
+            activity.handle_epub_runtime_failure(format!("failure-{idx}"));
+            activity.ui_tick = activity.ui_tick.saturating_add(1);
+        }
+
+        assert!(matches!(activity.mode, BrowserMode::Browsing));
+        assert!(activity.active_epub_path.is_none());
+        assert!(activity.epub_overlay.is_none());
+        assert!(activity
+            .status_message()
+            .is_some_and(|msg| msg.contains("recovered")));
+    }
+
+    #[test]
+    fn epub_navigation_timeout_sets_status_and_clears_pending() {
+        let mut activity = FileBrowserActivity::new();
+        let (_tx, rx) = mpsc::channel::<Result<EpubNavigationOutcome, String>>();
+        activity.epub_navigation_pending = Some(PendingEpubNavigation {
+            receiver: rx,
+            direction: EpubNavigationDirection::Next,
+        });
+        activity.epub_navigation_started_tick = Some(0);
+        activity.ui_tick = FileBrowserActivity::EPUB_NAV_TIMEOUT_TICKS + 1;
+
+        assert!(activity.poll_epub_navigation_result());
+        assert!(activity.epub_navigation_pending.is_none());
+        assert!(activity.epub_navigation_started_tick.is_none());
+        assert!(activity
+            .status_message()
+            .is_some_and(|msg| msg.contains("Unable to change EPUB page")));
     }
 
     #[test]

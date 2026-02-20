@@ -2,9 +2,9 @@ use super::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 use std::sync::mpsc::{self, TryRecvError};
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
+#[cfg(feature = "std")]
 use std::thread;
 
 #[cfg(feature = "std")]
@@ -2338,7 +2338,7 @@ impl FileBrowserActivity {
                 }
                 Err(error) => {
                     self.mode = BrowserMode::Browsing;
-                    self.browser.set_status_message(error);
+                    self.handle_epub_runtime_failure(error);
                     self.active_epub_path = None;
                     self.epub_open_started_tick = None;
                 }
@@ -2358,24 +2358,26 @@ impl FileBrowserActivity {
                             self.invalidate_browser_tasks();
                             self.pending_epub_initial_load = true;
                             self.mode = BrowserMode::ReadingEpub { renderer };
+                            self.reset_epub_failure_streak();
                         }
                         Err(error) => {
                             self.mode = BrowserMode::Browsing;
-                            self.browser.set_status_message(error);
+                            self.handle_epub_runtime_failure(error);
                             self.active_epub_path = None;
                         }
                     }
                 }
                 Err(error) => {
                     self.mode = BrowserMode::Browsing;
-                    self.browser.set_status_message(error);
+                    self.handle_epub_runtime_failure(error);
                     self.active_epub_path = None;
                 }
                 #[allow(unreachable_patterns)]
                 _ => {
                     self.mode = BrowserMode::Browsing;
-                    self.browser
-                        .set_status_message("Unable to open EPUB: unsupported source".to_string());
+                    self.handle_epub_runtime_failure(
+                        "Unable to open EPUB: unsupported source".to_string(),
+                    );
                     self.active_epub_path = None;
                 }
             }
@@ -2407,10 +2409,8 @@ impl FileBrowserActivity {
             Ok(EpubOpenWorkerEvent::Done(Ok(renderer))) => {
                 self.epub_open_pending = None;
                 self.epub_open_started_tick = None;
-                #[cfg(not(target_os = "espidf"))]
-                {
-                    self.epub_navigation_pending = None;
-                }
+                self.epub_navigation_pending = None;
+                self.epub_navigation_started_tick = None;
                 self.restore_active_epub_position(&renderer);
                 #[cfg(not(target_os = "espidf"))]
                 if let Ok(mut guard) = renderer.lock() {
@@ -2418,13 +2418,14 @@ impl FileBrowserActivity {
                 }
                 self.invalidate_browser_tasks();
                 self.mode = BrowserMode::ReadingEpub { renderer };
+                self.reset_epub_failure_streak();
                 true
             }
             Ok(EpubOpenWorkerEvent::Done(Err(error))) => {
                 self.epub_open_pending = None;
                 self.epub_open_started_tick = None;
                 self.mode = BrowserMode::Browsing;
-                self.browser.set_status_message(error);
+                self.handle_epub_runtime_failure(error);
                 self.active_epub_path = None;
                 true
             }
@@ -2435,8 +2436,9 @@ impl FileBrowserActivity {
                         self.epub_open_pending = None;
                         self.epub_open_started_tick = None;
                         self.mode = BrowserMode::Browsing;
-                        self.browser
-                            .set_status_message("Unable to open EPUB: timed out".to_string());
+                        self.handle_epub_runtime_failure(
+                            "Unable to open EPUB: timed out".to_string(),
+                        );
                         self.active_epub_path = None;
                         return true;
                     }
@@ -2453,8 +2455,9 @@ impl FileBrowserActivity {
                 self.epub_open_pending = None;
                 self.epub_open_started_tick = None;
                 self.mode = BrowserMode::Browsing;
-                self.browser
-                    .set_status_message("Unable to open EPUB: worker disconnected".to_string());
+                self.handle_epub_runtime_failure(
+                    "Unable to open EPUB: worker disconnected".to_string(),
+                );
                 self.active_epub_path = None;
                 true
             }
@@ -2485,16 +2488,16 @@ impl FileBrowserActivity {
         };
         if let Err(err) = initial_result {
             self.mode = BrowserMode::Browsing;
-            self.browser
-                .set_status_message(format!("Unable to open EPUB: {}", err));
+            self.handle_epub_runtime_failure(format!("Unable to open EPUB: {}", err));
             self.active_epub_path = None;
             return true;
         }
         self.restore_active_epub_position(&renderer);
+        self.reset_epub_failure_streak();
         true
     }
 
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[cfg(feature = "std")]
     pub(super) fn poll_epub_navigation_result(&mut self) -> bool {
         let recv_result = match self.epub_navigation_pending.as_mut() {
             Some(pending) => pending.receiver.try_recv(),
@@ -2509,6 +2512,7 @@ impl FileBrowserActivity {
                     .map(|pending| pending.direction)
                     .unwrap_or(EpubNavigationDirection::Next);
                 self.epub_navigation_pending = None;
+                self.epub_navigation_started_tick = None;
                 if !outcome.advanced {
                     if matches!(direction, EpubNavigationDirection::Next) && outcome.reached_end {
                         self.epub_overlay = Some(EpubOverlay::Finished);
@@ -2517,22 +2521,38 @@ impl FileBrowserActivity {
                     }
                 } else {
                     self.persist_active_epub_position();
+                    self.reset_epub_failure_streak();
                 }
                 outcome.advanced || outcome.reached_end
             }
             Ok(Err(error)) => {
                 log::warn!("[EPUB] page turn worker failed: {}", error);
                 self.epub_navigation_pending = None;
-                self.browser.set_status_message(error);
+                self.epub_navigation_started_tick = None;
+                self.handle_epub_runtime_failure(error);
+                true
+            }
+            Err(TryRecvError::Empty) => {
+                if let Some(start_tick) = self.epub_navigation_started_tick {
+                    let elapsed = self.ui_tick.saturating_sub(start_tick);
+                    if elapsed > Self::EPUB_NAV_TIMEOUT_TICKS {
+                        self.epub_navigation_pending = None;
+                        self.epub_navigation_started_tick = None;
+                        self.handle_epub_runtime_failure(
+                            "Unable to change EPUB page: timed out".to_string(),
+                        );
+                        return true;
+                    }
+                }
                 false
             }
-            Err(TryRecvError::Empty) => false,
             Err(TryRecvError::Disconnected) => {
                 self.epub_navigation_pending = None;
-                self.browser.set_status_message(
+                self.epub_navigation_started_tick = None;
+                self.handle_epub_runtime_failure(
                     "Unable to change EPUB page: worker disconnected".to_string(),
                 );
-                false
+                true
             }
         }
     }
@@ -2590,32 +2610,38 @@ impl FileBrowserActivity {
         builder
             .spawn(move || {
                 let _ = tx.send(EpubOpenWorkerEvent::Phase("Preparing"));
-                let result = match source {
-                    EpubOpenSource::HostPath(path) => {
-                        let _ = tx.send(EpubOpenWorkerEvent::Phase("Parsing"));
-                        #[cfg(target_os = "espidf")]
-                        {
-                            EpubReadingState::from_sd_path_light(&path, settings).and_then(
-                                |mut state| {
-                                    state.ensure_initial_page_loaded()?;
-                                    Ok(state)
-                                },
-                            )
-                        }
-                        #[cfg(not(target_os = "espidf"))]
-                        {
-                            match File::open(&path) {
-                                Ok(file) => EpubReadingState::from_reader(Box::new(file), settings),
-                                Err(err) => Err(format!("Unable to read EPUB: {}", err)),
+                let result =
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match source {
+                        EpubOpenSource::HostPath(path) => {
+                            let _ = tx.send(EpubOpenWorkerEvent::Phase("Parsing"));
+                            #[cfg(target_os = "espidf")]
+                            {
+                                EpubReadingState::from_sd_path_light(&path, settings).and_then(
+                                    |mut state| {
+                                        state.ensure_initial_page_loaded()?;
+                                        Ok(state)
+                                    },
+                                )
+                            }
+                            #[cfg(not(target_os = "espidf"))]
+                            {
+                                match File::open(&path) {
+                                    Ok(file) => {
+                                        EpubReadingState::from_reader(Box::new(file), settings)
+                                    }
+                                    Err(err) => Err(format!("Unable to read EPUB: {}", err)),
+                                }
                             }
                         }
-                    }
-                    #[cfg(not(target_os = "espidf"))]
-                    EpubOpenSource::Bytes(bytes) => {
-                        let _ = tx.send(EpubOpenWorkerEvent::Phase("Parsing"));
-                        EpubReadingState::from_reader(Box::new(Cursor::new(bytes)), settings)
-                    }
-                };
+                        #[cfg(not(target_os = "espidf"))]
+                        EpubOpenSource::Bytes(bytes) => {
+                            let _ = tx.send(EpubOpenWorkerEvent::Phase("Parsing"));
+                            EpubReadingState::from_reader(Box::new(Cursor::new(bytes)), settings)
+                        }
+                    })) {
+                        Ok(result) => result,
+                        Err(_) => Err("Unable to open EPUB: worker panicked".to_string()),
+                    };
                 let result = result.map(|state| Arc::new(Mutex::new(state)));
                 let _ = tx.send(EpubOpenWorkerEvent::Done(result));
             })
@@ -2623,7 +2649,7 @@ impl FileBrowserActivity {
         Ok(rx)
     }
 
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
+    #[cfg(feature = "std")]
     pub(super) fn spawn_epub_navigation_worker(
         renderer: Arc<Mutex<EpubReadingState>>,
         direction: EpubNavigationDirection,
@@ -2639,29 +2665,31 @@ impl FileBrowserActivity {
             .stack_size(Self::EPUB_NAV_WORKER_STACK_BYTES);
         builder
             .spawn(move || {
-                let outcome = match renderer.lock() {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match renderer
+                    .lock()
+                {
                     Ok(mut renderer) => match direction {
                         EpubNavigationDirection::Next => {
                             let advanced = renderer.next_page();
                             let reached_end = renderer.take_last_next_page_reached_end();
-                            EpubNavigationOutcome {
+                            Ok(EpubNavigationOutcome {
                                 advanced,
                                 reached_end,
-                            }
+                            })
                         }
-                        EpubNavigationDirection::Prev => EpubNavigationOutcome {
+                        EpubNavigationDirection::Prev => Ok(EpubNavigationOutcome {
                             advanced: renderer.prev_page(),
                             reached_end: false,
-                        },
+                        }),
                     },
-                    Err(_) => {
-                        let _ = tx.send(Err(
-                            "Unable to change EPUB page: worker poisoned".to_string()
-                        ));
-                        return;
-                    }
+                    Err(_) => Err("Unable to change EPUB page: worker poisoned".to_string()),
+                }));
+                let _ = match run {
+                    Ok(result) => tx.send(result),
+                    Err(_) => tx.send(Err(
+                        "Unable to change EPUB page: worker panicked".to_string()
+                    )),
                 };
-                let _ = tx.send(Ok(outcome));
             })
             .map_err(|e| format!("Unable to start EPUB navigation worker: {}", e))?;
         Ok(rx)

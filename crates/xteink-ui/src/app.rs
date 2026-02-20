@@ -874,6 +874,20 @@ impl App {
         self.main_activity.files_tab.epub_position()
     }
 
+    /// Force a safe UI recovery path back to Library tab.
+    ///
+    /// Returns `true` when a visible state transition occurred.
+    pub fn force_reader_recovery_to_library(&mut self) -> bool {
+        let was_library = self.main_activity.current_tab() == crate::main_activity::Tab::Library;
+        let was_reader_active = self.main_activity.files_tab.is_reading()
+            || self.main_activity.files_tab.is_opening_epub();
+        self.main_activity
+            .set_tab(crate::main_activity::Tab::Library);
+        self.pending_content_open_path = None;
+        self.needs_full_refresh_on_next_draw = true;
+        (!was_library) || was_reader_active
+    }
+
     /// Set whether file transfer web server is currently active.
     pub fn set_file_transfer_active(&mut self, active: bool) {
         self.main_activity
@@ -1031,5 +1045,28 @@ mod tests {
 
         assert_eq!(app.current_tab(), crate::main_activity::Tab::Files);
         assert!(app.main_activity.files_tab.is_reading_text());
+    }
+
+    #[test]
+    fn force_reader_recovery_returns_to_library_and_requests_full_refresh() {
+        let mut app = App::new_with_epub_resume(false);
+        let mut fs = MockFileSystem::empty();
+        fs.add_directory("/");
+        fs.add_directory("/docs");
+        fs.add_file("/docs/readme.txt", b"hello");
+        app.main_activity.set_tab(crate::main_activity::Tab::Files);
+        app.main_activity
+            .queue_open_content_path("/docs/readme.txt");
+        for _ in 0..8 {
+            let _ = app.process_deferred_tasks(&mut fs);
+            if app.main_activity.files_tab.is_reading_text() {
+                break;
+            }
+        }
+        assert!(app.main_activity.files_tab.is_reading_text());
+
+        assert!(app.force_reader_recovery_to_library());
+        assert_eq!(app.current_tab(), crate::main_activity::Tab::Library);
+        assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
     }
 }

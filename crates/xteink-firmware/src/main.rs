@@ -49,6 +49,9 @@ const BATTERY_SAMPLE_INTERVAL_MS: u32 = 2000;
 const BATTERY_ADC_EMPTY: i32 = 2100;
 const BATTERY_ADC_FULL: i32 = 3200;
 const ENABLE_WEB_UPLOAD_SERVER: bool = false;
+const UI_STALL_WARN_MS: i64 = 1200;
+const UI_STALL_WINDOW_MS: i64 = 15_000;
+const UI_STALL_RECOVER_STREAK: u8 = 3;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -66,6 +69,58 @@ fn is_repeatable_nav_button(btn: Button) -> bool {
             | Button::VolumeUp
             | Button::VolumeDown
     )
+}
+
+fn note_ui_stall_and_maybe_recover(
+    app: &mut App,
+    operation: &str,
+    elapsed_ms: i64,
+    ui_stall_streak: &mut u8,
+    ui_stall_window_start_ms: &mut i64,
+) -> bool {
+    if elapsed_ms < UI_STALL_WARN_MS {
+        return false;
+    }
+
+    let now_ms = unsafe { sys::esp_timer_get_time() / 1_000 };
+    if *ui_stall_streak == 0
+        || now_ms.saturating_sub(*ui_stall_window_start_ms) > UI_STALL_WINDOW_MS
+    {
+        *ui_stall_streak = 0;
+        *ui_stall_window_start_ms = now_ms;
+    }
+    *ui_stall_streak = ui_stall_streak.saturating_add(1);
+
+    log::warn!(
+        "[UI-WATCHDOG] slow op={} elapsed={}ms streak={}",
+        operation,
+        elapsed_ms,
+        *ui_stall_streak
+    );
+    append_diag(&format!(
+        "ui_stall op={} elapsed_ms={} streak={}",
+        operation, elapsed_ms, *ui_stall_streak
+    ));
+
+    if *ui_stall_streak < UI_STALL_RECOVER_STREAK {
+        return false;
+    }
+
+    if !(app.file_browser_is_opening_epub() || app.file_browser_is_reading_epub()) {
+        return false;
+    }
+
+    let recovered = app.force_reader_recovery_to_library();
+    if recovered {
+        log::warn!(
+            "[UI-WATCHDOG] forced recovery to Library after repeated slow ops (op={})",
+            operation
+        );
+        append_diag(&format!("ui_stall_recover op={}", operation));
+    }
+    *ui_stall_streak = 0;
+    *ui_stall_window_start_ms = now_ms;
+    recovered
 }
 
 fn apply_update<I, D>(
@@ -559,6 +614,8 @@ fn main() {
     let mut input_debug_ticks: u32 = 0;
     let mut battery_sample_elapsed_ms: u32 = 0;
     let mut sleep_requested = false;
+    let mut ui_stall_streak: u8 = 0;
+    let mut ui_stall_window_start_ms: i64 = 0;
 
     // Auto-sleep tracking
     let mut inactivity_ms: u32 = 0;
@@ -691,7 +748,18 @@ fn main() {
                 log::info!("Power button short press");
                 append_diag("power_short_press");
 
-                if app.handle_input(InputEvent::Press(Button::Power)) {
+                let op_start_us = unsafe { sys::esp_timer_get_time() };
+                let mut needs_redraw = app.handle_input(InputEvent::Press(Button::Power));
+                let elapsed_ms = (unsafe { sys::esp_timer_get_time() } - op_start_us) / 1_000;
+                needs_redraw |= note_ui_stall_and_maybe_recover(
+                    &mut app,
+                    "power_short_press",
+                    elapsed_ms,
+                    &mut ui_stall_streak,
+                    &mut ui_stall_window_start_ms,
+                );
+
+                if needs_redraw {
                     let _ = reconcile_web_upload_server(
                         &mut app,
                         &mut wifi_manager,
@@ -749,7 +817,18 @@ fn main() {
                 log::info!("Button pressed: {:?}", btn);
                 log_heap("before_handle_input");
 
-                if app.handle_input(InputEvent::Press(btn)) {
+                let op_start_us = unsafe { sys::esp_timer_get_time() };
+                let mut needs_redraw = app.handle_input(InputEvent::Press(btn));
+                let elapsed_ms = (unsafe { sys::esp_timer_get_time() } - op_start_us) / 1_000;
+                needs_redraw |= note_ui_stall_and_maybe_recover(
+                    &mut app,
+                    "button_press",
+                    elapsed_ms,
+                    &mut ui_stall_streak,
+                    &mut ui_stall_window_start_ms,
+                );
+
+                if needs_redraw {
                     let _ = reconcile_web_upload_server(
                         &mut app,
                         &mut wifi_manager,
@@ -800,7 +879,18 @@ fn main() {
             next_repeat_tick = 0;
         }
 
-        if app.process_deferred_tasks(&mut fs) {
+        let deferred_start_us = unsafe { sys::esp_timer_get_time() };
+        let mut deferred_updated = app.process_deferred_tasks(&mut fs);
+        let deferred_elapsed_ms =
+            (unsafe { sys::esp_timer_get_time() } - deferred_start_us) / 1_000;
+        deferred_updated |= note_ui_stall_and_maybe_recover(
+            &mut app,
+            "deferred_tasks",
+            deferred_elapsed_ms,
+            &mut ui_stall_streak,
+            &mut ui_stall_window_start_ms,
+        );
+        if deferred_updated {
             let _ =
                 reconcile_web_upload_server(&mut app, &mut wifi_manager, &mut web_upload_server);
             log_heap("before_deferred_render");

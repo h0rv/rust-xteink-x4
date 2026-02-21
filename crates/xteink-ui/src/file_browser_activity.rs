@@ -34,10 +34,13 @@ use mu_epub::book::{ChapterEventsOptions, OpenConfig};
 #[cfg(feature = "std")]
 use mu_epub::{EpubBook, RenderPrepOptions, ScratchBuffers, ZipLimits};
 #[cfg(feature = "std")]
-use mu_epub_embedded_graphics::{EgRenderConfig, EgRenderer};
+use mu_epub_embedded_graphics::{
+    EgRenderConfig, EgRenderer, ImageFallbackPolicy, ImageRegistryLimits,
+};
 #[cfg(feature = "std")]
 use mu_epub_render::{
-    DrawCommand, ImageObjectCommand, RenderConfig, RenderEngine, RenderEngineOptions, RenderPage,
+    CoverPageMode, DrawCommand, ImageObjectCommand, RenderConfig, RenderEngine,
+    RenderEngineOptions, RenderPage,
 };
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use mu_epub_render::{PaginationProfileId, RenderCacheStore};
@@ -54,6 +57,8 @@ use crate::file_browser::{FileBrowser, TextViewer};
 use crate::filesystem::{basename, dirname, FileSystem};
 use crate::input::{Button, InputEvent};
 use crate::reader_settings_activity::ReaderSettings;
+#[cfg(feature = "std")]
+use crate::settings_activity::FontFamily;
 #[cfg(feature = "std")]
 use crate::ui::theme::{layout, ui_font_body, ui_font_small, ui_font_title, ui_text};
 use crate::ui::{Activity, ActivityResult};
@@ -437,6 +442,7 @@ struct EpubReadingState {
     chapter_page_counts: BTreeMap<usize, usize>,
     chapter_page_counts_exact: BTreeSet<usize>,
     non_renderable_chapters: BTreeSet<usize>,
+    forced_font_family: Option<String>,
     cover_image_sources: BTreeSet<String>,
     cover_image_bitmap: Option<InlineImageBitmap>,
     inline_image_cache: BTreeMap<String, InlineImageBitmap>,

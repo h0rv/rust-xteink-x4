@@ -17,6 +17,26 @@ struct PersistedEpubState {
 
 #[cfg(feature = "std")]
 impl EpubReadingState {
+    fn forced_font_family_for_settings(settings: ReaderSettings) -> Option<String> {
+        let family = match settings.font_family {
+            FontFamily::Serif => "serif",
+            FontFamily::SansSerif => "sans-serif",
+            FontFamily::Monospace => "monospace",
+        };
+        Some(family.to_string())
+    }
+
+    fn apply_common_render_config<'a>(&self, mut config: RenderConfig<'a>) -> RenderConfig<'a> {
+        #[cfg(target_os = "espidf")]
+        {
+            config = config.with_embedded_fonts(false);
+        }
+        if let Some(family) = self.forced_font_family.as_ref() {
+            config = config.with_forced_font_family(family.clone());
+        }
+        config
+    }
+
     const MAX_ZIP_ENTRY_BYTES: usize = 8 * 1024 * 1024;
     const MAX_MIMETYPE_BYTES: usize = 1024;
     const MAX_NAV_BYTES: usize = 256 * 1024;
@@ -76,6 +96,7 @@ impl EpubReadingState {
             settings.text_alignment,
             crate::reader_settings_activity::TextAlignment::Justified
         );
+        layout.object_layout.cover_page_mode = CoverPageMode::Contain;
         layout.typography.justification.min_words = 6;
         layout.typography.justification.min_fill_ratio = 0.78;
         opts.layout = layout;
@@ -163,6 +184,7 @@ impl EpubReadingState {
             chapter_page_counts: BTreeMap::new(),
             chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
+            forced_font_family: Self::forced_font_family_for_settings(settings),
             cover_image_sources: BTreeSet::new(),
             cover_image_bitmap: None,
             inline_image_cache: BTreeMap::new(),
@@ -228,6 +250,7 @@ impl EpubReadingState {
             chapter_page_counts: BTreeMap::new(),
             chapter_page_counts_exact: BTreeSet::new(),
             non_renderable_chapters: BTreeSet::new(),
+            forced_font_family: Self::forced_font_family_for_settings(settings),
             cover_image_sources: BTreeSet::new(),
             cover_image_bitmap: None,
             inline_image_cache: BTreeMap::new(),
@@ -955,6 +978,7 @@ impl EpubReadingState {
         let (engine, chapter_events_opts) = Self::create_engine(settings);
         self.engine = engine;
         self.chapter_events_opts = chapter_events_opts;
+        self.forced_font_family = Self::forced_font_family_for_settings(settings);
         self.current_page = None;
         self.page_cache.clear();
         self.inline_image_cache.clear();
@@ -1787,11 +1811,15 @@ impl EpubReadingState {
         let page = loop {
             let mut target_page: Option<RenderPage> = None;
             #[cfg(target_os = "espidf")]
-            let config = RenderConfig::default().with_page_range(page_idx..page_idx + 1);
+            let config = self.apply_common_render_config(
+                RenderConfig::default().with_page_range(page_idx..page_idx + 1),
+            );
             #[cfg(not(target_os = "espidf"))]
-            let config = RenderConfig::default()
-                .with_page_range(page_idx..page_idx + 1)
-                .with_cache(&self.render_cache);
+            let config = self.apply_common_render_config(
+                RenderConfig::default()
+                    .with_page_range(page_idx..page_idx + 1)
+                    .with_cache(&self.render_cache),
+            );
             #[cfg(feature = "fontdue")]
             let config = config.with_text_measurer(Arc::new(self.layout_text_measurer.clone()));
             #[cfg(target_os = "espidf")]
@@ -1933,7 +1961,7 @@ impl EpubReadingState {
             render: self.chapter_events_opts,
         };
         let mut count = 0usize;
-        let mut config = RenderConfig::default();
+        let mut config = self.apply_common_render_config(RenderConfig::default());
         #[cfg(feature = "fontdue")]
         {
             config = config.with_text_measurer(Arc::new(self.layout_text_measurer.clone()));
@@ -1991,15 +2019,52 @@ impl EpubReadingState {
 
     #[cfg(feature = "fontdue")]
     fn create_renderer() -> (ReaderRenderer, BookerlyFontBackend) {
-        let cfg = EgRenderConfig::default();
+        let cfg = EgRenderConfig {
+            image_fallback: if cfg!(target_os = "espidf") {
+                ImageFallbackPolicy::OutlineOnly
+            } else {
+                ImageFallbackPolicy::OutlineWithAltText
+            },
+            ..EgRenderConfig::default()
+        };
         let backend = BookerlyFontBackend::default();
-        (EgRenderer::with_backend(cfg, backend.clone()), backend)
+        let limits = if cfg!(target_os = "espidf") {
+            ImageRegistryLimits {
+                max_images: 8,
+                max_total_pixels: 128 * 1024,
+            }
+        } else {
+            ImageRegistryLimits::default()
+        };
+        (
+            EgRenderer::with_backend_and_image_limits(cfg, backend.clone(), limits),
+            backend,
+        )
     }
 
     #[cfg(not(feature = "fontdue"))]
     fn create_renderer() -> ReaderRenderer {
-        let cfg = EgRenderConfig::default();
-        EgRenderer::with_backend(cfg, mu_epub_embedded_graphics::MonoFontBackend)
+        let cfg = EgRenderConfig {
+            image_fallback: if cfg!(target_os = "espidf") {
+                ImageFallbackPolicy::OutlineOnly
+            } else {
+                ImageFallbackPolicy::OutlineWithAltText
+            },
+            ..EgRenderConfig::default()
+        };
+        let limits = if cfg!(target_os = "espidf") {
+            ImageRegistryLimits {
+                max_images: 8,
+                max_total_pixels: 128 * 1024,
+            }
+        } else {
+            ImageRegistryLimits::default()
+        };
+        EgRenderer::with_backend_and_image_limits(
+            cfg,
+            mu_epub_embedded_graphics::MonoFontBackend,
+            limits,
+        )
     }
 
     fn register_embedded_fonts(&mut self) {

@@ -1,18 +1,19 @@
 [workspace]
 resolver = "2"
-exclude = ["mu-epub"]
+exclude = ["epub-stream"]
 members = [
     "crates/xteink-ui",
     "crates/xteink-scenario-harness",
     "crates/xteink-sim-web",
     "crates/xteink-sim-desktop",
     "crates/xteink-firmware",
+    "einked",
 ]
 
 [workspace.dependencies]
-mu_epub = { package = "mu_epub", path = "mu-epub", default-features = false }
-mu_epub_render = { package = "mu-epub-render", path = "mu-epub/crates/mu-epub-render" }
-mu_epub_embedded_graphics = { package = "mu-epub-embedded-graphics", path = "mu-epub/crates/mu-epub-embedded-graphics" }
+epub-stream = { package = "epub-stream", path = "epub-stream", default-features = false }
+epub_stream_render = { package = "epub-stream-render", path = "epub-stream/crates/epub-stream-render" }
+epub_stream_embedded_graphics = { package = "epub-stream-embedded-graphics", path = "epub-stream/crates/epub-stream-embedded-graphics" }
 ssd1677 = { path = "ssd1677" }
 
 [profile.release]

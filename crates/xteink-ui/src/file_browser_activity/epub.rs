@@ -1,7 +1,7 @@
 use super::*;
 use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
-use mu_epub::book::Locator;
-use mu_epub::RenderPrepOptions;
+use epub_stream::book::Locator;
+use epub_stream::RenderPrepOptions;
 #[cfg(feature = "std")]
 use std::io::Cursor;
 #[cfg(feature = "std")]
@@ -176,9 +176,9 @@ impl EpubReadingState {
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
         let open_cfg = OpenConfig {
-            options: mu_epub::book::EpubBookOptions {
+            options: epub_stream::book::EpubBookOptions {
                 zip_limits: Some(zip_limits),
-                validation_mode: mu_epub::book::ValidationMode::Lenient,
+                validation_mode: epub_stream::book::ValidationMode::Lenient,
                 max_nav_bytes: Some(Self::MAX_NAV_BYTES),
             },
             lazy_navigation: true,
@@ -230,9 +230,9 @@ impl EpubReadingState {
         let zip_limits = ZipLimits::new(Self::MAX_ZIP_ENTRY_BYTES, Self::MAX_MIMETYPE_BYTES)
             .with_max_eocd_scan(Self::MAX_EOCD_SCAN_BYTES);
         let open_cfg = OpenConfig {
-            options: mu_epub::book::EpubBookOptions {
+            options: epub_stream::book::EpubBookOptions {
                 zip_limits: Some(zip_limits),
-                validation_mode: mu_epub::book::ValidationMode::Lenient,
+                validation_mode: epub_stream::book::ValidationMode::Lenient,
                 max_nav_bytes: Some(Self::MAX_NAV_BYTES),
             },
             lazy_navigation: true,
@@ -1926,7 +1926,7 @@ impl EpubReadingState {
             #[cfg(target_os = "espidf")]
             {
                 // If the target page was already found, avoid finalizing this session:
-                // `mu_epub_render` currently retains rendered page clones internally
+                // `epub_stream_render` currently retains rendered page clones internally
                 // during session finish, which can spike memory on constrained devices.
                 if target_page.is_none() {
                     session
@@ -2107,7 +2107,7 @@ impl EpubReadingState {
         };
         EgRenderer::with_backend_and_image_limits(
             cfg,
-            mu_epub_embedded_graphics::MonoFontBackend,
+            epub_stream_embedded_graphics::MonoFontBackend,
             limits,
         )
     }
@@ -2168,14 +2168,14 @@ impl EpubReadingState {
                     face.weight,
                     matches!(
                         face.style,
-                        mu_epub::EmbeddedFontStyle::Italic | mu_epub::EmbeddedFontStyle::Oblique
+                        epub_stream::EmbeddedFontStyle::Italic | epub_stream::EmbeddedFontStyle::Oblique
                     ),
                 ));
             }
             let mut registrations = Vec::with_capacity(face_meta.len());
             for (family, data_idx, weight, italic) in face_meta.iter() {
                 let data = face_data[*data_idx].as_slice();
-                registrations.push(mu_epub_embedded_graphics::FontFaceRegistration {
+                registrations.push(epub_stream_embedded_graphics::FontFaceRegistration {
                     family,
                     weight: *weight,
                     italic: *italic,

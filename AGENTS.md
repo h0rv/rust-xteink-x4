@@ -162,7 +162,7 @@ crates/
 ├── xteink-sim-web/         # WASM simulator
 └── xteink-scenario-harness/ # Integration test harness
 ssd1677/                    # Display driver (no_std)
-mu-epub/                    # EPUB parsing library
+epub-stream/                    # EPUB parsing library
 ```
 
 ### Git Workflow

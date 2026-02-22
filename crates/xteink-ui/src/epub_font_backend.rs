@@ -10,12 +10,12 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
-use mu_epub_embedded_graphics::{
+use epub_stream_embedded_graphics::{
     BackendCapabilities, FontBackend, FontFaceRegistration, FontFallbackReason, FontId,
     FontMetrics, FontSelection,
 };
-use mu_epub_render::ResolvedTextStyle;
-use mu_epub_render::TextMeasurer;
+use epub_stream_render::ResolvedTextStyle;
+use epub_stream_render::TextMeasurer;
 
 use crate::embedded_fonts::{EmbeddedFontCache, EmbeddedFontRegistry};
 use crate::font_render::FontCache;
@@ -407,8 +407,8 @@ impl TextMeasurer for BookerlyFontBackend {
 #[cfg(test)]
 mod tests {
     use embedded_graphics::{mock_display::MockDisplay, pixelcolor::BinaryColor};
-    use mu_epub::BlockRole;
-    use mu_epub_render::JustifyMode;
+    use epub_stream::BlockRole;
+    use epub_stream_render::JustifyMode;
 
     use super::*;
 

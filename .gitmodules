@@ -1,6 +1,6 @@
-[submodule "mu-epub"]
-	path = mu-epub
-	url = ../mu-epub
+[submodule "epub-stream"]
+	path = epub-stream
+	url = ../epub-stream
 [submodule "ssd1677"]
 	path = ssd1677
 	url = ../ssd1677

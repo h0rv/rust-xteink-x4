@@ -63,7 +63,7 @@ Inference from sources:
 - EPUB open on ESP-IDF only uses VFS-backed file paths (no full-file chunk buffering fallback) to avoid avoidable heap spikes.
 - EPUB open and page-turn work run in background worker threads; the UI loop polls completion and redraws when work completes.
 - `xteink-ui` keeps `#![forbid(unsafe_code)]` and does not call raw FreeRTOS APIs directly.
-- `mu-epub-render` cache hooks are enabled for non-ESP targets, where full-session chapter caching is safe; ESP-IDF keeps conservative memory behavior to avoid page-cache OOM spikes.
+- `epub-stream-render` cache hooks are enabled for non-ESP targets, where full-session chapter caching is safe; ESP-IDF keeps conservative memory behavior to avoid page-cache OOM spikes.
 
 ## Source links (checked 2026-02-10)
 

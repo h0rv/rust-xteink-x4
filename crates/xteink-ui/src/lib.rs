@@ -67,21 +67,21 @@ pub use settings_activity::{FontFamily, FontSize, SettingRow, Settings, Settings
 pub use system_menu_activity::{DeviceStatus, MenuItem, SystemMenuActivity};
 
 #[cfg(feature = "std")]
-pub use mu_epub::layout::{Line as EpubLine, Page as EpubPage, TextStyle as EpubTextStyle};
+pub use epub_stream::layout::{Line as EpubLine, Page as EpubPage, TextStyle as EpubTextStyle};
 
 #[cfg(feature = "std")]
-pub use mu_epub::metadata::{
+pub use epub_stream::metadata::{
     extract_metadata, parse_container_xml, parse_opf, EpubMetadata, ManifestItem,
 };
 
 #[cfg(feature = "std")]
-pub use mu_epub::spine::{create_spine, parse_spine, Spine, SpineItem};
+pub use epub_stream::spine::{create_spine, parse_spine, Spine, SpineItem};
 
 #[cfg(feature = "std")]
-pub use mu_epub::tokenizer::{tokenize_html, Token, TokenizeError};
+pub use epub_stream::tokenizer::{tokenize_html, Token, TokenizeError};
 
 #[cfg(feature = "std")]
-pub use mu_epub::zip::{CdEntry, StreamingZip, ZipError};
+pub use epub_stream::zip::{CdEntry, StreamingZip, ZipError};
 
 #[cfg(feature = "std")]
 pub use epub_prep::{

@@ -30,20 +30,20 @@ use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
 use image::ImageReader;
 #[cfg(feature = "std")]
-use mu_epub::book::{ChapterEventsOptions, OpenConfig};
+use epub_stream::book::{ChapterEventsOptions, OpenConfig};
 #[cfg(feature = "std")]
-use mu_epub::{EpubBook, RenderPrepOptions, ScratchBuffers, ZipLimits};
+use epub_stream::{EpubBook, RenderPrepOptions, ScratchBuffers, ZipLimits};
 #[cfg(feature = "std")]
-use mu_epub_embedded_graphics::{
+use epub_stream_embedded_graphics::{
     EgRenderConfig, EgRenderer, ImageFallbackPolicy, ImageRegistryLimits,
 };
 #[cfg(feature = "std")]
-use mu_epub_render::{
+use epub_stream_render::{
     CoverPageMode, DrawCommand, HyphenationMode, ImageObjectCommand, JustificationStrategy,
     RenderConfig, RenderEngine, RenderEngineOptions, RenderPage,
 };
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
-use mu_epub_render::{PaginationProfileId, RenderCacheStore};
+use epub_stream_render::{PaginationProfileId, RenderCacheStore};
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::{Read, Seek};
 
@@ -464,7 +464,7 @@ struct EpubReadingState {
 type ReaderRenderer = EgRenderer<BookerlyFontBackend>;
 
 #[cfg(all(feature = "std", not(feature = "fontdue")))]
-type ReaderRenderer = EgRenderer<mu_epub_embedded_graphics::MonoFontBackend>;
+type ReaderRenderer = EgRenderer<epub_stream_embedded_graphics::MonoFontBackend>;
 
 /// Raw filesystem browser activity.
 pub struct FileBrowserActivity {
@@ -2833,9 +2833,9 @@ mod tests {
     //     let reader = Cursor::new(bytes);
     //     let zip_limits = ZipLimits::new(8 * 1024 * 1024, 1024).with_max_eocd_scan(8 * 1024);
     //     let open_cfg = OpenConfig {
-    //         options: mu_epub::book::EpubBookOptions {
+    //         options: epub_stream::book::EpubBookOptions {
     //             zip_limits: Some(zip_limits),
-    //             validation_mode: mu_epub::book::ValidationMode::Lenient,
+    //             validation_mode: epub_stream::book::ValidationMode::Lenient,
     //             max_nav_bytes: Some(256 * 1024),
     //         },
     //         lazy_navigation: true,

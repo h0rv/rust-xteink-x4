@@ -1,12 +1,12 @@
-//! Thin integration helpers around mu_epub render-prep APIs.
+//! Thin integration helpers around epub_stream render-prep APIs.
 
 extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use mu_epub::EpubMetadata;
-pub use mu_epub::{
+use epub_stream::EpubMetadata;
+pub use epub_stream::{
     BlockRole, ChapterStylesheets, ComputedTextStyle, EmbeddedFontFace, EmbeddedFontStyle,
     FontLimits, FontPolicy, FontResolutionTrace, FontResolver, LayoutHints, PreparedChapter,
     RenderPrep, RenderPrepError, RenderPrepOptions, ResolvedFontFace, StyleConfig, StyleLimits,

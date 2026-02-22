@@ -454,8 +454,8 @@ impl LibraryActivity {
         path: &str,
         include_cover: bool,
     ) -> Option<(String, String, Option<CoverThumbnail>)> {
-        use mu_epub::metadata::{parse_container_xml, parse_opf};
-        use mu_epub::zip::StreamingZip;
+        use epub_stream::metadata::{parse_container_xml, parse_opf};
+        use epub_stream::zip::StreamingZip;
         use std::io::Cursor;
 
         let data = fs.read_file_bytes(path).ok()?;
@@ -676,9 +676,9 @@ impl LibraryActivity {
 
     #[cfg(feature = "std")]
     fn extract_epub_cover_thumbnail<F: std::io::Read + std::io::Seek>(
-        zip: &mut mu_epub::zip::StreamingZip<F>,
+        zip: &mut epub_stream::zip::StreamingZip<F>,
         opf_path: &str,
-        metadata: &mu_epub::metadata::EpubMetadata,
+        metadata: &epub_stream::metadata::EpubMetadata,
         input_scratch: &mut [u8],
         output_scratch: &mut [u8],
     ) -> Option<CoverThumbnail> {
@@ -724,7 +724,7 @@ impl LibraryActivity {
                 continue;
             }
 
-            let Some(image_href) = mu_epub::metadata::extract_cover_image_href_from_xhtml(&bytes)
+            let Some(image_href) = epub_stream::metadata::extract_cover_image_href_from_xhtml(&bytes)
             else {
                 continue;
             };
@@ -751,7 +751,7 @@ impl LibraryActivity {
 
     #[cfg(feature = "std")]
     fn read_epub_resource_with_hints<F: std::io::Read + std::io::Seek>(
-        zip: &mut mu_epub::zip::StreamingZip<F>,
+        zip: &mut epub_stream::zip::StreamingZip<F>,
         base_file_path: &str,
         href: &str,
         input_scratch: &mut [u8],
@@ -816,8 +816,8 @@ impl LibraryActivity {
 
     #[cfg(feature = "std")]
     fn read_zip_entry_with_scratch<F: std::io::Read + std::io::Seek>(
-        zip: &mut mu_epub::zip::StreamingZip<F>,
-        entry: &mu_epub::zip::CdEntry,
+        zip: &mut epub_stream::zip::StreamingZip<F>,
+        entry: &epub_stream::zip::CdEntry,
         out: &mut Vec<u8>,
         input_scratch: &mut [u8],
         output_scratch: &mut [u8],
@@ -2388,8 +2388,8 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn extract_epub_cover_thumbnail_supports_cover_xhtml_img_reference() {
-        use mu_epub::metadata::{parse_container_xml, parse_opf};
-        use mu_epub::zip::StreamingZip;
+        use epub_stream::metadata::{parse_container_xml, parse_opf};
+        use epub_stream::zip::StreamingZip;
         use std::io::Cursor;
 
         let data = include_bytes!(

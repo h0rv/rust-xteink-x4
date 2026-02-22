@@ -724,7 +724,8 @@ impl LibraryActivity {
                 continue;
             }
 
-            let Some(image_href) = epub_stream::metadata::extract_cover_image_href_from_xhtml(&bytes)
+            let Some(image_href) =
+                epub_stream::metadata::extract_cover_image_href_from_xhtml(&bytes)
             else {
                 continue;
             };

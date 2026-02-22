@@ -2168,7 +2168,8 @@ impl EpubReadingState {
                     face.weight,
                     matches!(
                         face.style,
-                        epub_stream::EmbeddedFontStyle::Italic | epub_stream::EmbeddedFontStyle::Oblique
+                        epub_stream::EmbeddedFontStyle::Italic
+                            | epub_stream::EmbeddedFontStyle::Oblique
                     ),
                 ));
             }

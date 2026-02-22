@@ -28,8 +28,6 @@ use embedded_graphics::{
 };
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 #[cfg(feature = "std")]
-use image::ImageReader;
-#[cfg(feature = "std")]
 use epub_stream::book::{ChapterEventsOptions, OpenConfig};
 #[cfg(feature = "std")]
 use epub_stream::{EpubBook, RenderPrepOptions, ScratchBuffers, ZipLimits};
@@ -44,6 +42,8 @@ use epub_stream_render::{
 };
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use epub_stream_render::{PaginationProfileId, RenderCacheStore};
+#[cfg(feature = "std")]
+use image::ImageReader;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::{Read, Seek};
 

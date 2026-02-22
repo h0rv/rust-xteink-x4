@@ -1,7 +1,7 @@
 use esp_idf_svc::hal::gpio::{Gpio3, Input, PinDriver};
 use esp_idf_svc::sys;
 
-use xteink_ui::Button;
+use einked::input::Button;
 
 const ADC_NO_BUTTON: i32 = 3800;
 const ADC_RANGES_1: [i32; 5] = [3800, 3100, 2090, 750, i32::MIN];

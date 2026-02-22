@@ -18,9 +18,10 @@ use esp_idf_svc::hal::{
 };
 use esp_idf_svc::sys;
 
+use einked::input::{Button, InputEvent};
 use xteink_ui::{
-    App, BufferedDisplay, Builder, Button, DeviceStatus, Dimensions, DisplayInterface, EinkDisplay,
-    EinkInterface, InputEvent, RamXAddressing, RefreshMode, Rotation, SleepScreenMode,
+    App, BufferedDisplay, Builder, DeviceStatus, Dimensions, DisplayInterface, EinkDisplay,
+    EinkInterface, RamXAddressing, RefreshMode, Rotation, SleepScreenMode,
 };
 
 use cli::SerialCli;
@@ -42,7 +43,6 @@ const BATTERY_SAMPLE_INTERVAL_MS: u32 = 2000;
 const BATTERY_ADC_EMPTY: i32 = 2100;
 const BATTERY_ADC_FULL: i32 = 3200;
 const ENABLE_WEB_UPLOAD_SERVER: bool = false;
-const UI_STALL_WARN_MS: i64 = 1200;
 const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
@@ -303,81 +303,6 @@ fn stop_web_upload_server(web_upload_server: &mut Option<WebUploadServer>) {
     }
 }
 
-fn reconcile_web_upload_server(
-    app: &mut App,
-    wifi_manager: &mut WifiManager,
-    web_upload_server: &mut Option<WebUploadServer>,
-) -> bool {
-    let was_active = web_upload_server.is_some();
-    let mut restart_requested = false;
-
-    if let Some(mode_ap) = app.take_wifi_mode_request() {
-        let mode = if mode_ap {
-            wifi_manager::WifiMode::AccessPoint
-        } else {
-            wifi_manager::WifiMode::Station
-        };
-        if let Err(err) = wifi_manager.set_mode(mode) {
-            log::warn!("[WIFI] unable to set mode: {}", err);
-        } else {
-            restart_requested = was_active;
-        }
-    }
-
-    if let Some((ssid, password)) = app.take_wifi_ap_config_request() {
-        if let Err(err) = wifi_manager.configure_ap(ssid, password) {
-            log::warn!("[WIFI] unable to configure AP: {}", err);
-        } else {
-            restart_requested = was_active;
-        }
-    }
-
-    if let Some(request_start) = app.take_file_transfer_request() {
-        if request_start {
-            restart_requested = true;
-        } else {
-            stop_web_upload_server(web_upload_server);
-            wifi_manager.stop_transfer_network();
-        }
-    }
-
-    if restart_requested {
-        if web_upload_server.is_some() {
-            stop_web_upload_server(web_upload_server);
-            wifi_manager.stop_transfer_network();
-        }
-        match wifi_manager.start_transfer_network() {
-            Ok(()) => {
-                if web_upload_server.is_none() {
-                    match WebUploadServer::start() {
-                        Ok(server) => {
-                            *web_upload_server = Some(server);
-                        }
-                        Err(err) => {
-                            log::warn!("[WEB] upload server start failed: {}", err);
-                        }
-                    }
-                }
-            }
-            Err(err) => {
-                log::warn!("[WIFI] unable to start transfer network: {}", err);
-            }
-        }
-    }
-
-    let is_active = web_upload_server.is_some();
-    app.set_file_transfer_active(is_active);
-    let transfer_info = wifi_manager.transfer_info();
-    app.set_file_transfer_network_details(
-        transfer_info.mode,
-        transfer_info.ssid,
-        transfer_info.password_hint,
-        transfer_info.url,
-        transfer_info.message,
-    );
-    was_active != is_active
-}
-
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -532,23 +457,6 @@ fn main() {
         transfer_info.message,
     );
     log_heap("before_app_init");
-    // Prime deferred work (library cache/load scan) before the first paint to
-    // avoid a guaranteed second full-screen refresh immediately after boot.
-    const STARTUP_DEFERRED_MAX_TICKS: usize = 1024;
-    let mut startup_deferred_ticks = 0usize;
-    while startup_deferred_ticks < STARTUP_DEFERRED_MAX_TICKS && app.process_deferred_tasks(&mut fs)
-    {
-        startup_deferred_ticks += 1;
-        if startup_deferred_ticks % 32 == 0 {
-            FreeRtos::delay_ms(1);
-        }
-    }
-    if startup_deferred_ticks >= STARTUP_DEFERRED_MAX_TICKS {
-        log::warn!(
-            "Startup deferred pre-pass reached tick cap ({}), continuing boot",
-            STARTUP_DEFERRED_MAX_TICKS
-        );
-    }
     buffered_display.clear();
     let first_ok =
         einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display);
@@ -793,24 +701,6 @@ fn main() {
             held_button = None;
             held_button_ticks = 0;
             next_repeat_tick = 0;
-        }
-
-        let deferred_start_us = unsafe { sys::esp_timer_get_time() };
-        let deferred_updated = app.process_deferred_tasks(&mut fs);
-        let deferred_elapsed_ms =
-            (unsafe { sys::esp_timer_get_time() } - deferred_start_us) / 1_000;
-        if deferred_elapsed_ms >= UI_STALL_WARN_MS {
-            log::warn!(
-                "[UI-WATCHDOG] slow op=deferred_tasks elapsed={}ms",
-                deferred_elapsed_ms
-            );
-        }
-        if deferred_updated {
-            let _ =
-                reconcile_web_upload_server(&mut app, &mut wifi_manager, &mut web_upload_server);
-            if !einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display) {
-                log::warn!("[EINKED] deferred redraw flush failed");
-            }
         }
 
         // Auto-sleep handling

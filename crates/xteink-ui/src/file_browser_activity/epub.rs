@@ -3,6 +3,8 @@ use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
 use mu_epub::book::Locator;
 use mu_epub::RenderPrepOptions;
 #[cfg(feature = "std")]
+use std::io::Cursor;
+#[cfg(feature = "std")]
 use std::sync::mpsc::{self, TryRecvError};
 #[cfg(feature = "std")]
 use std::thread;
@@ -63,6 +65,22 @@ impl EpubReadingState {
     #[cfg(not(target_os = "espidf"))]
     const PAGE_CACHE_LIMIT: usize = 8;
     const OUT_OF_RANGE_ERR: &'static str = "Requested EPUB page is out of range";
+    #[cfg(target_os = "espidf")]
+    const INLINE_IMAGE_CACHE_LIMIT: usize = 8;
+    #[cfg(not(target_os = "espidf"))]
+    const INLINE_IMAGE_CACHE_LIMIT: usize = 24;
+    #[cfg(target_os = "espidf")]
+    const INLINE_IMAGE_SOURCE_MAX_BYTES: usize = 512 * 1024;
+    #[cfg(not(target_os = "espidf"))]
+    const INLINE_IMAGE_SOURCE_MAX_BYTES: usize = 4 * 1024 * 1024;
+    #[cfg(target_os = "espidf")]
+    const INLINE_IMAGE_MAX_DECODED_PIXELS: u64 = 2_000_000;
+    #[cfg(not(target_os = "espidf"))]
+    const INLINE_IMAGE_MAX_DECODED_PIXELS: u64 = 8_000_000;
+    #[cfg(target_os = "espidf")]
+    const INLINE_IMAGE_PREFETCH_PER_PAGE: usize = 1;
+    #[cfg(not(target_os = "espidf"))]
+    const INLINE_IMAGE_PREFETCH_PER_PAGE: usize = 8;
 
     fn create_render_options(settings: ReaderSettings) -> (RenderEngineOptions, RenderPrepOptions) {
         let mut opts = RenderEngineOptions::for_display(
@@ -96,9 +114,16 @@ impl EpubReadingState {
             settings.text_alignment,
             crate::reader_settings_activity::TextAlignment::Justified
         );
+        layout.typography.hyphenation.soft_hyphen_policy = HyphenationMode::Discretionary;
+        layout.typography.justification.strategy = if layout.typography.justification.enabled {
+            JustificationStrategy::AdaptiveInterWord
+        } else {
+            JustificationStrategy::AlignLeft
+        };
         layout.object_layout.cover_page_mode = CoverPageMode::Contain;
-        layout.typography.justification.min_words = 6;
-        layout.typography.justification.min_fill_ratio = 0.78;
+        layout.typography.justification.min_words = 4;
+        layout.typography.justification.min_fill_ratio = 0.70;
+        layout.typography.justification.max_space_stretch_ratio = 0.40;
         opts.layout = layout;
 
         let base_font = settings.font_size.epub_base_px();
@@ -433,6 +458,7 @@ impl EpubReadingState {
         }
     }
 
+    #[cfg(not(target_os = "espidf"))]
     pub(super) fn prewarm_next_page(&mut self) {
         let chapter = self.chapter_idx;
         let next_page = self.page_idx.saturating_add(1);
@@ -1501,6 +1527,18 @@ impl EpubReadingState {
         max_width: u32,
         max_height: u32,
     ) -> Option<InlineImageBitmap> {
+        if bytes.len() > Self::INLINE_IMAGE_SOURCE_MAX_BYTES {
+            return None;
+        }
+        let cursor = Cursor::new(bytes);
+        let reader = ImageReader::new(cursor).with_guessed_format().ok()?;
+        let (src_w, src_h) = reader.into_dimensions().ok()?;
+        if src_w == 0 || src_h == 0 {
+            return None;
+        }
+        if (src_w as u64).saturating_mul(src_h as u64) > Self::INLINE_IMAGE_MAX_DECODED_PIXELS {
+            return None;
+        }
         let decoded = image::load_from_memory(bytes).ok()?;
         let resized = decoded.thumbnail(max_width.max(1), max_height.max(1));
         let gray = resized.to_luma8();
@@ -1521,58 +1559,56 @@ impl EpubReadingState {
     }
 
     fn prefetch_inline_images_for_page(&mut self, page: &RenderPage) {
-        #[cfg(target_os = "espidf")]
-        {
-            // On ESP32-C3, inline-image prefetch is a frequent OOM source while opening
-            // chapters/pages (especially immediately after pagination when heap is fragmented).
-            // Keep page turn/open stable by skipping background image prefetch entirely.
-            //
-            // Image placeholders still render via layout commands; this only disables
-            // opportunistic bitmap decode/cache on constrained heaps.
-            let _ = page;
-            return;
-        }
-        #[cfg(not(target_os = "espidf"))]
-        {
-            let commands: &[DrawCommand] = if !page.content_commands.is_empty() {
-                &page.content_commands
-            } else {
-                &page.commands
+        let commands: &[DrawCommand] = if !page.content_commands.is_empty() {
+            &page.content_commands
+        } else {
+            &page.commands
+        };
+        let mut loaded = 0usize;
+        for cmd in commands {
+            if loaded >= Self::INLINE_IMAGE_PREFETCH_PER_PAGE {
+                break;
+            }
+            let DrawCommand::ImageObject(obj) = cmd else {
+                continue;
             };
-            for cmd in commands {
-                let DrawCommand::ImageObject(obj) = cmd else {
-                    continue;
-                };
-                if obj.src.is_empty() || obj.width == 0 || obj.height == 0 {
-                    continue;
-                }
-                let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
-                if self.inline_image_cache.contains_key(&key) {
-                    continue;
-                }
-                let bytes = match self.book.read_resource(&obj.src) {
-                    Ok(bytes) => bytes,
-                    Err(err) => {
-                        log::debug!(
-                            "[EPUB] inline image resource read failed src={} err={}",
-                            obj.src,
-                            err
-                        );
-                        continue;
-                    }
-                };
-                if let Some(bitmap) =
-                    Self::decode_inline_image_bitmap(&bytes, obj.width, obj.height)
-                {
-                    self.inline_image_cache.insert(key, bitmap);
-                }
+            if obj.src.is_empty() || obj.width == 0 || obj.height == 0 {
+                continue;
             }
-            while self.inline_image_cache.len() > 24 {
-                let Some(first_key) = self.inline_image_cache.keys().next().cloned() else {
-                    break;
-                };
-                self.inline_image_cache.remove(&first_key);
+            let key = Self::inline_image_cache_key(&obj.src, obj.width, obj.height);
+            if self.inline_image_cache.contains_key(&key) {
+                continue;
             }
+            let bytes = match self.book.read_resource(&obj.src) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    log::debug!(
+                        "[EPUB] inline image resource read failed src={} err={}",
+                        obj.src,
+                        err
+                    );
+                    continue;
+                }
+            };
+            if bytes.len() > Self::INLINE_IMAGE_SOURCE_MAX_BYTES {
+                log::debug!(
+                    "[EPUB] inline image skipped src={} bytes={} limit={}",
+                    obj.src,
+                    bytes.len(),
+                    Self::INLINE_IMAGE_SOURCE_MAX_BYTES
+                );
+                continue;
+            }
+            if let Some(bitmap) = Self::decode_inline_image_bitmap(&bytes, obj.width, obj.height) {
+                self.inline_image_cache.insert(key, bitmap);
+                loaded += 1;
+            }
+        }
+        while self.inline_image_cache.len() > Self::INLINE_IMAGE_CACHE_LIMIT {
+            let Some(first_key) = self.inline_image_cache.keys().next().cloned() else {
+                break;
+            };
+            self.inline_image_cache.remove(&first_key);
         }
     }
 
@@ -1725,6 +1761,7 @@ impl EpubReadingState {
     fn recover_after_page_load_failure(&mut self) {
         self.current_page = None;
         self.page_cache.clear();
+        self.inline_image_cache.clear();
         self.chapter_scratch.read_buf.clear();
         self.chapter_scratch.xml_buf.clear();
         self.chapter_scratch.text_buf.clear();
@@ -1826,6 +1863,10 @@ impl EpubReadingState {
             let mut session = Box::new(self.engine.begin(chapter_idx, config));
             #[cfg(not(target_os = "espidf"))]
             let mut session = self.engine.begin(chapter_idx, config);
+            let book_language = self.book.language();
+            if !book_language.trim().is_empty() {
+                session.set_hyphenation_language(book_language);
+            }
             let mut layout_error: Option<String> = None;
 
             let stream_result = self.book.chapter_events_with_scratch(
@@ -1970,6 +2011,10 @@ impl EpubReadingState {
         let mut session = Box::new(self.engine.begin(chapter_idx, config));
         #[cfg(not(target_os = "espidf"))]
         let mut session = self.engine.begin(chapter_idx, config);
+        let book_language = self.book.language();
+        if !book_language.trim().is_empty() {
+            session.set_hyphenation_language(book_language);
+        }
         let mut layout_error: Option<String> = None;
         self.book
             .chapter_events_with_scratch(
@@ -2421,9 +2466,22 @@ impl FileBrowserActivity {
                         Ok(state) => {
                             let renderer = Arc::new(Mutex::new(state));
                             self.invalidate_browser_tasks();
-                            self.pending_epub_initial_load = true;
-                            self.mode = BrowserMode::ReadingEpub { renderer };
-                            self.reset_epub_failure_streak();
+                            self.mode = BrowserMode::ReadingEpub {
+                                renderer: Arc::clone(&renderer),
+                            };
+                            match Self::spawn_epub_initial_load_worker(renderer) {
+                                Ok(receiver) => {
+                                    self.pending_epub_initial_load =
+                                        Some(PendingEpubInitialLoad { receiver });
+                                    self.epub_initial_load_started_tick = Some(self.ui_tick);
+                                    self.reset_epub_failure_streak();
+                                }
+                                Err(error) => {
+                                    self.mode = BrowserMode::Browsing;
+                                    self.handle_epub_runtime_failure(error);
+                                    self.active_epub_path = None;
+                                }
+                            }
                         }
                         Err(error) => {
                             self.mode = BrowserMode::Browsing;
@@ -2536,30 +2594,58 @@ impl FileBrowserActivity {
 
     #[cfg(all(feature = "std", target_os = "espidf"))]
     pub(super) fn process_pending_epub_initial_load(&mut self) -> bool {
-        if !self.pending_epub_initial_load {
-            return false;
-        }
-        self.pending_epub_initial_load = false;
-        let renderer = match &self.mode {
-            BrowserMode::ReadingEpub { renderer } => Arc::clone(renderer),
-            _ => return false,
+        let recv_result = match self.pending_epub_initial_load.as_mut() {
+            Some(pending) => pending.receiver.try_recv(),
+            None => return false,
         };
-        let initial_result = match renderer.lock() {
-            Ok(mut guard) => guard.ensure_initial_page_loaded(),
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                guard.ensure_initial_page_loaded()
+
+        match recv_result {
+            Ok(Ok(())) => {
+                self.pending_epub_initial_load = None;
+                self.epub_initial_load_started_tick = None;
+                let renderer = match &self.mode {
+                    BrowserMode::ReadingEpub { renderer } => Arc::clone(renderer),
+                    _ => return false,
+                };
+                self.restore_active_epub_position(&renderer);
+                self.reset_epub_failure_streak();
+                true
             }
-        };
-        if let Err(err) = initial_result {
-            self.mode = BrowserMode::Browsing;
-            self.handle_epub_runtime_failure(format!("Unable to open EPUB: {}", err));
-            self.active_epub_path = None;
-            return true;
+            Ok(Err(err)) => {
+                self.pending_epub_initial_load = None;
+                self.epub_initial_load_started_tick = None;
+                self.mode = BrowserMode::Browsing;
+                self.handle_epub_runtime_failure(format!("Unable to open EPUB: {}", err));
+                self.active_epub_path = None;
+                true
+            }
+            Err(TryRecvError::Empty) => {
+                if let Some(start_tick) = self.epub_initial_load_started_tick {
+                    let elapsed = self.ui_tick.saturating_sub(start_tick);
+                    if elapsed > Self::EPUB_INITIAL_LOAD_TIMEOUT_TICKS {
+                        self.pending_epub_initial_load = None;
+                        self.epub_initial_load_started_tick = None;
+                        self.mode = BrowserMode::Browsing;
+                        self.handle_epub_runtime_failure(
+                            "Unable to open EPUB: initial page load timed out".to_string(),
+                        );
+                        self.active_epub_path = None;
+                        return true;
+                    }
+                }
+                false
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.pending_epub_initial_load = None;
+                self.epub_initial_load_started_tick = None;
+                self.mode = BrowserMode::Browsing;
+                self.handle_epub_runtime_failure(
+                    "Unable to open EPUB: initial page worker disconnected".to_string(),
+                );
+                self.active_epub_path = None;
+                true
+            }
         }
-        self.restore_active_epub_position(&renderer);
-        self.reset_epub_failure_streak();
-        true
     }
 
     #[cfg(feature = "std")]
@@ -2760,6 +2846,33 @@ impl FileBrowserActivity {
         Ok(rx)
     }
 
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    fn spawn_epub_initial_load_worker(
+        renderer: Arc<Mutex<EpubReadingState>>,
+    ) -> Result<Receiver<Result<(), String>>, String> {
+        let (tx, rx) = mpsc::channel();
+        let builder = thread::Builder::new()
+            .name("epub-init-worker".to_string())
+            .stack_size(Self::EPUB_NAV_WORKER_STACK_BYTES);
+        builder
+            .spawn(move || {
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match renderer
+                    .lock()
+                {
+                    Ok(mut renderer) => renderer.ensure_initial_page_loaded(),
+                    Err(poisoned) => poisoned.into_inner().ensure_initial_page_loaded(),
+                }));
+                let _ = match run {
+                    Ok(result) => tx.send(result),
+                    Err(_) => tx.send(Err(
+                        "Unable to open EPUB: initial page worker panicked".to_string()
+                    )),
+                };
+            })
+            .map_err(|e| format!("Unable to start EPUB initial-load worker: {}", e))?;
+        Ok(rx)
+    }
+
     #[cfg(feature = "std")]
     const EPUB_STATE_DIR: &'static str = if cfg!(target_os = "espidf") {
         "/sd/.xteink"
@@ -2779,6 +2892,12 @@ impl FileBrowserActivity {
         "/sd/.xteink/last_session.tsv"
     } else {
         "/tmp/.xteink/last_session.tsv"
+    };
+    #[cfg(feature = "std")]
+    const EPUB_BOOKMARKS_FILE: &'static str = if cfg!(target_os = "espidf") {
+        "/sd/.xteink/bookmarks.tsv"
+    } else {
+        "/tmp/.xteink/bookmarks.tsv"
     };
 
     #[cfg(feature = "std")]
@@ -2809,14 +2928,6 @@ impl FileBrowserActivity {
         }
     }
 
-    #[cfg(all(feature = "std", target_os = "espidf"))]
-    pub(super) fn restore_active_epub_position(&mut self, renderer: &Arc<Mutex<EpubReadingState>>) {
-        let _ = renderer;
-        // ESP32-C3 heap is too constrained for restore-time speculative
-        // page loads during open; keep open path deterministic and stable.
-    }
-
-    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     pub(super) fn restore_active_epub_position(&mut self, renderer: &Arc<Mutex<EpubReadingState>>) {
         let Some(path) = self.active_epub_path.as_ref() else {
             return;
@@ -2838,6 +2949,13 @@ impl FileBrowserActivity {
         if restored {
             log::info!(
                 "[EPUB] restored position path={} chapter={} page={}",
+                path,
+                saved.chapter_idx,
+                saved.page_idx
+            );
+        } else {
+            log::warn!(
+                "[EPUB] failed to restore position path={} chapter={} page={}",
                 path,
                 saved.chapter_idx,
                 saved.page_idx
@@ -2939,6 +3057,69 @@ impl FileBrowserActivity {
         std::fs::write(Self::EPUB_STATE_FILE, out).map_err(|e| e.to_string())?;
         Self::persist_last_active_epub_path(path, chapter_idx, page_idx)?;
         Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    pub(super) fn persist_epub_bookmark_for_path(
+        path: &str,
+        chapter_idx: usize,
+        page_idx: usize,
+    ) -> Result<(), String> {
+        std::fs::create_dir_all(Self::EPUB_STATE_DIR).map_err(|e| e.to_string())?;
+        let mut bookmarks: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        if let Ok(raw) = std::fs::read_to_string(Self::EPUB_BOOKMARKS_FILE) {
+            for line in raw.lines() {
+                let mut fields = line.split('\t');
+                let Some(saved_path) = fields.next() else {
+                    continue;
+                };
+                let Some(saved_chapter) = fields.next().and_then(|v| v.parse::<usize>().ok())
+                else {
+                    continue;
+                };
+                let Some(saved_page) = fields.next().and_then(|v| v.parse::<usize>().ok()) else {
+                    continue;
+                };
+                bookmarks.insert(saved_path.to_string(), (saved_chapter, saved_page));
+            }
+        }
+
+        bookmarks.insert(path.to_string(), (chapter_idx, page_idx));
+        while bookmarks.len() > Self::EPUB_STATE_MAX_BOOKS {
+            let Some(oldest_key) = bookmarks.keys().next().cloned() else {
+                break;
+            };
+            bookmarks.remove(&oldest_key);
+        }
+
+        let mut out = String::new();
+        for (saved_path, (saved_chapter, saved_page)) in bookmarks {
+            out.push_str(&saved_path);
+            out.push('\t');
+            out.push_str(&saved_chapter.to_string());
+            out.push('\t');
+            out.push_str(&saved_page.to_string());
+            out.push('\n');
+        }
+        std::fs::write(Self::EPUB_BOOKMARKS_FILE, out).map_err(|e| e.to_string())
+    }
+
+    #[cfg(feature = "std")]
+    pub(super) fn load_epub_bookmark_for_path(path: &str) -> Option<(usize, usize)> {
+        let raw = std::fs::read_to_string(Self::EPUB_BOOKMARKS_FILE).ok()?;
+        for line in raw.lines() {
+            let mut fields = line.split('\t');
+            let Some(saved_path) = fields.next() else {
+                continue;
+            };
+            if saved_path != path {
+                continue;
+            }
+            let chapter_idx = fields.next().and_then(|v| v.parse::<usize>().ok())?;
+            let page_idx = fields.next().and_then(|v| v.parse::<usize>().ok())?;
+            return Some((chapter_idx, page_idx));
+        }
+        None
     }
 
     #[cfg(feature = "std")]

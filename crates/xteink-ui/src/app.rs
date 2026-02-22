@@ -208,8 +208,32 @@ impl App {
     fn process_result(&mut self, result: ActivityResult) -> bool {
         match result {
             ActivityResult::Consumed => true,
-            ActivityResult::NavigateBack => false,
-            ActivityResult::NavigateTo(_) => false,
+            ActivityResult::NavigateBack => {
+                if self.main_activity.current_tab() != crate::main_activity::Tab::Library {
+                    self.main_activity
+                        .set_tab(crate::main_activity::Tab::Library);
+                    true
+                } else {
+                    false
+                }
+            }
+            ActivityResult::NavigateTo(screen) => {
+                let target_tab = match screen {
+                    AppScreen::Library => Some(crate::main_activity::Tab::Library),
+                    AppScreen::FileBrowser => Some(crate::main_activity::Tab::Files),
+                    AppScreen::Settings | AppScreen::ReaderSettings => {
+                        Some(crate::main_activity::Tab::Settings)
+                    }
+                    _ => None,
+                };
+                if let Some(tab) = target_tab {
+                    if tab != self.main_activity.current_tab() {
+                        self.main_activity.set_tab(tab);
+                        return true;
+                    }
+                }
+                false
+            }
             ActivityResult::Ignored => false,
         }
     }
@@ -252,7 +276,21 @@ impl App {
         }
 
         if self.pending_library_scan.is_none() {
-            let mut paths = fs.scan_directory(&self.library_root).unwrap_or_default();
+            let mut paths = match fs.scan_directory(&self.library_root) {
+                Ok(paths) => paths,
+                Err(err) => {
+                    log::warn!(
+                        "[LIBRARY] scan failed root={} err={}",
+                        self.library_root,
+                        err
+                    );
+                    self.pending_library_scan = None;
+                    self.library_scan_pending = false;
+                    self.library_force_rescan = false;
+                    self.main_activity.library_tab.finish_loading_scan();
+                    return true;
+                }
+            };
             paths.sort_unstable();
             let scan_fingerprint = Self::compute_scan_fingerprint(fs, &paths);
 
@@ -1068,5 +1106,22 @@ mod tests {
         assert!(app.force_reader_recovery_to_library());
         assert_eq!(app.current_tab(), crate::main_activity::Tab::Library);
         assert_eq!(app.get_refresh_mode(), ActivityRefreshMode::Full);
+    }
+
+    #[test]
+    fn navigate_to_reader_settings_switches_to_settings_tab() {
+        let mut app = App::new_with_epub_resume(false);
+        app.main_activity.set_tab(crate::main_activity::Tab::Files);
+        assert!(app.process_result(ActivityResult::NavigateTo(AppScreen::ReaderSettings)));
+        assert_eq!(app.current_tab(), crate::main_activity::Tab::Settings);
+    }
+
+    #[test]
+    fn navigate_back_returns_to_library_tab() {
+        let mut app = App::new_with_epub_resume(false);
+        app.main_activity
+            .set_tab(crate::main_activity::Tab::Settings);
+        assert!(app.process_result(ActivityResult::NavigateBack));
+        assert_eq!(app.current_tab(), crate::main_activity::Tab::Library);
     }
 }

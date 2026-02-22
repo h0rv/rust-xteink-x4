@@ -3,6 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(esp_idf_comp_mdns_enabled)");
+    println!("cargo:rustc-check-cfg=cfg(esp_idf_comp_espressif__mdns_enabled)");
+
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let sdkconfig_defaults = PathBuf::from(&manifest_dir).join("sdkconfig.defaults");
 

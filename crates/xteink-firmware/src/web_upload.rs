@@ -21,12 +21,19 @@ const IO_CHUNK_BYTES_MAX: usize = 8192;
 const SD_ROOT: &str = "/sd";
 const DEFAULT_UPLOAD_DIR: &str = "/books";
 const API_VERSION: &str = "v1";
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_HOSTNAME: &str = "xteink-x4";
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_INSTANCE: &str = "Xteink X4 Transfer";
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_HTTP_SERVICE: &str = "_http";
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_XTEINK_SERVICE: &str = "_xteink";
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_PROTO: &str = "_tcp";
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_PORT: u16 = 80;
+#[cfg(any(esp_idf_comp_mdns_enabled, esp_idf_comp_espressif__mdns_enabled))]
 const TRANSFER_MDNS_HOST_LABEL: &str = "xteink-x4.local";
 const MULTIPART_TEMP_PATH: &str = "/sd/.tmp/upload.multipart";
 const MULTIPART_HEADER_SCAN_MAX_BYTES: usize = 8 * 1024;

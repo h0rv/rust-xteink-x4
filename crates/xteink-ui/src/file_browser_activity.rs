@@ -39,13 +39,11 @@ use mu_epub_embedded_graphics::{
 };
 #[cfg(feature = "std")]
 use mu_epub_render::{
-    CoverPageMode, DrawCommand, ImageObjectCommand, RenderConfig, RenderEngine,
-    RenderEngineOptions, RenderPage,
+    CoverPageMode, DrawCommand, HyphenationMode, ImageObjectCommand, JustificationStrategy,
+    RenderConfig, RenderEngine, RenderEngineOptions, RenderPage,
 };
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use mu_epub_render::{PaginationProfileId, RenderCacheStore};
-#[cfg(all(feature = "std", not(target_os = "espidf")))]
-use std::io::Cursor;
 #[cfg(all(feature = "std", not(target_os = "espidf")))]
 use std::io::{Read, Seek};
 
@@ -171,6 +169,11 @@ impl ImageViewer {
 
     #[cfg(target_os = "espidf")]
     fn from_path(path: &str, max_width: u32, max_height: u32) -> Result<Self, String> {
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > Self::MAX_IMAGE_BYTES as u64 {
+                return Err("Image file is too large".to_string());
+            }
+        }
         let decoded = image::open(path).map_err(|e| format!("Unable to decode image: {}", e))?;
         let (src_w, src_h) = image::GenericImageView::dimensions(&decoded);
         if src_w == 0 || src_h == 0 {
@@ -324,6 +327,11 @@ struct PendingEpubNavigation {
     direction: EpubNavigationDirection,
 }
 
+#[cfg(all(feature = "std", target_os = "espidf"))]
+struct PendingEpubInitialLoad {
+    receiver: Receiver<Result<(), String>>,
+}
+
 #[cfg(feature = "std")]
 #[derive(Clone, Copy, Debug, Default)]
 struct EpubNavigationOutcome {
@@ -474,7 +482,9 @@ pub struct FileBrowserActivity {
     browser_task_epoch: u32,
     return_to_previous_on_back: bool,
     #[cfg(all(feature = "std", target_os = "espidf"))]
-    pending_epub_initial_load: bool,
+    pending_epub_initial_load: Option<PendingEpubInitialLoad>,
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    epub_initial_load_started_tick: Option<u32>,
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
     epub_open_pending: Option<PendingEpubOpen>,
     #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -598,7 +608,7 @@ impl FileBrowserActivity {
         match &mut self.mode {
             BrowserMode::ReadingEpub { renderer } => match &mut overlay {
                 EpubOverlay::QuickMenu { selected } => {
-                    const COUNT: usize = 9;
+                    const COUNT: usize = 11;
                     match event {
                         InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
                             if *selected == 0 {
@@ -669,20 +679,87 @@ impl FileBrowserActivity {
                                     };
                                 }
                                 5 => {
+                                    if let Some(path) = self.active_epub_path.clone() {
+                                        let (chapter_idx, page_idx) = match renderer.lock() {
+                                            Ok(guard) => guard.position_indices(),
+                                            Err(poisoned) => {
+                                                poisoned.into_inner().position_indices()
+                                            }
+                                        };
+                                        match Self::persist_epub_bookmark_for_path(
+                                            &path,
+                                            chapter_idx,
+                                            page_idx,
+                                        ) {
+                                            Ok(()) => {
+                                                self.browser.set_status_message(
+                                                    "Bookmark saved".to_string(),
+                                                );
+                                                put_back = false;
+                                            }
+                                            Err(error) => {
+                                                self.browser.set_status_message(format!(
+                                                    "Unable to save bookmark: {}",
+                                                    error
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        self.browser.set_status_message(
+                                            "Unable to set bookmark for this book".to_string(),
+                                        );
+                                    }
+                                }
+                                6 => {
+                                    if let Some(path) = self.active_epub_path.clone() {
+                                        if let Some((chapter_idx, page_idx)) =
+                                            Self::load_epub_bookmark_for_path(&path)
+                                        {
+                                            let jumped = match renderer.lock() {
+                                                Ok(mut guard) => {
+                                                    guard.restore_position(chapter_idx, page_idx)
+                                                }
+                                                Err(poisoned) => poisoned
+                                                    .into_inner()
+                                                    .restore_position(chapter_idx, page_idx),
+                                            };
+                                            if jumped {
+                                                self.persist_active_epub_position();
+                                                self.browser.set_status_message(
+                                                    "Jumped to bookmark".to_string(),
+                                                );
+                                                put_back = false;
+                                            } else {
+                                                self.browser.set_status_message(
+                                                    "Unable to jump to bookmark".to_string(),
+                                                );
+                                            }
+                                        } else {
+                                            self.browser.set_status_message(
+                                                "No bookmark for this book".to_string(),
+                                            );
+                                        }
+                                    } else {
+                                        self.browser.set_status_message(
+                                            "Unable to jump to bookmark for this book".to_string(),
+                                        );
+                                    }
+                                }
+                                7 => {
                                     navigate_settings = true;
                                     put_back = false;
                                 }
-                                6 => {
+                                8 => {
                                     self.reader_settings.footer_density =
                                         self.reader_settings.footer_density.next_wrapped();
                                     self.set_reader_settings(self.reader_settings);
                                 }
-                                7 => {
+                                9 => {
                                     self.reader_settings.footer_auto_hide =
                                         self.reader_settings.footer_auto_hide.next_wrapped();
                                     self.set_reader_settings(self.reader_settings);
                                 }
-                                8 => {
+                                10 => {
                                     exit_to_files = true;
                                     put_back = false;
                                 }
@@ -922,7 +999,7 @@ impl FileBrowserActivity {
     }
 
     pub const DEFAULT_ROOT: &'static str = "/";
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_WORKER_STACK_BYTES: usize = if cfg!(target_os = "espidf") {
         56 * 1024
     } else {
@@ -934,13 +1011,13 @@ impl FileBrowserActivity {
     } else {
         512 * 1024
     };
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_TIMEOUT_TICKS: u32 = if cfg!(target_os = "espidf") {
         2400 // ~120s at 50ms loop delay
     } else {
         900 // ~45s at 50ms loop delay
     };
-    #[cfg(feature = "std")]
+    #[cfg(all(feature = "std", not(target_os = "espidf")))]
     const EPUB_OPEN_HEARTBEAT_TICKS: u32 = 20; // ~1s at 50ms loop delay
     #[cfg(feature = "std")]
     const EPUB_NAV_TIMEOUT_TICKS: u32 = if cfg!(target_os = "espidf") {
@@ -948,6 +1025,8 @@ impl FileBrowserActivity {
     } else {
         120 // ~6s
     };
+    #[cfg(all(feature = "std", target_os = "espidf"))]
+    const EPUB_INITIAL_LOAD_TIMEOUT_TICKS: u32 = 240; // ~12s
     #[cfg(feature = "std")]
     const EPUB_FAILURE_STREAK_LIMIT: u8 = 3;
     #[cfg(feature = "std")]
@@ -970,7 +1049,9 @@ impl FileBrowserActivity {
             browser_task_epoch: 1,
             return_to_previous_on_back: false,
             #[cfg(all(feature = "std", target_os = "espidf"))]
-            pending_epub_initial_load: false,
+            pending_epub_initial_load: None,
+            #[cfg(all(feature = "std", target_os = "espidf"))]
+            epub_initial_load_started_tick: None,
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
             epub_open_pending: None,
             #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -1038,7 +1119,7 @@ impl FileBrowserActivity {
     pub(crate) fn has_epub_runtime_work(&self) -> bool {
         #[cfg(target_os = "espidf")]
         {
-            self.pending_epub_initial_load || self.epub_navigation_pending.is_some()
+            self.pending_epub_initial_load.is_some() || self.epub_navigation_pending.is_some()
         }
         #[cfg(not(target_os = "espidf"))]
         {
@@ -1101,7 +1182,8 @@ impl FileBrowserActivity {
             self.epub_overlay = None;
             #[cfg(target_os = "espidf")]
             {
-                self.pending_epub_initial_load = false;
+                self.pending_epub_initial_load = None;
+                self.epub_initial_load_started_tick = None;
             }
             #[cfg(not(target_os = "espidf"))]
             {
@@ -1249,6 +1331,15 @@ impl FileBrowserActivity {
         #[cfg(target_os = "espidf")]
         let mut path_error: Option<String> = None;
 
+        if let Ok(info) = fs.file_info(path) {
+            if !info.is_directory && info.size > ImageViewer::MAX_IMAGE_BYTES as u64 {
+                self.browser
+                    .set_status_message("Image file is too large".to_string());
+                self.mode = BrowserMode::Browsing;
+                return true;
+            }
+        }
+
         #[cfg(target_os = "espidf")]
         if let Some(host_path) = Self::resolve_host_backed_image_path(path) {
             match ImageViewer::from_path(&host_path, max_w, max_h) {
@@ -1350,7 +1441,8 @@ impl FileBrowserActivity {
         self.pending_task = None;
         #[cfg(all(feature = "std", target_os = "espidf"))]
         {
-            self.pending_epub_initial_load = false;
+            self.pending_epub_initial_load = None;
+            self.epub_initial_load_started_tick = None;
         }
     }
 
@@ -1852,6 +1944,8 @@ impl FileBrowserActivity {
                     "Go to Chapter/Page",
                     "Go to Location",
                     "Go to Position",
+                    "Set Bookmark",
+                    "Go to Bookmark",
                     "Reader Settings",
                     "Footer: ",
                     "Footer Hide: ",
@@ -1861,8 +1955,8 @@ impl FileBrowserActivity {
                     let y =
                         panel_y + layout::OVERLAY_CONTENT_Y + (i as i32 * layout::OVERLAY_ROW_H);
                     let label = match i {
-                        6 => format!("{}{}", item, self.reader_settings.footer_density.label()),
-                        7 => format!("{}{}", item, self.reader_settings.footer_auto_hide.label()),
+                        8 => format!("{}{}", item, self.reader_settings.footer_density.label()),
+                        9 => format!("{}{}", item, self.reader_settings.footer_auto_hide.label()),
                         _ => item.to_string(),
                     };
                     if i == *selected {

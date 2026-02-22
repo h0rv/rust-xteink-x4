@@ -526,6 +526,7 @@ impl LibraryActivity {
         None
     }
 
+    #[cfg(not(target_os = "espidf"))]
     fn load_sidecar_cover_thumbnail(
         fs: &mut dyn FileSystem,
         book_path: &str,
@@ -560,6 +561,7 @@ impl LibraryActivity {
         None
     }
 
+    #[cfg(not(target_os = "espidf"))]
     fn sidecar_cover_candidates(book_path: &str) -> [String; 8] {
         let stem = book_path
             .rsplit_once('.')

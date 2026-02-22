@@ -1,5 +1,5 @@
 use xteink_ui::filesystem::FileSystemError;
-use xteink_ui::{App, BufferedDisplay, DisplayInterface, EinkDisplay, FileSystem, RefreshMode};
+use xteink_ui::{BufferedDisplay, DisplayInterface, EinkDisplay, FileSystem, RefreshMode};
 
 use crate::cli::SerialCli;
 use crate::sdcard::SdCardFs;
@@ -16,7 +16,6 @@ fn format_size(size: u64) -> String {
 }
 
 fn cli_redraw<I, D>(
-    app: &mut App,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
@@ -25,8 +24,6 @@ fn cli_redraw<I, D>(
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
 {
-    buffered_display.clear();
-    app.render(buffered_display).ok();
     display
         .update_with_mode_no_lut(buffered_display.buffer(), &[], mode, delay)
         .ok();
@@ -36,7 +33,6 @@ pub fn handle_cli_command<I, D>(
     line: &str,
     cli: &SerialCli,
     fs: &mut impl FsCliOps,
-    app: &mut App,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
@@ -125,7 +121,6 @@ pub fn handle_cli_command<I, D>(
             }
             match fs.delete_file(path) {
                 Ok(()) => {
-                    app.invalidate_library_cache();
                     cli.write_line("OK");
                 }
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
@@ -153,7 +148,6 @@ pub fn handle_cli_command<I, D>(
             }
             match fs.delete_dir(path) {
                 Ok(()) => {
-                    app.invalidate_library_cache();
                     cli.write_line("OK");
                 }
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
@@ -169,7 +163,6 @@ pub fn handle_cli_command<I, D>(
             };
             match fs.make_dir(path) {
                 Ok(()) => {
-                    app.invalidate_library_cache();
                     cli.write_line("OK");
                 }
                 Err(err) => cli.write_line(&format!("ERR {:?}", err)),
@@ -247,7 +240,6 @@ pub fn handle_cli_command<I, D>(
             }
 
             let crc = hasher.finalize();
-            app.invalidate_library_cache();
             cli.write_line(&format!("OK DONE {:08x}", crc));
         }
         "refresh" => {
@@ -256,7 +248,7 @@ pub fn handle_cli_command<I, D>(
                 "partial" => RefreshMode::Partial,
                 _ => RefreshMode::Fast,
             };
-            cli_redraw(app, display, delay, buffered_display, mode);
+            cli_redraw(display, delay, buffered_display, mode);
             cli.write_line("OK");
         }
         "sleep" => {

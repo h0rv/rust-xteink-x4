@@ -20,8 +20,8 @@ use esp_idf_svc::sys;
 
 use einked::input::{Button, InputEvent};
 use xteink_ui::{
-    App, BufferedDisplay, Builder, DeviceStatus, Dimensions, DisplayInterface, EinkDisplay,
-    EinkInterface, RamXAddressing, RefreshMode, Rotation, SleepScreenMode,
+    BufferedDisplay, Builder, Dimensions, DisplayInterface, EinkDisplay, EinkInterface,
+    RamXAddressing, RefreshMode, Rotation,
 };
 
 use cli::SerialCli;
@@ -44,6 +44,7 @@ const BATTERY_ADC_EMPTY: i32 = 2100;
 const BATTERY_ADC_FULL: i32 = 3200;
 const ENABLE_WEB_UPLOAD_SERVER: bool = false;
 const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
+const AUTO_SLEEP_DURATION_MS: u32 = 10 * 60 * 1000;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -56,103 +57,6 @@ fn is_repeatable_nav_button(btn: Button) -> bool {
         btn,
         Button::Left | Button::Right | Button::Up | Button::Down | Button::Aux1 | Button::Aux2
     )
-}
-
-struct CompactCover {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>, // bit-packed, 1 bit set = black
-}
-
-const MAX_COMPACT_COVER_WIDTH: u32 = xteink_ui::DISPLAY_WIDTH;
-const MAX_COMPACT_COVER_HEIGHT: u32 = xteink_ui::DISPLAY_HEIGHT;
-const MAX_COMPACT_COVER_PACKED_BYTES: usize =
-    ((xteink_ui::DISPLAY_WIDTH as usize) * (xteink_ui::DISPLAY_HEIGHT as usize) + 7) / 8;
-
-fn decode_compact_cover(encoded: &str) -> Option<CompactCover> {
-    let (dims, hex) = encoded.split_once(':')?;
-    let (w, h) = dims.split_once('x')?;
-    let width = w.parse::<u32>().ok()?;
-    let height = h.parse::<u32>().ok()?;
-    if width == 0
-        || height == 0
-        || width > MAX_COMPACT_COVER_WIDTH
-        || height > MAX_COMPACT_COVER_HEIGHT
-    {
-        return None;
-    }
-    let pixel_count = (width as usize).checked_mul(height as usize)?;
-    let packed_len = pixel_count.checked_add(7)? / 8;
-    if packed_len > MAX_COMPACT_COVER_PACKED_BYTES {
-        return None;
-    }
-    if hex.len() != packed_len * 2 {
-        return None;
-    }
-    let mut pixels = vec![0u8; packed_len];
-    for (idx, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
-        let hi = hex_value(chunk[0] as char)?;
-        let lo = hex_value(chunk[1] as char)?;
-        pixels[idx] = (hi << 4) | lo;
-    }
-    Some(CompactCover {
-        width,
-        height,
-        pixels,
-    })
-}
-
-fn hex_value(ch: char) -> Option<u8> {
-    match ch {
-        '0'..='9' => Some((ch as u8) - b'0'),
-        'a'..='f' => Some((ch as u8) - b'a' + 10),
-        'A'..='F' => Some((ch as u8) - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn cover_pixel_is_black(cover: &CompactCover, x: u32, y: u32) -> bool {
-    let idx = (y as usize)
-        .saturating_mul(cover.width as usize)
-        .saturating_add(x as usize);
-    let byte = cover.pixels.get(idx / 8).copied().unwrap_or(0);
-    (byte & (1 << (7 - (idx % 8)))) != 0
-}
-
-fn render_sleep_cover_on_buffer(buffered_display: &mut BufferedDisplay, cover: &CompactCover) {
-    let display_w = xteink_ui::DISPLAY_WIDTH;
-    let display_h = xteink_ui::DISPLAY_HEIGHT;
-
-    let scale_x = display_w / cover.width;
-    let scale_y = display_h / cover.height;
-    let scale = scale_x.min(scale_y).max(1);
-    let render_w = cover.width.saturating_mul(scale);
-    let render_h = cover.height.saturating_mul(scale);
-    let origin_x = ((display_w.saturating_sub(render_w)) / 2) as i32;
-    let origin_y = ((display_h.saturating_sub(render_h)) / 2) as i32;
-
-    for src_y in 0..cover.height {
-        for src_x in 0..cover.width {
-            if !cover_pixel_is_black(cover, src_x, src_y) {
-                continue;
-            }
-            let dst_x = origin_x + (src_x * scale) as i32;
-            let dst_y = origin_y + (src_y * scale) as i32;
-            for oy in 0..scale {
-                for ox in 0..scale {
-                    let x = dst_x + ox as i32;
-                    let y = dst_y + oy as i32;
-                    if x >= 0 && y >= 0 {
-                        buffered_display.set_pixel(
-                            x as u32,
-                            y as u32,
-                            embedded_graphics::pixelcolor::BinaryColor::On,
-                        );
-                    }
-                }
-            }
-        }
-    }
 }
 
 const SLEEP_IMAGES_DIR: &str = "/sd/.xteink/sleep";
@@ -240,7 +144,6 @@ fn render_sleep_image_on_buffer(buffered_display: &mut BufferedDisplay, image: &
 }
 
 fn show_sleep_screen_with_cover<I, D>(
-    app: &App,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
@@ -251,33 +154,9 @@ fn show_sleep_screen_with_cover<I, D>(
 {
     buffered_display.clear();
 
-    let mode = app.sleep_screen_mode();
-    log::info!("[SLEEP] Sleep screen mode: {:?}", mode);
-
-    match mode {
-        SleepScreenMode::Custom => {
-            if let Some(image) = load_custom_sleep_image(fs) {
-                log::info!("[SLEEP] Rendering custom sleep image");
-                render_sleep_image_on_buffer(buffered_display, &image);
-            } else {
-                log::info!("[SLEEP] No custom image, falling back to book cover");
-                if let Some(compact) = app.active_book_cover_thumbnail_compact() {
-                    if let Some(cover) = decode_compact_cover(&compact) {
-                        render_sleep_cover_on_buffer(buffered_display, &cover);
-                    }
-                }
-            }
-        }
-        SleepScreenMode::Cover => {
-            if let Some(compact) = app.active_book_cover_thumbnail_compact() {
-                if let Some(cover) = decode_compact_cover(&compact) {
-                    render_sleep_cover_on_buffer(buffered_display, &cover);
-                }
-            }
-        }
-        SleepScreenMode::Default => {
-            // Just show a blank screen (already cleared)
-        }
+    if let Some(image) = load_custom_sleep_image(fs) {
+        log::info!("[SLEEP] Rendering custom sleep image");
+        render_sleep_image_on_buffer(buffered_display, &image);
     }
 
     display
@@ -423,39 +302,17 @@ fn main() {
         None
     };
 
-    // Initialize app and render initial screen
-    let resume_epub = !matches!(
-        reset_reason,
-        sys::esp_reset_reason_t_ESP_RST_PANIC | sys::esp_reset_reason_t_ESP_RST_SW
-    );
-    if !resume_epub {
-        log::warn!(
-            "Disabling EPUB auto-resume after reset reason {:?} to prevent reboot loops",
-            reset_reason
-        );
-    }
-    let mut app = App::new_with_epub_resume(resume_epub);
-    let mut device_status = DeviceStatus::default();
+    // Initialize runtime and render initial screen
     if let Some(initial_battery_raw) = read_battery_raw() {
-        device_status.battery_percent = battery_percent_from_adc(initial_battery_raw);
-        app.set_device_status(device_status);
         append_diag(&format!(
             "battery_init raw={} pct={}",
-            initial_battery_raw, device_status.battery_percent
+            initial_battery_raw,
+            battery_percent_from_adc(initial_battery_raw)
         ));
     } else {
-        app.set_device_status(device_status);
         append_diag("battery_init skipped (adc-disabled)");
     }
-    app.set_file_transfer_active(web_upload_server.is_some());
-    let transfer_info = wifi_manager.transfer_info();
-    app.set_file_transfer_network_details(
-        transfer_info.mode,
-        transfer_info.ssid,
-        transfer_info.password_hint,
-        transfer_info.url,
-        transfer_info.message,
-    );
+
     log_heap("before_app_init");
     buffered_display.clear();
     let first_ok =
@@ -511,7 +368,6 @@ fn main() {
                     &line,
                     cli,
                     &mut fs,
-                    &mut app,
                     &mut display,
                     &mut delay,
                     &mut buffered_display,
@@ -531,7 +387,6 @@ fn main() {
                             event.path,
                             event.received_bytes
                         );
-                        app.invalidate_library_cache();
                         processed_events = processed_events.saturating_add(1);
                         if processed_events >= WEB_UPLOAD_MAX_EVENTS_PER_LOOP {
                             log::warn!(
@@ -547,7 +402,6 @@ fn main() {
                         log::warn!("[WEB] upload event queue disconnected, stopping server");
                         stop_web_upload_server(&mut web_upload_server);
                         wifi_manager.stop_transfer_network();
-                        app.set_file_transfer_active(false);
                         break;
                     }
                 }
@@ -558,13 +412,7 @@ fn main() {
             sleep_requested = false;
             stop_web_upload_server(&mut web_upload_server);
             wifi_manager.stop_transfer_network();
-            show_sleep_screen_with_cover(
-                &app,
-                &mut display,
-                &mut delay,
-                &mut buffered_display,
-                &mut fs,
-            );
+            show_sleep_screen_with_cover(&mut display, &mut delay, &mut buffered_display, &mut fs);
             enter_deep_sleep(3);
         }
 
@@ -602,9 +450,11 @@ fn main() {
         if battery_sample_elapsed_ms >= BATTERY_SAMPLE_INTERVAL_MS {
             battery_sample_elapsed_ms = 0;
             if let Some(battery_raw) = read_battery_raw() {
-                let battery_percent = battery_percent_from_adc(battery_raw);
-                device_status.battery_percent = battery_percent;
-                app.set_device_status(device_status);
+                append_diag(&format!(
+                    "battery_sample raw={} pct={}",
+                    battery_raw,
+                    battery_percent_from_adc(battery_raw)
+                ));
             }
         }
 
@@ -623,7 +473,6 @@ fn main() {
                     long_press_triggered = true;
 
                     show_sleep_screen_with_cover(
-                        &app,
                         &mut display,
                         &mut delay,
                         &mut buffered_display,
@@ -704,15 +553,14 @@ fn main() {
         }
 
         // Auto-sleep handling
-        let auto_sleep_duration_ms = app.auto_sleep_duration_ms();
-        if auto_sleep_duration_ms > 0 {
+        if AUTO_SLEEP_DURATION_MS > 0 {
             // Increment inactivity timer
             inactivity_ms = inactivity_ms.saturating_add(LOOP_DELAY_MS);
 
             // Check if we should show the warning (10 seconds before sleep)
             if !sleep_warning_shown
-                && inactivity_ms >= auto_sleep_duration_ms.saturating_sub(SLEEP_WARNING_MS)
-                && inactivity_ms < auto_sleep_duration_ms
+                && inactivity_ms >= AUTO_SLEEP_DURATION_MS.saturating_sub(SLEEP_WARNING_MS)
+                && inactivity_ms < AUTO_SLEEP_DURATION_MS
             {
                 sleep_warning_shown = true;
                 log::info!("Auto-sleep: showing warning (sleeping in 10s)");
@@ -724,7 +572,7 @@ fn main() {
             }
 
             // Check if we should enter sleep
-            if inactivity_ms >= auto_sleep_duration_ms {
+            if inactivity_ms >= AUTO_SLEEP_DURATION_MS {
                 log::info!(
                     "Auto-sleep: entering deep sleep after {}ms of inactivity",
                     inactivity_ms
@@ -738,7 +586,7 @@ fn main() {
                         "Auto-sleep postponed: power line not stable-high long enough ({}ms)",
                         power_line_high_stable_ms
                     );
-                    inactivity_ms = auto_sleep_duration_ms.saturating_sub(SLEEP_WARNING_MS);
+                    inactivity_ms = AUTO_SLEEP_DURATION_MS.saturating_sub(SLEEP_WARNING_MS);
                     FreeRtos::delay_ms(100);
                     continue;
                 }
@@ -749,13 +597,12 @@ fn main() {
                     log::warn!(
                         "Auto-sleep postponed: power button line is low (preventing wake loop)"
                     );
-                    inactivity_ms = auto_sleep_duration_ms.saturating_sub(SLEEP_WARNING_MS);
+                    inactivity_ms = AUTO_SLEEP_DURATION_MS.saturating_sub(SLEEP_WARNING_MS);
                     FreeRtos::delay_ms(100);
                     continue;
                 }
 
                 show_sleep_screen_with_cover(
-                    &app,
                     &mut display,
                     &mut delay,
                     &mut buffered_display,
@@ -763,7 +610,6 @@ fn main() {
                 );
                 stop_web_upload_server(&mut web_upload_server);
                 wifi_manager.stop_transfer_network();
-                app.set_file_transfer_active(false);
 
                 enter_deep_sleep(3);
             }

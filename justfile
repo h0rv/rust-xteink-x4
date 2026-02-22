@@ -108,26 +108,14 @@ all-full:
 
 # Run web simulator
 sim-web:
-    cd crates/xteink-sim-web && trunk serve --release
-
-# Run generic einked web simulator
-sim-einked-web:
     cd einked/crates/einked-sim-web && trunk serve --release
 
 # Run desktop simulator
 sim-desktop:
-    cargo run -p xteink-sim-desktop --target {{ host_target }}
-
-# Run generic einked desktop simulator
-sim-einked-desktop:
     cargo run --manifest-path einked/crates/einked-sim-desktop/Cargo.toml --target {{ host_target }}
 
 # Build web simulator
 build-web:
-    cd crates/xteink-sim-web && trunk build --release
-
-# Build generic einked web simulator
-build-einked-web:
     cd einked/crates/einked-sim-web && trunk build --release
 
 # Check all crates (except firmware - needs esp toolchain)
@@ -237,26 +225,29 @@ test-diff:
 test:
     cargo test --workspace --features std --target {{ host_target }}
 
-# Run scripted scenario harness tests (host target)
+# Run einked integration tests (host target)
 sim-scenarios:
-    cargo test -p xteink-scenario-harness --target {{ host_target }}
+    cargo test -p einked --all-features --target {{ host_target }}
 
-# Run scripted scenario harness tests on a deterministic local host target.
+# Run einked integration tests on a deterministic local host target.
 # Use this for day-to-day local iteration regardless of auto-detected host target.
 sim-scenarios-local:
-    cargo test -p xteink-scenario-harness --target x86_64-unknown-linux-gnu -- --nocapture
+    cargo test -p einked --all-features --target x86_64-unknown-linux-gnu -- --nocapture
 
-# Build stack-size report for scenario harness host builds
+# Build stack-size report for einked host builds
 stack-report:
-    ./scripts/stack_sizes_report.sh xteink-scenario-harness {{ host_target }}
+    ./scripts/stack_sizes_report.sh einked {{ host_target }}
 
-# Enforce a max per-function stack threshold for project symbols (host scenario build)
+# Enforce a max per-function stack threshold for project symbols (host einked build)
 stack-gate max_bytes="100000":
-    STACK_MAX_BYTES={{ max_bytes }} ./scripts/stack_sizes_report.sh xteink-scenario-harness {{ host_target }}
+    STACK_MAX_BYTES={{ max_bytes }} ./scripts/stack_sizes_report.sh einked {{ host_target }}
 
-# Tight host-side UI reliability loop: fmt + lint + scenarios + stack report
+# Tight host-side UI reliability loop: fmt + lint + sim scenarios + stack report
 ui-loop:
-    HOST_TEST_TARGET={{ host_target }} ./scripts/ui_loop.sh
+    just fmt
+    just lint
+    just sim-scenarios
+    just stack-report
 
 # Show CLI helpers
 cli-help:

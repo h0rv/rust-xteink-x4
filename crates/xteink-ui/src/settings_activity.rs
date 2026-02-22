@@ -157,6 +157,60 @@ pub enum AutoSleepDuration {
     Never,
 }
 
+/// Sleep screen display mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SleepScreenMode {
+    #[default]
+    Default,
+    Custom,
+    Cover,
+}
+
+impl SleepScreenMode {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Custom, Self::Cover];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Custom => "Custom",
+            Self::Cover => "Book Cover",
+        }
+    }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Default => 0,
+            Self::Custom => 1,
+            Self::Cover => 2,
+        }
+    }
+
+    pub const fn from_index(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::Default),
+            1 => Some(Self::Custom),
+            2 => Some(Self::Cover),
+            _ => None,
+        }
+    }
+
+    pub const fn next_wrapped(self) -> Self {
+        match self {
+            Self::Default => Self::Custom,
+            Self::Custom => Self::Cover,
+            Self::Cover => Self::Default,
+        }
+    }
+
+    pub const fn prev_wrapped(self) -> Self {
+        match self {
+            Self::Default => Self::Cover,
+            Self::Custom => Self::Default,
+            Self::Cover => Self::Custom,
+        }
+    }
+}
+
 impl AutoSleepDuration {
     /// All auto-sleep duration variants
     pub const ALL: [Self; 7] = [
@@ -630,11 +684,11 @@ impl Activity for SettingsActivity {
                 self.settings = self.original_settings;
                 ActivityResult::NavigateBack
             }
-            InputEvent::Press(Button::VolumeUp) | InputEvent::Press(Button::Up) => {
+            InputEvent::Press(Button::Aux1) | InputEvent::Press(Button::Up) => {
                 self.select_prev();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::VolumeDown) | InputEvent::Press(Button::Down) => {
+            InputEvent::Press(Button::Aux2) | InputEvent::Press(Button::Down) => {
                 self.select_next();
                 ActivityResult::Consumed
             }
@@ -1139,11 +1193,11 @@ mod tests {
         assert_eq!(activity.modal_button, 0);
 
         // VolumeUp
-        activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(activity.modal_button, 1);
 
         // VolumeDown
-        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(activity.modal_button, 0);
     }
 
@@ -1225,12 +1279,12 @@ mod tests {
         activity.on_enter();
 
         // VolumeDown navigates next
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 1);
 
         // VolumeUp navigates previous
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 0);
     }
@@ -1325,8 +1379,8 @@ mod tests {
         activity.on_enter();
 
         // Navigate to AutoSleep row
-        activity.handle_input(InputEvent::Press(Button::VolumeDown));
-        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        activity.handle_input(InputEvent::Press(Button::Aux2));
+        activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(activity.current_row(), SettingRow::AutoSleep);
         assert_eq!(
             activity.settings().auto_sleep_duration,

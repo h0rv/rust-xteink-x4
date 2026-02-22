@@ -1045,11 +1045,11 @@ impl Activity for ReaderSettingsActivity {
                     ActivityResult::NavigateBack
                 }
             }
-            InputEvent::Press(Button::VolumeUp) | InputEvent::Press(Button::Up) => {
+            InputEvent::Press(Button::Aux1) | InputEvent::Press(Button::Up) => {
                 self.select_prev();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::VolumeDown) | InputEvent::Press(Button::Down) => {
+            InputEvent::Press(Button::Aux2) | InputEvent::Press(Button::Down) => {
                 self.select_next();
                 ActivityResult::Consumed
             }
@@ -1506,9 +1506,9 @@ mod tests {
         assert_eq!(activity.modal_button, 0);
 
         // VolumeDown/Up
-        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(activity.modal_button, 1);
-        activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(activity.modal_button, 0);
 
         // Wrapping
@@ -1575,12 +1575,12 @@ mod tests {
         activity.on_enter();
 
         // Volume down to navigate next
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert!(matches!(result, ActivityResult::Consumed));
         assert_eq!(activity.selected_index, 1);
 
         // Volume up to navigate previous
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert!(matches!(result, ActivityResult::Consumed));
         assert_eq!(activity.selected_index, 0);
     }

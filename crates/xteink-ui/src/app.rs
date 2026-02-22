@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
-use crate::input::InputEvent;
+use crate::input::{ButtonConfig, InputEvent};
 use crate::library_activity::BookInfo;
 use crate::main_activity::{MainActivity, UnifiedSettings};
 #[cfg(feature = "std")]
@@ -19,7 +19,7 @@ use crate::reader_settings_activity::{
     TextAlignment, VolumeButtonAction,
 };
 #[cfg(feature = "std")]
-use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
+use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize, SleepScreenMode};
 use crate::system_menu_activity::DeviceStatus;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::FileSystem;
@@ -823,6 +823,7 @@ impl App {
         let font_family = FontFamily::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let auto_sleep_duration =
             AutoSleepDuration::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let sleep_screen_mode = SleepScreenMode::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let line_spacing = LineSpacing::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let margin_size = MarginSize::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let text_alignment = TextAlignment::from_index(fields.next()?.parse::<usize>().ok()?)?;
@@ -835,10 +836,14 @@ impl App {
         let volume_button_action =
             VolumeButtonAction::from_index(fields.next()?.parse::<usize>().ok()?)?;
         let tap_zone_config = TapZoneConfig::from_index(fields.next()?.parse::<usize>().ok()?)?;
+        let swap_left_right = fields.next().map(|v| v == "1").unwrap_or(false);
+        let swap_up_down = fields.next().map(|v| v == "1").unwrap_or(false);
+        let volume_for_pages = fields.next().map(|v| v == "1").unwrap_or(false);
         Some(UnifiedSettings {
             font_size,
             font_family,
             auto_sleep_duration,
+            sleep_screen_mode,
             line_spacing,
             margin_size,
             text_alignment,
@@ -849,6 +854,11 @@ impl App {
             invert_colors,
             volume_button_action,
             tap_zone_config,
+            button_config: ButtonConfig {
+                swap_left_right,
+                swap_up_down,
+                volume_for_pages,
+            },
         })
     }
 
@@ -864,10 +874,11 @@ impl App {
             let _ = std::fs::create_dir_all(parent);
         }
         let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             settings.font_size.index(),
             settings.font_family.index(),
             settings.auto_sleep_duration.index(),
+            settings.sleep_screen_mode.index(),
             settings.line_spacing.index(),
             settings.margin_size.index(),
             settings.text_alignment.index(),
@@ -878,6 +889,21 @@ impl App {
             if settings.invert_colors { 1 } else { 0 },
             settings.volume_button_action.index(),
             settings.tap_zone_config.index(),
+            if settings.button_config.swap_left_right {
+                1
+            } else {
+                0
+            },
+            if settings.button_config.swap_up_down {
+                1
+            } else {
+                0
+            },
+            if settings.button_config.volume_for_pages {
+                1
+            } else {
+                0
+            },
         );
         let mut out = String::from("v1\n");
         out.push_str(&line);
@@ -1013,6 +1039,16 @@ impl App {
     /// Get auto-sleep duration in milliseconds.
     pub fn auto_sleep_duration_ms(&self) -> u32 {
         self.main_activity.auto_sleep_duration_ms()
+    }
+
+    /// Get sleep screen mode.
+    pub fn sleep_screen_mode(&self) -> SleepScreenMode {
+        self.main_activity.settings().sleep_screen_mode
+    }
+
+    /// Get button remapping configuration.
+    pub fn button_config(&self) -> ButtonConfig {
+        self.main_activity.settings().button_config
     }
 }
 

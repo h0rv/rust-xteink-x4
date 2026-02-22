@@ -309,11 +309,11 @@ impl Activity for InformationActivity {
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
             InputEvent::Press(Button::Back) => ActivityResult::NavigateBack,
-            InputEvent::Press(Button::VolumeDown) | InputEvent::Press(Button::Right) => {
+            InputEvent::Press(Button::Aux2) | InputEvent::Press(Button::Right) => {
                 self.select_next();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::VolumeUp) | InputEvent::Press(Button::Left) => {
+            InputEvent::Press(Button::Aux1) | InputEvent::Press(Button::Left) => {
                 self.select_prev();
                 ActivityResult::Consumed
             }
@@ -473,12 +473,12 @@ mod tests {
         assert_eq!(activity.selected_index, 0);
 
         // Volume down should move to next
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 1);
 
         // Volume up should move to previous
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 0);
 
@@ -503,12 +503,12 @@ mod tests {
         activity.on_enter();
 
         // Wrap backward from 0 to last
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, InfoField::ALL.len() - 1);
 
         // Wrap forward from last to 0
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 0);
     }
@@ -520,10 +520,10 @@ mod tests {
 
         assert_eq!(activity.selected_field(), Some(InfoField::DeviceName));
 
-        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(activity.selected_field(), Some(InfoField::FirmwareVersion));
 
-        activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(activity.selected_field(), Some(InfoField::Battery));
     }
 

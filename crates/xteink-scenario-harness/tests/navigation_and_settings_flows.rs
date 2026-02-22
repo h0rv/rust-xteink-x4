@@ -21,7 +21,7 @@ fn files_open_text_and_back_to_system_menu_flow() {
     harness.render();
 
     // System menu -> Files
-    assert!(harness.press(Button::VolumeDown));
+    assert!(harness.press(Button::Aux2));
     assert!(harness.press(Button::Confirm));
     assert_eq!(harness.app().current_screen(), AppScreen::FileBrowser);
     assert!(harness.pump_deferred_until_idle() > 0);
@@ -31,7 +31,7 @@ fn files_open_text_and_back_to_system_menu_flow() {
     assert!(harness.pump_deferred_until_idle() > 0);
 
     // "/docs" includes ".." at index 0; move to readme and open it.
-    assert!(harness.press(Button::VolumeDown));
+    assert!(harness.press(Button::Aux2));
     assert!(harness.press(Button::Confirm));
     assert!(harness.pump_deferred_until_idle() > 0);
     assert!(harness.app().file_browser_is_reading_text());
@@ -60,9 +60,9 @@ fn device_settings_reset_modal_cancel_and_exit_flow() {
     harness.render();
 
     // System menu -> Device Settings (index 3).
-    assert!(harness.press(Button::VolumeDown));
-    assert!(harness.press(Button::VolumeDown));
-    assert!(harness.press(Button::VolumeDown));
+    assert!(harness.press(Button::Aux2));
+    assert!(harness.press(Button::Aux2));
+    assert!(harness.press(Button::Aux2));
     assert!(harness.press(Button::Confirm));
     assert_eq!(harness.app().current_screen(), AppScreen::Settings);
 
@@ -93,10 +93,10 @@ fn system_menu_navigation_information_and_reader_settings_flow() {
     harness.render();
 
     // System menu -> Information (index 4)
-    assert!(harness.press(Button::VolumeDown));
-    assert!(harness.press(Button::VolumeDown));
-    assert!(harness.press(Button::VolumeDown));
-    assert!(harness.press(Button::VolumeDown));
+    assert!(harness.press(Button::Aux2));
+    assert!(harness.press(Button::Aux2));
+    assert!(harness.press(Button::Aux2));
+    assert!(harness.press(Button::Aux2));
     assert!(harness.press(Button::Confirm));
     assert_eq!(harness.app().current_screen(), AppScreen::Information);
     harness.render();
@@ -107,8 +107,8 @@ fn system_menu_navigation_information_and_reader_settings_flow() {
     assert_eq!(harness.app().current_screen(), AppScreen::SystemMenu);
 
     // System menu -> Reader Settings (index 2)
-    assert!(harness.press(Button::VolumeDown));
-    assert!(harness.press(Button::VolumeDown));
+    assert!(harness.press(Button::Aux2));
+    assert!(harness.press(Button::Aux2));
     assert!(harness.press(Button::Confirm));
     assert_eq!(harness.app().current_screen(), AppScreen::ReaderSettings);
     harness.render();

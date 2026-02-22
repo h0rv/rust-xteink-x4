@@ -19,7 +19,6 @@ extern crate alloc;
 
 pub mod app;
 pub mod buffered_display;
-pub mod diff;
 pub mod eink;
 pub mod embedded_fonts;
 pub mod file_browser;
@@ -27,14 +26,55 @@ pub mod file_browser_activity;
 pub mod filesystem;
 pub mod font_render;
 pub mod information_activity;
-pub mod input;
 pub mod library_activity;
 pub mod main_activity;
 pub mod reader_settings_activity;
 pub mod settings_activity;
 pub mod system_menu_activity;
 pub mod test_display;
-pub mod ui;
+
+pub use einked::diff;
+pub use einked::input;
+
+pub mod ui {
+    use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
+
+    use crate::app::AppScreen;
+    use crate::input::InputEvent;
+
+    pub mod components {
+        pub use einked::ui::components::*;
+    }
+
+    pub mod helpers {
+        pub(crate) use einked::ui::helpers::*;
+    }
+
+    pub mod theme {
+        pub use einked::ui::theme::*;
+    }
+
+    pub use components::{Button, Header, List, Modal, Toast};
+    pub use einked::ui::ActivityRefreshMode;
+    pub use theme::{Theme, ThemeMetrics};
+
+    /// Result of handling an input event in Xteink app activities.
+    pub type ActivityResult = einked::ui::ActivityResult<AppScreen>;
+
+    /// Activity trait for screen-based UI architecture.
+    pub trait Activity {
+        fn on_enter(&mut self);
+        fn on_exit(&mut self);
+        fn handle_input(&mut self, event: InputEvent) -> ActivityResult;
+        fn render<D: DrawTarget<Color = BinaryColor>>(
+            &self,
+            display: &mut D,
+        ) -> Result<(), D::Error>;
+        fn refresh_mode(&self) -> ActivityRefreshMode {
+            ActivityRefreshMode::default()
+        }
+    }
+}
 
 #[cfg(all(feature = "std", feature = "fontdue"))]
 pub mod epub_font_backend;
@@ -56,14 +96,16 @@ pub use file_browser_activity::FileBrowserActivity;
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};
 pub use font_render::FontCache;
 pub use information_activity::{InfoField, InformationActivity};
-pub use input::{Button, InputEvent};
+pub use input::{Button, ButtonConfig, InputEvent};
 pub use library_activity::{create_mock_books, BookAction, BookInfo, LibraryActivity, SortOrder};
 pub use main_activity::{MainActivity, SettingItem as MainSettingItem, Tab, UnifiedSettings};
 pub use reader_settings_activity::{
     LineSpacing, MarginSize, ReaderSettings, ReaderSettingsActivity, RefreshFrequency,
     TapZoneConfig, TextAlignment, VolumeButtonAction,
 };
-pub use settings_activity::{FontFamily, FontSize, SettingRow, Settings, SettingsActivity};
+pub use settings_activity::{
+    FontFamily, FontSize, SettingRow, Settings, SettingsActivity, SleepScreenMode,
+};
 pub use system_menu_activity::{DeviceStatus, MenuItem, SystemMenuActivity};
 
 #[cfg(feature = "std")]
@@ -94,17 +136,9 @@ pub use epub_prep::{
 #[cfg(feature = "std")]
 pub use mock_filesystem::MockFileSystem;
 
-/// UI Display dimensions (portrait mode)
-/// SSD1677 panel is 480x800 pixels in its native orientation
+/// UI display dimensions (portrait mode).
+/// SSD1677 panel is 480x800 pixels in its native orientation.
 pub const DISPLAY_WIDTH: u32 = 480;
 pub const DISPLAY_HEIGHT: u32 = 800;
 
-/// Normalize a draw target's size to portrait (width <= height).
-pub fn portrait_dimensions<D: embedded_graphics::prelude::OriginDimensions>(
-    display: &D,
-) -> (u32, u32) {
-    let size = display.size();
-    let width = size.width.min(size.height);
-    let height = size.width.max(size.height);
-    (width, height)
-}
+pub use einked::portrait_dimensions;

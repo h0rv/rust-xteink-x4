@@ -15,10 +15,12 @@ experimental = ["esp-idf-svc/experimental"]
 log = "0.4"
 esp-idf-svc = "0.51"
 xteink-ui = { path = "../xteink-ui", features = ["std"] }
+einked = { path = "../../einked", features = ["std"] }
 embedded-hal = "1.0.0"
 embedded-graphics = "0.8.0"
 crc32fast = "1.4.2"
 embedded-svc = "0.28"
+image = { version = "0.25", default-features = false, features = ["bmp", "png", "jpeg"] }
 
 [build-dependencies]
 embuild = "0.33"

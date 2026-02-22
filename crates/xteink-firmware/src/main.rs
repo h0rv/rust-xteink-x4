@@ -2,6 +2,7 @@ extern crate alloc;
 
 mod cli;
 mod cli_commands;
+mod einked_slice;
 mod input;
 mod runtime_diagnostics;
 mod sdcard;
@@ -20,11 +21,12 @@ use esp_idf_svc::sys;
 use xteink_ui::ui::ActivityRefreshMode;
 use xteink_ui::{
     App, BufferedDisplay, Builder, Button, DeviceStatus, Dimensions, DisplayInterface, EinkDisplay,
-    EinkInterface, InputEvent, RamXAddressing, RefreshMode, Rotation,
+    EinkInterface, InputEvent, RamXAddressing, RefreshMode, Rotation, SleepScreenMode,
 };
 
 use cli::SerialCli;
 use cli_commands::handle_cli_command;
+use einked_slice::EinkedSlice;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, configure_pthread_defaults, log_heap};
 use sdcard::SdCardFs;
@@ -54,6 +56,7 @@ const UI_STALL_WINDOW_MS: i64 = 15_000;
 const UI_STALL_RECOVER_STREAK: u8 = 3;
 const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
 const DISPLAY_FAIL_RESET_STREAK: u8 = 3;
+const ENABLE_EINKED_V1_SLICE: bool = true;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -64,12 +67,7 @@ fn battery_percent_from_adc(raw: i32) -> u8 {
 fn is_repeatable_nav_button(btn: Button) -> bool {
     matches!(
         btn,
-        Button::Left
-            | Button::Right
-            | Button::Up
-            | Button::Down
-            | Button::VolumeUp
-            | Button::VolumeDown
+        Button::Left | Button::Right | Button::Up | Button::Down | Button::Aux1 | Button::Aux2
     )
 }
 
@@ -341,21 +339,131 @@ fn render_sleep_cover_on_buffer(buffered_display: &mut BufferedDisplay, cover: &
     }
 }
 
+const SLEEP_IMAGES_DIR: &str = "/sd/.xteink/sleep";
+
+struct SleepImage {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+fn load_custom_sleep_image(fs: &mut SdCardFs) -> Option<SleepImage> {
+    use xteink_ui::filesystem::FileSystem;
+
+    let entries = fs.list_files(SLEEP_IMAGES_DIR).ok()?;
+    let image_files: Vec<_> = entries
+        .into_iter()
+        .filter(|e| !e.is_directory)
+        .filter(|e| {
+            let name = e.name.to_lowercase();
+            name.ends_with(".bmp")
+                || name.ends_with(".png")
+                || name.ends_with(".jpg")
+                || name.ends_with(".jpeg")
+        })
+        .collect();
+
+    if image_files.is_empty() {
+        log::info!(
+            "[SLEEP] No custom sleep images found in {}",
+            SLEEP_IMAGES_DIR
+        );
+        return None;
+    }
+
+    let selected = &image_files[0];
+    let path = format!("{}/{}", SLEEP_IMAGES_DIR, selected.name);
+    log::info!("[SLEEP] Loading custom sleep image: {}", path);
+
+    let bytes = fs.read_file_bytes(&path).ok()?;
+    decode_image_to_binary(&bytes)
+}
+
+fn decode_image_to_binary(bytes: &[u8]) -> Option<SleepImage> {
+    let img = image::load_from_memory(bytes).ok()?;
+
+    let target_width = xteink_ui::DISPLAY_WIDTH;
+    let target_height = xteink_ui::DISPLAY_HEIGHT;
+
+    let resized = img.resize_to_fill(
+        target_width,
+        target_height,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    let gray = resized.into_luma8();
+
+    let mut pixels = vec![0u8; ((target_width as usize) * (target_height as usize) + 7) / 8];
+
+    for (x, y, pixel) in gray.enumerate_pixels() {
+        let lum = pixel.0[0];
+        let is_black = lum < 128;
+        if is_black {
+            let idx = (y as usize) * (target_width as usize) + (x as usize);
+            pixels[idx / 8] |= 1 << (7 - (idx % 8));
+        }
+    }
+
+    Some(SleepImage {
+        width: target_width,
+        height: target_height,
+        pixels,
+    })
+}
+
+fn render_sleep_image_on_buffer(buffered_display: &mut BufferedDisplay, image: &SleepImage) {
+    for y in 0..image.height {
+        for x in 0..image.width {
+            let idx = (y as usize) * (image.width as usize) + (x as usize);
+            let is_black = (image.pixels[idx / 8] & (1 << (7 - (idx % 8)))) != 0;
+            if is_black {
+                buffered_display.set_pixel(x, y, embedded_graphics::pixelcolor::BinaryColor::On);
+            }
+        }
+    }
+}
+
 fn show_sleep_screen_with_cover<I, D>(
     app: &App,
     display: &mut EinkDisplay<I>,
     delay: &mut D,
     buffered_display: &mut BufferedDisplay,
+    fs: &mut SdCardFs,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
 {
     buffered_display.clear();
-    if let Some(compact) = app.active_book_cover_thumbnail_compact() {
-        if let Some(cover) = decode_compact_cover(&compact) {
-            render_sleep_cover_on_buffer(buffered_display, &cover);
+
+    let mode = app.sleep_screen_mode();
+    log::info!("[SLEEP] Sleep screen mode: {:?}", mode);
+
+    match mode {
+        SleepScreenMode::Custom => {
+            if let Some(image) = load_custom_sleep_image(fs) {
+                log::info!("[SLEEP] Rendering custom sleep image");
+                render_sleep_image_on_buffer(buffered_display, &image);
+            } else {
+                log::info!("[SLEEP] No custom image, falling back to book cover");
+                if let Some(compact) = app.active_book_cover_thumbnail_compact() {
+                    if let Some(cover) = decode_compact_cover(&compact) {
+                        render_sleep_cover_on_buffer(buffered_display, &cover);
+                    }
+                }
+            }
+        }
+        SleepScreenMode::Cover => {
+            if let Some(compact) = app.active_book_cover_thumbnail_compact() {
+                if let Some(cover) = decode_compact_cover(&compact) {
+                    render_sleep_cover_on_buffer(buffered_display, &cover);
+                }
+            }
+        }
+        SleepScreenMode::Default => {
+            // Just show a blank screen (already cleared)
         }
     }
+
     display
         .update_with_mode(buffered_display.buffer(), &[], RefreshMode::Full, delay)
         .ok();
@@ -545,6 +653,7 @@ fn main() {
 
     // Create buffered display for UI rendering (avoids stack overflow from iterator chains)
     let mut buffered_display = BufferedDisplay::new();
+    let mut einked_slice = EinkedSlice::new();
 
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
@@ -627,14 +736,20 @@ fn main() {
     }
     let mut display_fail_streak: u8 = 0;
     buffered_display.clear();
-    let first_render_ok = app.render(&mut buffered_display).is_ok();
-    log_heap("before_first_render");
-    let first_update_ok = if first_render_ok {
-        display
-            .update(buffered_display.buffer(), &[], &mut delay)
-            .is_ok()
+    let (first_render_ok, first_update_ok) = if ENABLE_EINKED_V1_SLICE {
+        let ok = einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display);
+        (ok, ok)
     } else {
-        false
+        let render_ok = app.render(&mut buffered_display).is_ok();
+        log_heap("before_first_render");
+        let update_ok = if render_ok {
+            display
+                .update(buffered_display.buffer(), &[], &mut delay)
+                .is_ok()
+        } else {
+            false
+        };
+        (render_ok, update_ok)
     };
     handle_display_result(
         "boot_first_render",
@@ -740,7 +855,13 @@ fn main() {
             sleep_requested = false;
             stop_web_upload_server(&mut web_upload_server);
             wifi_manager.stop_transfer_network();
-            show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
+            show_sleep_screen_with_cover(
+                &app,
+                &mut display,
+                &mut delay,
+                &mut buffered_display,
+                &mut fs,
+            );
             enter_deep_sleep(3);
         }
 
@@ -803,6 +924,7 @@ fn main() {
                         &mut display,
                         &mut delay,
                         &mut buffered_display,
+                        &mut fs,
                     );
                     log::info!("Displayed centered cover for power off");
                     stop_web_upload_server(&mut web_upload_server);
@@ -821,7 +943,7 @@ fn main() {
                 append_diag("power_short_press");
 
                 let op_start_us = unsafe { sys::esp_timer_get_time() };
-                let mut needs_redraw = app.handle_input(InputEvent::Press(Button::Power));
+                let mut needs_redraw = app.handle_input(InputEvent::Press(Button::Aux3));
                 let elapsed_ms = (unsafe { sys::esp_timer_get_time() } - op_start_us) / 1_000;
                 needs_redraw |= note_ui_stall_and_maybe_recover(
                     &mut app,
@@ -869,8 +991,20 @@ fn main() {
         }
 
         if let Some(btn) = button {
-            if btn != Button::Power {
+            if btn != Button::Aux3 {
+                if ENABLE_EINKED_V1_SLICE {
+                    let _ = einked_slice.tick_and_flush(
+                        Some(InputEvent::Press(btn)),
+                        &mut display,
+                        &mut delay,
+                        &mut buffered_display,
+                    );
+                    FreeRtos::delay_ms(LOOP_DELAY_MS);
+                    continue;
+                }
+
                 let mut emit_press = false;
+                let remapped_btn = app.button_config().remap(btn);
                 if is_repeatable_nav_button(btn) {
                     if held_button == Some(btn) {
                         held_button_ticks = held_button_ticks.saturating_add(1);
@@ -897,11 +1031,11 @@ fn main() {
                     continue;
                 }
 
-                log::info!("Button pressed: {:?}", btn);
+                log::info!("Button pressed: {:?} -> {:?}", btn, remapped_btn);
                 log_heap("before_handle_input");
 
                 let op_start_us = unsafe { sys::esp_timer_get_time() };
-                let mut needs_redraw = app.handle_input(InputEvent::Press(btn));
+                let mut needs_redraw = app.handle_input(InputEvent::Press(remapped_btn));
                 let elapsed_ms = (unsafe { sys::esp_timer_get_time() } - op_start_us) / 1_000;
                 needs_redraw |= note_ui_stall_and_maybe_recover(
                     &mut app,
@@ -1078,7 +1212,13 @@ fn main() {
                     continue;
                 }
 
-                show_sleep_screen_with_cover(&app, &mut display, &mut delay, &mut buffered_display);
+                show_sleep_screen_with_cover(
+                    &app,
+                    &mut display,
+                    &mut delay,
+                    &mut buffered_display,
+                    &mut fs,
+                );
                 stop_web_upload_server(&mut web_upload_server);
                 wifi_manager.stop_transfer_network();
                 app.set_file_transfer_active(false);

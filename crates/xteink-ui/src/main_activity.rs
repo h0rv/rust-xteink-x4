@@ -19,13 +19,13 @@ use embedded_graphics::{
 
 use crate::file_browser_activity::FileBrowserActivity;
 use crate::filesystem::FileSystem;
-use crate::input::{Button, InputEvent};
+use crate::input::{Button, ButtonConfig, InputEvent};
 use crate::library_activity::BookInfo;
 use crate::reader_settings_activity::{
     FooterAutoHide, FooterDensity, LineSpacing, MarginSize, ReaderSettings, RefreshFrequency,
     TapZoneConfig, TextAlignment, VolumeButtonAction,
 };
-use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
+use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize, SleepScreenMode};
 use crate::system_menu_activity::DeviceStatus;
 use crate::ui::theme::layout::{
     self, BOTTOM_BAR_H, DOT_SIZE, DOT_SPACING, GAP_LG, GAP_MD, HEADER_TEXT_Y, HERO_H, INNER_PAD,
@@ -117,6 +117,7 @@ pub enum SettingItem {
     FontSize,
     FontFamily,
     AutoSleep,
+    SleepScreen,
     InvertColors,
     // --- Advanced divider rendered between these ---
     LineSpacing,
@@ -126,14 +127,19 @@ pub enum SettingItem {
     RefreshFrequency,
     VolumeButtonAction,
     TapZoneConfig,
+    // --- Button remapping divider ---
+    SwapLeftRight,
+    SwapUpDown,
+    VolumeForPages,
 }
 
 impl SettingItem {
     /// Primary settings (most-used, always visible first).
-    pub const PRIMARY: [Self; 4] = [
+    pub const PRIMARY: [Self; 5] = [
         Self::FontSize,
         Self::FontFamily,
         Self::AutoSleep,
+        Self::SleepScreen,
         Self::InvertColors,
     ];
 
@@ -148,11 +154,15 @@ impl SettingItem {
         Self::TapZoneConfig,
     ];
 
-    /// All settings in display order (primary then advanced).
-    pub const ALL: [Self; 11] = [
+    /// Button remapping settings.
+    pub const BUTTONS: [Self; 3] = [Self::SwapLeftRight, Self::SwapUpDown, Self::VolumeForPages];
+
+    /// All settings in display order (primary then advanced then buttons).
+    pub const ALL: [Self; 15] = [
         Self::FontSize,
         Self::FontFamily,
         Self::AutoSleep,
+        Self::SleepScreen,
         Self::InvertColors,
         Self::LineSpacing,
         Self::MarginSize,
@@ -161,16 +171,23 @@ impl SettingItem {
         Self::RefreshFrequency,
         Self::VolumeButtonAction,
         Self::TapZoneConfig,
+        Self::SwapLeftRight,
+        Self::SwapUpDown,
+        Self::VolumeForPages,
     ];
 
     /// Index of the first advanced item in ALL.
     pub const ADVANCED_START: usize = Self::PRIMARY.len();
+
+    /// Index of the first button remapping item in ALL.
+    pub const BUTTONS_START: usize = Self::PRIMARY.len() + Self::ADVANCED.len();
 
     pub fn label(self) -> &'static str {
         match self {
             Self::FontSize => "Font Size",
             Self::FontFamily => "Font Family",
             Self::AutoSleep => "Auto Sleep",
+            Self::SleepScreen => "Sleep Screen",
             Self::InvertColors => "Invert Colors",
             Self::LineSpacing => "Line Spacing",
             Self::MarginSize => "Margins",
@@ -179,6 +196,9 @@ impl SettingItem {
             Self::RefreshFrequency => "Refresh",
             Self::VolumeButtonAction => "Vol Buttons",
             Self::TapZoneConfig => "Tap Zones",
+            Self::SwapLeftRight => "Swap L/R",
+            Self::SwapUpDown => "Swap U/D",
+            Self::VolumeForPages => "Vol Pages",
         }
     }
 }
@@ -189,6 +209,7 @@ pub struct UnifiedSettings {
     pub font_size: FontSize,
     pub font_family: FontFamily,
     pub auto_sleep_duration: AutoSleepDuration,
+    pub sleep_screen_mode: SleepScreenMode,
     pub line_spacing: LineSpacing,
     pub margin_size: MarginSize,
     pub text_alignment: TextAlignment,
@@ -199,6 +220,7 @@ pub struct UnifiedSettings {
     pub invert_colors: bool,
     pub volume_button_action: VolumeButtonAction,
     pub tap_zone_config: TapZoneConfig,
+    pub button_config: ButtonConfig,
 }
 
 impl Default for UnifiedSettings {
@@ -207,6 +229,7 @@ impl Default for UnifiedSettings {
             font_size: FontSize::Medium,
             font_family: FontFamily::Serif,
             auto_sleep_duration: AutoSleepDuration::TenMinutes,
+            sleep_screen_mode: SleepScreenMode::default(),
             line_spacing: LineSpacing::Normal,
             margin_size: MarginSize::Medium,
             text_alignment: TextAlignment::Justified,
@@ -217,6 +240,7 @@ impl Default for UnifiedSettings {
             invert_colors: false,
             volume_button_action: VolumeButtonAction::Scroll,
             tap_zone_config: TapZoneConfig::LeftNext,
+            button_config: ButtonConfig::default(),
         }
     }
 }
@@ -685,11 +709,11 @@ impl LibraryTabContent {
         if self.transfer_screen_open {
             if self.transfer_editor.is_some() {
                 match event {
-                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                         self.cycle_editor_char(1);
                         return ActivityResult::Consumed;
                     }
-                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                         self.cycle_editor_char(-1);
                         return ActivityResult::Consumed;
                     }
@@ -706,7 +730,7 @@ impl LibraryTabContent {
                         }
                         return ActivityResult::Consumed;
                     }
-                    InputEvent::Press(Button::Power) => {
+                    InputEvent::Press(Button::Aux3) => {
                         if !self.transfer_edit_buffer.is_empty()
                             && self.transfer_edit_cursor < self.transfer_edit_buffer.len()
                         {
@@ -741,11 +765,11 @@ impl LibraryTabContent {
                     }
                     return ActivityResult::Consumed;
                 }
-                InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                     self.transfer_menu_index = self.transfer_menu_index.saturating_sub(1);
                     return ActivityResult::Consumed;
                 }
-                InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                     self.transfer_menu_index = (self.transfer_menu_index + 1).min(4);
                     return ActivityResult::Consumed;
                 }
@@ -765,7 +789,7 @@ impl LibraryTabContent {
         }
 
         match event {
-            InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                 if self.hero_selected {
                     // already at top row
                 } else if self.transfer_selected {
@@ -783,7 +807,7 @@ impl LibraryTabContent {
                 }
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                 if self.hero_selected {
                     if !self.books.is_empty() {
                         self.hero_selected = false;
@@ -1591,13 +1615,13 @@ impl SettingsTabContent {
 
     fn handle_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
-            InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                 }
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                 if self.selected_index < SettingItem::ALL.len() - 1 {
                     self.selected_index += 1;
                 }
@@ -1624,6 +1648,9 @@ impl SettingsTabContent {
                 self.settings.auto_sleep_duration =
                     self.settings.auto_sleep_duration.next_wrapped();
             }
+            SettingItem::SleepScreen => {
+                self.settings.sleep_screen_mode = self.settings.sleep_screen_mode.next_wrapped();
+            }
             SettingItem::LineSpacing => {
                 self.settings.line_spacing = self.settings.line_spacing.next_wrapped();
             }
@@ -1648,6 +1675,18 @@ impl SettingsTabContent {
             }
             SettingItem::TapZoneConfig => {
                 self.settings.tap_zone_config = self.settings.tap_zone_config.next_wrapped();
+            }
+            SettingItem::SwapLeftRight => {
+                self.settings.button_config.swap_left_right =
+                    !self.settings.button_config.swap_left_right;
+            }
+            SettingItem::SwapUpDown => {
+                self.settings.button_config.swap_up_down =
+                    !self.settings.button_config.swap_up_down;
+            }
+            SettingItem::VolumeForPages => {
+                self.settings.button_config.volume_for_pages =
+                    !self.settings.button_config.volume_for_pages;
             }
         }
     }
@@ -1676,6 +1715,7 @@ impl SettingsTabContent {
             SettingItem::FontSize => format!("{:?}", self.settings.font_size),
             SettingItem::FontFamily => format!("{:?}", self.settings.font_family),
             SettingItem::AutoSleep => self.settings.auto_sleep_duration.label().into(),
+            SettingItem::SleepScreen => self.settings.sleep_screen_mode.label().into(),
             SettingItem::LineSpacing => format!("{:?}", self.settings.line_spacing),
             SettingItem::MarginSize => format!("{:?}", self.settings.margin_size),
             SettingItem::TextAlignment => format!("{:?}", self.settings.text_alignment),
@@ -1698,6 +1738,27 @@ impl SettingsTabContent {
                 format!("{:?}", self.settings.volume_button_action)
             }
             SettingItem::TapZoneConfig => format!("{:?}", self.settings.tap_zone_config),
+            SettingItem::SwapLeftRight => {
+                if self.settings.button_config.swap_left_right {
+                    "On".into()
+                } else {
+                    "Off".into()
+                }
+            }
+            SettingItem::SwapUpDown => {
+                if self.settings.button_config.swap_up_down {
+                    "On".into()
+                } else {
+                    "Off".into()
+                }
+            }
+            SettingItem::VolumeForPages => {
+                if self.settings.button_config.volume_for_pages {
+                    "On".into()
+                } else {
+                    "Off".into()
+                }
+            }
         }
     }
 
@@ -1752,6 +1813,26 @@ impl SettingsTabContent {
                 // "Advanced" label
                 Text::new(
                     "Advanced",
+                    Point::new(MARGIN, div_y - font_h / 2 + font_h),
+                    section_style,
+                )
+                .draw(display)?;
+                extra_y += item_height;
+            }
+
+            // Section divider before the first button remapping item
+            if i == SettingItem::BUTTONS_START && display_idx > 0 {
+                let div_y = start_y + (display_idx as i32) * item_height + extra_y;
+                // Separator line
+                Rectangle::new(
+                    Point::new(MARGIN, div_y - font_h / 2),
+                    Size::new(DISPLAY_WIDTH - MARGIN as u32 * 2, 1),
+                )
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                .draw(display)?;
+                // "Buttons" label
+                Text::new(
+                    "Buttons",
                     Point::new(MARGIN, div_y - font_h / 2 + font_h),
                     section_style,
                 )

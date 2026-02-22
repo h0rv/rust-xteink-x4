@@ -9,7 +9,7 @@ fn screenshot_modals() {
 
     // Navigate to Sleep modal
     for _ in 0..5 {
-        harness.press(Button::VolumeDown);
+        harness.press(Button::Aux2);
     }
     harness.press(Button::Confirm); // Open Sleep modal
     harness.render();
@@ -26,7 +26,7 @@ fn screenshot_modals() {
 
     // Cancel and go to Power Off
     harness.press(Button::Back);
-    harness.press(Button::VolumeDown);
+    harness.press(Button::Aux2);
     harness.press(Button::Confirm); // Open Power Off modal
     harness.render();
     harness

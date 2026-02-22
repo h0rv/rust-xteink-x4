@@ -1317,11 +1317,11 @@ impl LibraryActivity {
     /// Left/Right and VolumeUp/Down navigate buttons, Confirm selects, Back cancels.
     fn handle_context_menu_input(&mut self, event: InputEvent) -> ActivityResult {
         match event {
-            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::Aux2) => {
                 self.context_menu_next();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::Left) | InputEvent::Press(Button::Aux1) => {
                 self.context_menu_prev();
                 ActivityResult::Consumed
             }
@@ -1746,11 +1746,11 @@ impl Activity for LibraryActivity {
 
         match event {
             InputEvent::Press(Button::Back) => ActivityResult::NavigateBack,
-            InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::Aux1) => {
                 self.select_prev();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::Aux2) => {
                 self.select_next();
                 ActivityResult::Consumed
             }
@@ -1758,7 +1758,7 @@ impl Activity for LibraryActivity {
                 self.cycle_sort();
                 ActivityResult::Consumed
             }
-            InputEvent::Press(Button::Power) => {
+            InputEvent::Press(Button::Aux3) => {
                 self.refresh_requested = true;
                 self.begin_loading_scan();
                 ActivityResult::Consumed
@@ -2093,11 +2093,11 @@ mod tests {
         let mut activity = LibraryActivity::with_mock_books();
         activity.on_enter();
 
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 1);
 
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 0);
     }
@@ -2107,11 +2107,11 @@ mod tests {
         let mut activity = LibraryActivity::with_mock_books();
         activity.on_enter();
 
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 1);
 
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.selected_index, 0);
     }
@@ -2312,12 +2312,12 @@ mod tests {
         assert_eq!(activity.context_menu_index, 1);
 
         // Navigate with VolumeDown
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeDown));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux2));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.context_menu_index, 2);
 
         // Navigate back with VolumeUp
-        let result = activity.handle_input(InputEvent::Press(Button::VolumeUp));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux1));
         assert_eq!(result, ActivityResult::Consumed);
         assert_eq!(activity.context_menu_index, 1);
 
@@ -2451,7 +2451,7 @@ mod tests {
     #[test]
     fn power_button_requests_manual_refresh() {
         let mut activity = LibraryActivity::new();
-        let result = activity.handle_input(InputEvent::Press(Button::Power));
+        let result = activity.handle_input(InputEvent::Press(Button::Aux3));
         assert_eq!(result, ActivityResult::Consumed);
         assert!(activity.take_refresh_request());
         assert!(!activity.take_refresh_request());

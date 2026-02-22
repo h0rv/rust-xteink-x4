@@ -5,7 +5,9 @@ edition = "2021"
 
 [features]
 default = ["fontdue"]
+fontdue = ["dep:fontdue"]
 std = [
+    "einked/std",
     "epub-stream/std",
     "epub-stream/layout",
     "dep:epub_stream_render",
@@ -19,10 +21,10 @@ embedded-text = "0.7.3"
 
 # Logging (no_std compatible)
 log = "0.4"
+einked = { path = "../../einked", default-features = false }
 
 # EPUB support now provided by external epub-stream crate
 
-# TTF font rendering with no_std support - always enabled
 fontdue = { version = "0.9.3", optional = true }
 image = { version = "0.25.9", default-features = false, features = ["bmp", "jpeg", "png"], optional = true }
 

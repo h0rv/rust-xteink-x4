@@ -134,7 +134,7 @@ impl FileBrowser {
         }
 
         match event {
-            InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::Aux1) => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
                     self.adjust_scroll();
@@ -148,7 +148,7 @@ impl FileBrowser {
                     return (true, None);
                 }
             }
-            InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::Aux2) => {
                 if self.selected_index + 1 < self.files.len() {
                     self.selected_index += 1;
                     self.adjust_scroll();
@@ -477,13 +477,13 @@ impl TextViewer {
     /// Returns true if needs redraw
     pub fn handle_input(&mut self, event: InputEvent) -> bool {
         match event {
-            InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+            InputEvent::Press(Button::Left) | InputEvent::Press(Button::Aux1) => {
                 if self.current_page > 0 {
                     self.current_page -= 1;
                     return true;
                 }
             }
-            InputEvent::Press(Button::Right) | InputEvent::Press(Button::VolumeDown) => {
+            InputEvent::Press(Button::Right) | InputEvent::Press(Button::Aux2) => {
                 if self.current_page + 1 < self.total_pages() {
                     self.current_page += 1;
                     return true;

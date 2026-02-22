@@ -38,7 +38,7 @@ fn screenshot_all_ui_screens() {
     harness.render();
 
     // Files
-    harness.press(Button::VolumeDown); // Move to Files
+    harness.press(Button::Aux2); // Move to Files
     harness.press(Button::Confirm);
     harness.pump_deferred_until_idle();
     harness.render();
@@ -51,7 +51,7 @@ fn screenshot_all_ui_screens() {
     harness.render();
 
     // Reader Settings
-    harness.press(Button::VolumeDown); // Move to Reader Settings
+    harness.press(Button::Aux2); // Move to Reader Settings
     harness.press(Button::Confirm);
     harness.pump_deferred_until_idle();
     harness.render();
@@ -64,7 +64,7 @@ fn screenshot_all_ui_screens() {
     harness.render();
 
     // Device Settings
-    harness.press(Button::VolumeDown); // Move to Device Settings
+    harness.press(Button::Aux2); // Move to Device Settings
     harness.press(Button::Confirm);
     harness.pump_deferred_until_idle();
     harness.render();
@@ -77,7 +77,7 @@ fn screenshot_all_ui_screens() {
     harness.render();
 
     // Information
-    harness.press(Button::VolumeDown); // Move to Information
+    harness.press(Button::Aux2); // Move to Information
     harness.press(Button::Confirm);
     harness.pump_deferred_until_idle();
     harness.render();
@@ -90,7 +90,7 @@ fn screenshot_all_ui_screens() {
     harness.render();
 
     // Sleep modal
-    harness.press(Button::VolumeDown); // Move to Sleep
+    harness.press(Button::Aux2); // Move to Sleep
     harness.press(Button::Confirm);
     harness.render();
     harness
@@ -102,7 +102,7 @@ fn screenshot_all_ui_screens() {
     harness.render();
 
     // Power Off modal
-    harness.press(Button::VolumeDown); // Move to Power Off
+    harness.press(Button::Aux2); // Move to Power Off
     harness.press(Button::Confirm);
     harness.render();
     harness

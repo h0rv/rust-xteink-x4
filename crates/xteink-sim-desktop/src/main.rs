@@ -121,8 +121,8 @@ fn keycode_to_button(keycode: Keycode) -> Option<Button> {
     match keycode {
         Keycode::Left | Keycode::A => Some(Button::Left),
         Keycode::Right | Keycode::D => Some(Button::Right),
-        Keycode::Up | Keycode::W => Some(Button::VolumeUp),
-        Keycode::Down | Keycode::S => Some(Button::VolumeDown),
+        Keycode::Up | Keycode::W => Some(Button::Aux1),
+        Keycode::Down | Keycode::S => Some(Button::Aux2),
         Keycode::Return | Keycode::Space => Some(Button::Confirm),
         Keycode::Backspace => Some(Button::Back),
         _ => None,

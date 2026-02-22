@@ -48,7 +48,7 @@ pub fn read_buttons(
 ) -> (Option<Button>, bool) {
     let power_pressed = power_btn.is_low();
     if power_pressed {
-        return (Some(Button::Power), true);
+        return (Some(Button::Aux3), true);
     }
 
     let adc1_value = read_adc(sys::adc_channel_t_ADC_CHANNEL_1);
@@ -76,8 +76,8 @@ pub fn read_buttons(
     if btn2 >= 0 {
         return (
             Some(match btn2 {
-                0 => Button::VolumeUp,
-                1 => Button::VolumeDown,
+                0 => Button::Aux1,
+                1 => Button::Aux2,
                 _ => unreachable!(),
             }),
             false,

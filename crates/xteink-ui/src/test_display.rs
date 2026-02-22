@@ -28,7 +28,7 @@ impl TestDisplay {
         }
     }
 
-    /// Create a display matching the Xteink X4 dimensions (480x800).
+    /// Create a display matching the default device dimensions.
     pub fn default_size() -> Self {
         Self::new(crate::DISPLAY_WIDTH, crate::DISPLAY_HEIGHT)
     }
@@ -89,13 +89,11 @@ mod tests {
     fn test_display_allows_overdraw() {
         let mut display = TestDisplay::new(10, 10);
 
-        // Draw white background
         Rectangle::new(Point::new(0, 0), Size::new(10, 10))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
             .draw(&mut display)
             .unwrap();
 
-        // Draw black on top - should not panic
         Rectangle::new(Point::new(0, 0), Size::new(5, 5))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(&mut display)

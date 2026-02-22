@@ -90,8 +90,8 @@ fn key_to_button(key: &str) -> Option<Button> {
     match key {
         "ArrowLeft" | "a" => Some(Button::Left),
         "ArrowRight" | "d" => Some(Button::Right),
-        "ArrowUp" | "w" => Some(Button::VolumeUp),
-        "ArrowDown" | "s" => Some(Button::VolumeDown),
+        "ArrowUp" | "w" => Some(Button::Aux1),
+        "ArrowDown" | "s" => Some(Button::Aux2),
         "Enter" | " " => Some(Button::Confirm),
         "Backspace" => Some(Button::Back),
         _ => None,

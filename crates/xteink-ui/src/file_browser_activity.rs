@@ -615,14 +615,14 @@ impl FileBrowserActivity {
                 EpubOverlay::QuickMenu { selected } => {
                     const COUNT: usize = 11;
                     match event {
-                        InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                        InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                             if *selected == 0 {
                                 *selected = COUNT - 1;
                             } else {
                                 *selected -= 1;
                             }
                         }
-                        InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                        InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                             *selected = (*selected + 1) % COUNT;
                         }
                         InputEvent::Press(Button::Confirm) | InputEvent::Press(Button::Right) => {
@@ -789,7 +789,7 @@ impl FileBrowserActivity {
                         .position(|idx| *idx == *selected)
                         .unwrap_or(0);
                     match event {
-                        InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                        InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                             let next_visible = if selected_visible == 0 {
                                 visible_rows.len().saturating_sub(1)
                             } else {
@@ -797,7 +797,7 @@ impl FileBrowserActivity {
                             };
                             *selected = visible_rows[next_visible];
                         }
-                        InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                        InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                             let next_visible = (selected_visible + 1) % visible_rows.len();
                             *selected = visible_rows[next_visible];
                         }
@@ -858,7 +858,7 @@ impl FileBrowserActivity {
                     }
                 }
                 EpubOverlay::JumpLocation { chapter, page } => match event {
-                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                         let guard = match renderer.lock() {
                             Ok(guard) => guard,
                             Err(poisoned) => poisoned.into_inner(),
@@ -867,7 +867,7 @@ impl FileBrowserActivity {
                         *chapter = chapter.saturating_add(1).min(max_chapters);
                         *page = 1;
                     }
-                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                         *chapter = chapter.saturating_sub(1).max(1);
                         *page = 1;
                     }
@@ -914,10 +914,10 @@ impl FileBrowserActivity {
                         let max_location = guard.total_book_locations().max(1);
                         *location = location.saturating_add(1).min(max_location);
                     }
-                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                         *location = location.saturating_sub(10).max(1);
                     }
-                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                         let guard = match renderer.lock() {
                             Ok(guard) => guard,
                             Err(poisoned) => poisoned.into_inner(),
@@ -944,10 +944,10 @@ impl FileBrowserActivity {
                 EpubOverlay::JumpPercent { percent } => match event {
                     InputEvent::Press(Button::Left) => *percent = percent.saturating_sub(1),
                     InputEvent::Press(Button::Right) => *percent = (*percent + 1).min(100),
-                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::VolumeDown) => {
+                    InputEvent::Press(Button::Down) | InputEvent::Press(Button::Aux2) => {
                         *percent = percent.saturating_sub(10)
                     }
-                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::VolumeUp) => {
+                    InputEvent::Press(Button::Up) | InputEvent::Press(Button::Aux1) => {
                         *percent = (*percent + 10).min(100)
                     }
                     InputEvent::Press(Button::Confirm) => {
@@ -973,11 +973,11 @@ impl FileBrowserActivity {
                     | InputEvent::Press(Button::Right)
                     | InputEvent::Press(Button::Up)
                     | InputEvent::Press(Button::Down)
-                    | InputEvent::Press(Button::VolumeUp)
-                    | InputEvent::Press(Button::VolumeDown) => {
+                    | InputEvent::Press(Button::Aux1)
+                    | InputEvent::Press(Button::Aux2) => {
                         put_back = false;
                     }
-                    InputEvent::Press(Button::Power) => {
+                    InputEvent::Press(Button::Aux3) => {
                         overlay = EpubOverlay::QuickMenu { selected: 0 };
                     }
                 },
@@ -1713,15 +1713,15 @@ impl FileBrowserActivity {
                 }
 
                 let action = match event {
-                    InputEvent::Press(Button::Power) => Some(EpubInputAction::OpenSettings),
+                    InputEvent::Press(Button::Aux3) => Some(EpubInputAction::OpenSettings),
                     InputEvent::Press(Button::Down) => Some(EpubInputAction::ChapterNext),
                     InputEvent::Press(Button::Up) => Some(EpubInputAction::ChapterPrev),
                     InputEvent::Press(Button::Right)
-                    | InputEvent::Press(Button::VolumeDown)
+                    | InputEvent::Press(Button::Aux2)
                     | InputEvent::Press(Button::Confirm) => {
                         Some(EpubInputAction::Page(EpubNavigationDirection::Next))
                     }
-                    InputEvent::Press(Button::Left) | InputEvent::Press(Button::VolumeUp) => {
+                    InputEvent::Press(Button::Left) | InputEvent::Press(Button::Aux1) => {
                         Some(EpubInputAction::Page(EpubNavigationDirection::Prev))
                     }
                     _ => None,

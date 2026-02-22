@@ -18,7 +18,6 @@ use esp_idf_svc::hal::{
 };
 use esp_idf_svc::sys;
 
-use xteink_ui::ui::ActivityRefreshMode;
 use xteink_ui::{
     App, BufferedDisplay, Builder, Button, DeviceStatus, Dimensions, DisplayInterface, EinkDisplay,
     EinkInterface, InputEvent, RamXAddressing, RefreshMode, Rotation, SleepScreenMode,
@@ -33,14 +32,6 @@ use sdcard::SdCardFs;
 use web_upload::{PollError, WebUploadServer};
 use wifi_manager::WifiManager;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-enum UpdateStrategy {
-    Full,
-    PartialFull,
-    FastFull,
-}
-
 #[allow(dead_code)]
 const DISPLAY_COLS: u16 = 480;
 #[allow(dead_code)]
@@ -52,11 +43,7 @@ const BATTERY_ADC_EMPTY: i32 = 2100;
 const BATTERY_ADC_FULL: i32 = 3200;
 const ENABLE_WEB_UPLOAD_SERVER: bool = false;
 const UI_STALL_WARN_MS: i64 = 1200;
-const UI_STALL_WINDOW_MS: i64 = 15_000;
-const UI_STALL_RECOVER_STREAK: u8 = 3;
 const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
-const DISPLAY_FAIL_RESET_STREAK: u8 = 3;
-const ENABLE_EINKED_V1_SLICE: bool = true;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -69,177 +56,6 @@ fn is_repeatable_nav_button(btn: Button) -> bool {
         btn,
         Button::Left | Button::Right | Button::Up | Button::Down | Button::Aux1 | Button::Aux2
     )
-}
-
-fn note_ui_stall_and_maybe_recover(
-    app: &mut App,
-    operation: &str,
-    elapsed_ms: i64,
-    ui_stall_streak: &mut u8,
-    ui_stall_window_start_ms: &mut i64,
-) -> bool {
-    if elapsed_ms < UI_STALL_WARN_MS {
-        return false;
-    }
-
-    let now_ms = unsafe { sys::esp_timer_get_time() / 1_000 };
-    if *ui_stall_streak == 0
-        || now_ms.saturating_sub(*ui_stall_window_start_ms) > UI_STALL_WINDOW_MS
-    {
-        *ui_stall_streak = 0;
-        *ui_stall_window_start_ms = now_ms;
-    }
-    *ui_stall_streak = ui_stall_streak.saturating_add(1);
-
-    log::warn!(
-        "[UI-WATCHDOG] slow op={} elapsed={}ms streak={}",
-        operation,
-        elapsed_ms,
-        *ui_stall_streak
-    );
-    append_diag(&format!(
-        "ui_stall op={} elapsed_ms={} streak={}",
-        operation, elapsed_ms, *ui_stall_streak
-    ));
-
-    if *ui_stall_streak < UI_STALL_RECOVER_STREAK {
-        return false;
-    }
-
-    if !(app.file_browser_is_opening_epub() || app.file_browser_is_reading_epub()) {
-        return false;
-    }
-
-    let recovered = app.force_reader_recovery_to_library();
-    if recovered {
-        log::warn!(
-            "[UI-WATCHDOG] forced recovery to Library after repeated slow ops (op={})",
-            operation
-        );
-        append_diag(&format!("ui_stall_recover op={}", operation));
-    }
-    *ui_stall_streak = 0;
-    *ui_stall_window_start_ms = now_ms;
-    recovered
-}
-
-fn apply_update<I, D>(
-    strategy: UpdateStrategy,
-    display: &mut EinkDisplay<I>,
-    delay: &mut D,
-    current: &[u8],
-) -> bool
-where
-    I: DisplayInterface,
-    D: embedded_hal::delay::DelayNs,
-{
-    match strategy {
-        UpdateStrategy::Full => {
-            log::info!("UI: applying full refresh");
-            if display
-                .update_with_mode_no_lut(current, &[], RefreshMode::Full, delay)
-                .is_err()
-            {
-                log::warn!("UI: full refresh failed");
-                return false;
-            }
-            true
-        }
-        UpdateStrategy::PartialFull => {
-            log::info!("UI: applying partial full-screen refresh");
-            if display
-                .update_with_mode_no_lut(current, &[], RefreshMode::Partial, delay)
-                .is_err()
-            {
-                log::warn!("UI: partial full-screen refresh failed");
-                return false;
-            }
-            true
-        }
-        UpdateStrategy::FastFull => {
-            log::info!("UI: applying fast full-screen refresh");
-            if display
-                .update_with_mode_no_lut(current, &[], RefreshMode::Fast, delay)
-                .is_err()
-            {
-                log::warn!("UI: fast full-screen refresh failed");
-                return false;
-            }
-            true
-        }
-    }
-}
-
-/// Apply display update using the new ActivityRefreshMode system.
-///
-/// Maps ActivityRefreshMode to the appropriate update strategy:
-/// - Full: Full screen full refresh (highest quality, slowest)
-/// - Partial: Full screen partial refresh (for ghost cleanup)
-/// - Fast: Full screen fast refresh (single-buffer differential handled in driver)
-fn apply_update_with_mode<I, D>(
-    mode: ActivityRefreshMode,
-    display: &mut EinkDisplay<I>,
-    delay: &mut D,
-    current: &[u8],
-) -> bool
-where
-    I: DisplayInterface,
-    D: embedded_hal::delay::DelayNs,
-{
-    match mode {
-        ActivityRefreshMode::Full => {
-            log::info!("UI: Activity requested full refresh");
-            apply_update(UpdateStrategy::Full, display, delay, current)
-        }
-        ActivityRefreshMode::Partial => {
-            log::info!("UI: Periodic partial refresh for ghost cleanup");
-            apply_update(UpdateStrategy::PartialFull, display, delay, current)
-        }
-        ActivityRefreshMode::Fast => {
-            // Driver handles single-buffer differential fast refresh.
-            apply_update(UpdateStrategy::FastFull, display, delay, current)
-        }
-    }
-}
-
-fn handle_display_result<I, D>(
-    context: &str,
-    ok: bool,
-    display: &mut EinkDisplay<I>,
-    delay: &mut D,
-    display_fail_streak: &mut u8,
-) where
-    I: DisplayInterface,
-    D: embedded_hal::delay::DelayNs,
-{
-    if ok {
-        *display_fail_streak = 0;
-        return;
-    }
-    *display_fail_streak = display_fail_streak.saturating_add(1);
-    log::warn!(
-        "[DISPLAY] failed context={} streak={}",
-        context,
-        *display_fail_streak
-    );
-    append_diag(&format!(
-        "display_fail context={} streak={}",
-        context, *display_fail_streak
-    ));
-    if *display_fail_streak < DISPLAY_FAIL_RESET_STREAK {
-        return;
-    }
-
-    log::warn!(
-        "[DISPLAY] resetting panel after {} consecutive failures",
-        DISPLAY_FAIL_RESET_STREAK
-    );
-    append_diag("display_reset_after_failures");
-    if display.reset(delay).is_err() {
-        log::warn!("[DISPLAY] reset failed");
-        append_diag("display_reset_failed");
-    }
-    *display_fail_streak = 0;
 }
 
 struct CompactCover {
@@ -694,7 +510,6 @@ fn main() {
         );
     }
     let mut app = App::new_with_epub_resume(resume_epub);
-    let mut last_epub_pos: Option<(usize, usize, usize, usize)> = None;
     let mut device_status = DeviceStatus::default();
     if let Some(initial_battery_raw) = read_battery_raw() {
         device_status.battery_percent = battery_percent_from_adc(initial_battery_raw);
@@ -734,30 +549,12 @@ fn main() {
             STARTUP_DEFERRED_MAX_TICKS
         );
     }
-    let mut display_fail_streak: u8 = 0;
     buffered_display.clear();
-    let (first_render_ok, first_update_ok) = if ENABLE_EINKED_V1_SLICE {
-        let ok = einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display);
-        (ok, ok)
-    } else {
-        let render_ok = app.render(&mut buffered_display).is_ok();
-        log_heap("before_first_render");
-        let update_ok = if render_ok {
-            display
-                .update(buffered_display.buffer(), &[], &mut delay)
-                .is_ok()
-        } else {
-            false
-        };
-        (render_ok, update_ok)
-    };
-    handle_display_result(
-        "boot_first_render",
-        first_render_ok && first_update_ok,
-        &mut display,
-        &mut delay,
-        &mut display_fail_streak,
-    );
+    let first_ok =
+        einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display);
+    if !first_ok {
+        log::warn!("[EINKED] initial render/flush failed");
+    }
     log_heap("after_first_render");
 
     log::info!("Starting event loop with adaptive refresh strategy");
@@ -791,8 +588,6 @@ fn main() {
     let mut input_debug_ticks: u32 = 0;
     let mut battery_sample_elapsed_ms: u32 = 0;
     let mut sleep_requested = false;
-    let mut ui_stall_streak: u8 = 0;
-    let mut ui_stall_window_start_ms: i64 = 0;
 
     // Auto-sleep tracking
     let mut inactivity_ms: u32 = 0;
@@ -942,48 +737,13 @@ fn main() {
                 log::info!("Power button short press");
                 append_diag("power_short_press");
 
-                let op_start_us = unsafe { sys::esp_timer_get_time() };
-                let mut needs_redraw = app.handle_input(InputEvent::Press(Button::Aux3));
-                let elapsed_ms = (unsafe { sys::esp_timer_get_time() } - op_start_us) / 1_000;
-                needs_redraw |= note_ui_stall_and_maybe_recover(
-                    &mut app,
-                    "power_short_press",
-                    elapsed_ms,
-                    &mut ui_stall_streak,
-                    &mut ui_stall_window_start_ms,
-                );
-
-                if needs_redraw {
-                    let _ = reconcile_web_upload_server(
-                        &mut app,
-                        &mut wifi_manager,
-                        &mut web_upload_server,
-                    );
-                    log::info!("UI: redraw after power short press");
-                    buffered_display.clear();
-                    let render_ok = app.render(&mut buffered_display).is_ok();
-
-                    let refresh_mode = app.get_refresh_mode();
-                    log::info!("UI: using refresh mode {:?}", refresh_mode);
-                    let update_ok = if render_ok {
-                        apply_update_with_mode(
-                            refresh_mode,
-                            &mut display,
-                            &mut delay,
-                            buffered_display.buffer(),
-                        )
-                    } else {
-                        false
-                    };
-                    handle_display_result(
-                        "power_short_press",
-                        render_ok && update_ok,
-                        &mut display,
-                        &mut delay,
-                        &mut display_fail_streak,
-                    );
-                } else {
-                    log::info!("UI: no redraw after power short press");
+                if !einked_slice.tick_and_flush(
+                    Some(InputEvent::Press(Button::Aux3)),
+                    &mut display,
+                    &mut delay,
+                    &mut buffered_display,
+                ) {
+                    log::warn!("[EINKED] power short press flush failed");
                 }
             }
             is_power_pressed = false;
@@ -992,19 +752,7 @@ fn main() {
 
         if let Some(btn) = button {
             if btn != Button::Aux3 {
-                if ENABLE_EINKED_V1_SLICE {
-                    let _ = einked_slice.tick_and_flush(
-                        Some(InputEvent::Press(btn)),
-                        &mut display,
-                        &mut delay,
-                        &mut buffered_display,
-                    );
-                    FreeRtos::delay_ms(LOOP_DELAY_MS);
-                    continue;
-                }
-
                 let mut emit_press = false;
-                let remapped_btn = app.button_config().remap(btn);
                 if is_repeatable_nav_button(btn) {
                     if held_button == Some(btn) {
                         held_button_ticks = held_button_ticks.saturating_add(1);
@@ -1031,74 +779,14 @@ fn main() {
                     continue;
                 }
 
-                log::info!("Button pressed: {:?} -> {:?}", btn, remapped_btn);
-                log_heap("before_handle_input");
-
-                let op_start_us = unsafe { sys::esp_timer_get_time() };
-                let mut needs_redraw = app.handle_input(InputEvent::Press(remapped_btn));
-                let elapsed_ms = (unsafe { sys::esp_timer_get_time() } - op_start_us) / 1_000;
-                needs_redraw |= note_ui_stall_and_maybe_recover(
-                    &mut app,
-                    "button_press",
-                    elapsed_ms,
-                    &mut ui_stall_streak,
-                    &mut ui_stall_window_start_ms,
-                );
-
-                if needs_redraw {
-                    let _ = reconcile_web_upload_server(
-                        &mut app,
-                        &mut wifi_manager,
-                        &mut web_upload_server,
-                    );
-                    log::info!("UI: redraw after {:?}", btn);
-                    log_heap("before_render");
-                    buffered_display.clear();
-                    let render_ok = app.render(&mut buffered_display).is_ok();
-                    let refresh_mode = app.get_refresh_mode();
-                    log::info!("UI: using refresh mode {:?}", refresh_mode);
-                    let update_ok = if render_ok {
-                        apply_update_with_mode(
-                            refresh_mode,
-                            &mut display,
-                            &mut delay,
-                            buffered_display.buffer(),
-                        )
-                    } else {
-                        false
-                    };
-                    handle_display_result(
-                        "button_press",
-                        render_ok && update_ok,
-                        &mut display,
-                        &mut delay,
-                        &mut display_fail_streak,
-                    );
-                    log_heap("after_render");
-                    if app.file_browser_is_reading_epub() {
-                        let pos = app.file_browser_epub_position();
-                        if pos != last_epub_pos {
-                            if let Some((ch, ch_total, pg, pg_total)) = pos {
-                                log::info!(
-                                    "[EPUB] position changed: ch {}/{} pg {}/{}",
-                                    ch,
-                                    ch_total,
-                                    pg,
-                                    pg_total
-                                );
-                            }
-                            log_heap("after_epub_page_change");
-                            last_epub_pos = pos;
-                        }
-                    }
-                } else {
-                    let _ = reconcile_web_upload_server(
-                        &mut app,
-                        &mut wifi_manager,
-                        &mut web_upload_server,
-                    );
-                    log::info!("UI: no redraw after {:?}", btn);
-                    log_heap("after_handle_input_no_redraw");
+                log::info!("Button pressed: {:?}", btn);
+                if !einked_slice.tick_and_flush(
+                    Some(InputEvent::Press(btn)),
+                    &mut display,
+                    &mut delay,
+                    &mut buffered_display,
+                ) {
+                    log::warn!("[EINKED] button press flush failed: {:?}", btn);
                 }
             }
         } else if !power_pressed {
@@ -1108,56 +796,20 @@ fn main() {
         }
 
         let deferred_start_us = unsafe { sys::esp_timer_get_time() };
-        let mut deferred_updated = app.process_deferred_tasks(&mut fs);
+        let deferred_updated = app.process_deferred_tasks(&mut fs);
         let deferred_elapsed_ms =
             (unsafe { sys::esp_timer_get_time() } - deferred_start_us) / 1_000;
-        deferred_updated |= note_ui_stall_and_maybe_recover(
-            &mut app,
-            "deferred_tasks",
-            deferred_elapsed_ms,
-            &mut ui_stall_streak,
-            &mut ui_stall_window_start_ms,
-        );
+        if deferred_elapsed_ms >= UI_STALL_WARN_MS {
+            log::warn!(
+                "[UI-WATCHDOG] slow op=deferred_tasks elapsed={}ms",
+                deferred_elapsed_ms
+            );
+        }
         if deferred_updated {
             let _ =
                 reconcile_web_upload_server(&mut app, &mut wifi_manager, &mut web_upload_server);
-            log_heap("before_deferred_render");
-            buffered_display.clear();
-            let render_ok = app.render(&mut buffered_display).is_ok();
-            let refresh_mode = app.get_refresh_mode();
-            let update_ok = if render_ok {
-                apply_update_with_mode(
-                    refresh_mode,
-                    &mut display,
-                    &mut delay,
-                    buffered_display.buffer(),
-                )
-            } else {
-                false
-            };
-            handle_display_result(
-                "deferred_render",
-                render_ok && update_ok,
-                &mut display,
-                &mut delay,
-                &mut display_fail_streak,
-            );
-            log_heap("after_deferred_render");
-            if app.file_browser_is_reading_epub() {
-                let pos = app.file_browser_epub_position();
-                if pos != last_epub_pos {
-                    if let Some((ch, ch_total, pg, pg_total)) = pos {
-                        log::info!(
-                            "[EPUB] deferred position changed: ch {}/{} pg {}/{}",
-                            ch,
-                            ch_total,
-                            pg,
-                            pg_total
-                        );
-                    }
-                    log_heap("after_epub_deferred_change");
-                    last_epub_pos = pos;
-                }
+            if !einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display) {
+                log::warn!("[EINKED] deferred redraw flush failed");
             }
         }
 

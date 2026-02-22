@@ -59,6 +59,8 @@ Scope: execution tracker for minimum gaps required to make the device a usable d
 - Added image memory guardrails before decode (`file_info` size gate + host-path size checks).
 - Hardened inline EPUB image decode path with dimension/pixel ceilings before decode and more aggressive cache cleanup on retry recovery.
 - Moved ESP-IDF initial EPUB page load off the deferred UI tick into a worker path with timeout/disconnect handling.
+- Added per-file text resume persistence (`text_state.tsv`) and restore-on-open for text files.
+- Added explicit last-opened-content semantics (`last_content.tsv`) used by app startup auto-resume (not EPUB-only).
 
 ## 5. Library Recents/Search
 - Status: `Not started`

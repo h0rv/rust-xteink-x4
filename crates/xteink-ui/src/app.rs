@@ -125,14 +125,15 @@ impl App {
         {
             if auto_resume_epub {
                 if let Some(path) =
-                    crate::file_browser_activity::FileBrowserActivity::load_last_active_epub_path()
+                    crate::file_browser_activity::FileBrowserActivity::load_last_active_content_path(
+                    )
                 {
                     app.main_activity.queue_open_content_path(path);
                     app.main_activity
                         .switch_to_tab(crate::main_activity::Tab::Files);
                 }
             } else {
-                crate::file_browser_activity::FileBrowserActivity::clear_last_active_epub_path();
+                crate::file_browser_activity::FileBrowserActivity::clear_last_active_content_path();
             }
         }
         app.main_activity.on_enter();
@@ -1123,5 +1124,25 @@ mod tests {
             .set_tab(crate::main_activity::Tab::Settings);
         assert!(app.process_result(ActivityResult::NavigateBack));
         assert_eq!(app.current_tab(), crate::main_activity::Tab::Library);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn app_auto_resume_uses_last_content_path() {
+        crate::file_browser_activity::FileBrowserActivity::clear_last_active_content_path();
+        let session_path = if cfg!(target_os = "espidf") {
+            "/sd/.xteink/last_content.tsv"
+        } else {
+            "/tmp/.xteink/last_content.tsv"
+        };
+        if let Some(parent) = std::path::Path::new(session_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(session_path, "/docs/readme.txt\n").expect("session write should succeed");
+
+        let app = App::new_with_epub_resume(true);
+        assert_eq!(app.current_tab(), crate::main_activity::Tab::Files);
+
+        crate::file_browser_activity::FileBrowserActivity::clear_last_active_content_path();
     }
 }

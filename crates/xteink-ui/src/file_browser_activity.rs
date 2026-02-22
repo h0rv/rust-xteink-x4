@@ -94,6 +94,7 @@ enum BrowserMode {
     OpeningEpub,
     ReadingText {
         title: String,
+        path: String,
         viewer: TextViewer,
     },
     #[cfg(feature = "std")]
@@ -557,6 +558,10 @@ impl FileBrowserActivity {
     }
 
     fn exit_reader_to_browser(&mut self) -> ActivityResult {
+        #[cfg(feature = "std")]
+        {
+            self.persist_active_text_position();
+        }
         #[cfg(feature = "std")]
         {
             self.persist_active_epub_position();
@@ -1071,6 +1076,27 @@ impl FileBrowserActivity {
         self.browser.current_path()
     }
 
+    #[cfg(feature = "std")]
+    const READER_STATE_DIR: &'static str = if cfg!(target_os = "espidf") {
+        "/sd/.xteink"
+    } else {
+        "/tmp/.xteink"
+    };
+    #[cfg(feature = "std")]
+    const TEXT_STATE_FILE: &'static str = if cfg!(target_os = "espidf") {
+        "/sd/.xteink/text_state.tsv"
+    } else {
+        "/tmp/.xteink/text_state.tsv"
+    };
+    #[cfg(feature = "std")]
+    const CONTENT_LAST_SESSION_FILE: &'static str = if cfg!(target_os = "espidf") {
+        "/sd/.xteink/last_content.tsv"
+    } else {
+        "/tmp/.xteink/last_content.tsv"
+    };
+    #[cfg(feature = "std")]
+    const TEXT_STATE_MAX_BOOKS: usize = 512;
+
     pub fn is_viewing_text(&self) -> bool {
         matches!(self.mode, BrowserMode::ReadingText { .. })
     }
@@ -1135,6 +1161,93 @@ impl FileBrowserActivity {
     #[allow(dead_code)]
     pub(crate) fn status_message(&self) -> Option<&str> {
         self.browser.status_message()
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_active_text_position(&mut self) {
+        let BrowserMode::ReadingText { path, viewer, .. } = &self.mode else {
+            return;
+        };
+        if let Err(err) = Self::persist_text_position_for_path(path, viewer.current_page_index()) {
+            log::warn!("[TEXT] unable to persist reading position: {}", err);
+        }
+    }
+
+    #[cfg(feature = "std")]
+    fn load_text_position_for_path(path: &str) -> Option<usize> {
+        let raw = std::fs::read_to_string(Self::TEXT_STATE_FILE).ok()?;
+        for line in raw.lines() {
+            let mut fields = line.split('\t');
+            let Some(saved_path) = fields.next() else {
+                continue;
+            };
+            if saved_path != path {
+                continue;
+            }
+            let page_idx = fields.next().and_then(|v| v.parse::<usize>().ok())?;
+            return Some(page_idx);
+        }
+        None
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_text_position_for_path(path: &str, page_idx: usize) -> Result<(), String> {
+        std::fs::create_dir_all(Self::READER_STATE_DIR).map_err(|e| e.to_string())?;
+        let mut state: BTreeMap<String, usize> = BTreeMap::new();
+        if let Ok(raw) = std::fs::read_to_string(Self::TEXT_STATE_FILE) {
+            for line in raw.lines() {
+                let mut fields = line.split('\t');
+                let Some(saved_path) = fields.next() else {
+                    continue;
+                };
+                let Some(saved_page) = fields.next().and_then(|v| v.parse::<usize>().ok()) else {
+                    continue;
+                };
+                state.insert(saved_path.to_string(), saved_page);
+            }
+        }
+        state.insert(path.to_string(), page_idx);
+        while state.len() > Self::TEXT_STATE_MAX_BOOKS {
+            let Some(oldest_key) = state.keys().next().cloned() else {
+                break;
+            };
+            state.remove(&oldest_key);
+        }
+        let mut out = String::new();
+        for (saved_path, saved_page) in state {
+            out.push_str(&saved_path);
+            out.push('\t');
+            out.push_str(&saved_page.to_string());
+            out.push('\n');
+        }
+        std::fs::write(Self::TEXT_STATE_FILE, out).map_err(|e| e.to_string())?;
+        Self::persist_last_active_content_path(path)?;
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    fn persist_last_active_content_path(path: &str) -> Result<(), String> {
+        std::fs::create_dir_all(Self::READER_STATE_DIR).map_err(|e| e.to_string())?;
+        let mut out = String::new();
+        out.push_str(path);
+        out.push('\n');
+        std::fs::write(Self::CONTENT_LAST_SESSION_FILE, out).map_err(|e| e.to_string())
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn load_last_active_content_path() -> Option<String> {
+        let raw = std::fs::read_to_string(Self::CONTENT_LAST_SESSION_FILE).ok()?;
+        let path = raw.lines().next()?.trim();
+        if path.is_empty() {
+            None
+        } else {
+            Some(path.to_string())
+        }
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn clear_last_active_content_path() {
+        let _ = std::fs::remove_file(Self::CONTENT_LAST_SESSION_FILE);
     }
 
     pub fn set_reader_settings(&mut self, settings: ReaderSettings) {
@@ -1308,10 +1421,20 @@ impl FileBrowserActivity {
         match fs.read_file(path) {
             Ok(content) => {
                 let title = basename(path).to_string();
+                let mut viewer = TextViewer::new(content);
+                #[cfg(feature = "std")]
+                if let Some(saved_page) = Self::load_text_position_for_path(path) {
+                    viewer.set_current_page(saved_page);
+                }
                 self.mode = BrowserMode::ReadingText {
                     title,
-                    viewer: TextViewer::new(content),
+                    path: path.to_string(),
+                    viewer,
                 };
+                #[cfg(feature = "std")]
+                if let Err(err) = Self::persist_last_active_content_path(path) {
+                    log::warn!("[TEXT] unable to persist last active content path: {}", err);
+                }
             }
             Err(error) => {
                 self.browser
@@ -1345,6 +1468,12 @@ impl FileBrowserActivity {
             match ImageViewer::from_path(&host_path, max_w, max_h) {
                 Ok(viewer) => {
                     self.mode = BrowserMode::ViewingImage { title, viewer };
+                    if let Err(err) = Self::persist_last_active_content_path(path) {
+                        log::warn!(
+                            "[IMAGE] unable to persist last active content path: {}",
+                            err
+                        );
+                    }
                     return true;
                 }
                 Err(error) => {
@@ -1365,6 +1494,12 @@ impl FileBrowserActivity {
         match ImageViewer::from_bytes(&bytes, max_w, max_h) {
             Ok(viewer) => {
                 self.mode = BrowserMode::ViewingImage { title, viewer };
+                if let Err(err) = Self::persist_last_active_content_path(path) {
+                    log::warn!(
+                        "[IMAGE] unable to persist last active content path: {}",
+                        err
+                    );
+                }
             }
             Err(error) => {
                 #[cfg(target_os = "espidf")]
@@ -1422,8 +1557,13 @@ impl FileBrowserActivity {
         };
         self.mode = BrowserMode::ReadingText {
             title,
+            path: path.to_string(),
             viewer: TextViewer::new(content),
         };
+        #[cfg(feature = "std")]
+        if let Err(err) = Self::persist_last_active_content_path(path) {
+            log::warn!("[TEXT] unable to persist last active content path: {}", err);
+        }
         true
     }
 
@@ -1554,6 +1694,8 @@ impl FileBrowserActivity {
         match &mut self.mode {
             BrowserMode::ReadingText { viewer, .. } => {
                 if viewer.handle_input(event) {
+                    #[cfg(feature = "std")]
+                    self.persist_active_text_position();
                     ActivityResult::Consumed
                 } else {
                     ActivityResult::Ignored
@@ -1688,6 +1830,10 @@ impl Activity for FileBrowserActivity {
     fn on_exit(&mut self) {
         #[cfg(feature = "std")]
         {
+            self.persist_active_text_position();
+        }
+        #[cfg(feature = "std")]
+        {
             self.persist_active_epub_position();
         }
         self.mode = BrowserMode::Browsing;
@@ -1759,7 +1905,7 @@ impl Activity for FileBrowserActivity {
             BrowserMode::Browsing => self.browser.render(display),
             #[cfg(feature = "std")]
             BrowserMode::OpeningEpub => self.render_opening_epub(display),
-            BrowserMode::ReadingText { title, viewer } => viewer.render(display, title),
+            BrowserMode::ReadingText { title, viewer, .. } => viewer.render(display, title),
             #[cfg(feature = "std")]
             BrowserMode::ViewingImage { title, viewer } => viewer.render(display, title),
             #[cfg(feature = "std")]
@@ -2349,6 +2495,38 @@ mod tests {
         assert!(!activity.is_viewing_text());
     }
 
+    #[cfg(feature = "std")]
+    #[test]
+    fn text_reader_restores_saved_page_and_updates_last_content_path() {
+        let _ = std::fs::remove_file(FileBrowserActivity::TEXT_STATE_FILE);
+        let _ = std::fs::remove_file(FileBrowserActivity::CONTENT_LAST_SESSION_FILE);
+
+        let mut fs = create_fs();
+        let mut long_text = String::new();
+        for i in 0..120 {
+            long_text.push_str(&format!("Line {}\n", i));
+        }
+        fs.add_file("/docs/long.txt", long_text.as_bytes());
+
+        FileBrowserActivity::persist_text_position_for_path("/docs/long.txt", 2)
+            .expect("text position should persist");
+
+        let mut activity = FileBrowserActivity::new();
+        assert!(activity.process_open_text_file_task(&mut fs, "/docs/long.txt"));
+
+        match &activity.mode {
+            BrowserMode::ReadingText { viewer, .. } => {
+                assert_eq!(viewer.current_page_index(), 2);
+            }
+            _ => panic!("expected text reader mode"),
+        }
+
+        assert_eq!(
+            FileBrowserActivity::load_last_active_content_path(),
+            Some("/docs/long.txt".to_string())
+        );
+    }
+
     #[test]
     fn image_file_opens_image_viewer() {
         let mut activity = FileBrowserActivity::new();
@@ -2510,6 +2688,7 @@ mod tests {
 
         activity.mode = BrowserMode::ReadingText {
             title: "sample".to_string(),
+            path: "/docs/sample.txt".to_string(),
             viewer: TextViewer::new("body".to_string()),
         };
         let stale_epoch = activity.browser_task_epoch;

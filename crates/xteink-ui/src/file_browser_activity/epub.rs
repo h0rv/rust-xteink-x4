@@ -2434,6 +2434,9 @@ impl FileBrowserActivity {
         #[cfg(feature = "std")]
         {
             self.active_epub_path = Some(path.to_string());
+            if let Err(err) = Self::persist_last_active_content_path(path) {
+                log::warn!("[EPUB] unable to persist last active content path: {}", err);
+            }
         }
         self.invalidate_browser_tasks();
         #[cfg(all(feature = "std", not(target_os = "espidf")))]
@@ -3055,6 +3058,7 @@ impl FileBrowserActivity {
             out.push('\n');
         }
         std::fs::write(Self::EPUB_STATE_FILE, out).map_err(|e| e.to_string())?;
+        Self::persist_last_active_content_path(path)?;
         Self::persist_last_active_epub_path(path, chapter_idx, page_idx)?;
         Ok(())
     }
@@ -3136,23 +3140,6 @@ impl FileBrowserActivity {
         out.push_str(&page_idx.to_string());
         out.push('\n');
         std::fs::write(Self::EPUB_LAST_SESSION_FILE, out).map_err(|e| e.to_string())
-    }
-
-    #[cfg(feature = "std")]
-    pub(crate) fn load_last_active_epub_path() -> Option<String> {
-        let raw = std::fs::read_to_string(Self::EPUB_LAST_SESSION_FILE).ok()?;
-        let mut fields = raw.lines().next()?.split('\t');
-        let path = fields.next()?.trim();
-        if path.is_empty() {
-            None
-        } else {
-            Some(path.to_string())
-        }
-    }
-
-    #[cfg(feature = "std")]
-    pub(crate) fn clear_last_active_epub_path() {
-        let _ = std::fs::remove_file(Self::EPUB_LAST_SESSION_FILE);
     }
 
     #[cfg(feature = "std")]

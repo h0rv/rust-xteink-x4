@@ -462,6 +462,17 @@ impl TextViewer {
         &self.pages[self.current_page]
     }
 
+    /// Get current 0-based page index.
+    pub fn current_page_index(&self) -> usize {
+        self.current_page
+    }
+
+    /// Restore current 0-based page index.
+    pub fn set_current_page(&mut self, page_index: usize) {
+        let max_index = self.total_pages().saturating_sub(1);
+        self.current_page = page_index.min(max_index);
+    }
+
     /// Handle input
     /// Returns true if needs redraw
     pub fn handle_input(&mut self, event: InputEvent) -> bool {

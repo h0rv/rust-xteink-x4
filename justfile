@@ -110,13 +110,25 @@ all-full:
 sim-web:
     cd crates/xteink-sim-web && trunk serve --release
 
+# Run generic einked web simulator
+sim-einked-web:
+    cd einked/crates/einked-sim-web && trunk serve --release
+
 # Run desktop simulator
 sim-desktop:
     cargo run -p xteink-sim-desktop --target {{ host_target }}
 
+# Run generic einked desktop simulator
+sim-einked-desktop:
+    cargo run --manifest-path einked/crates/einked-sim-desktop/Cargo.toml --target {{ host_target }}
+
 # Build web simulator
 build-web:
     cd crates/xteink-sim-web && trunk build --release
+
+# Build generic einked web simulator
+build-einked-web:
+    cd einked/crates/einked-sim-web && trunk build --release
 
 # Check all crates (except firmware - needs esp toolchain)
 check:

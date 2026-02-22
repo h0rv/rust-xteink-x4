@@ -4,3 +4,6 @@
 [submodule "ssd1677"]
 	path = ssd1677
 	url = ../ssd1677
+[submodule "einked"]
+	path = einked
+	url = ../einked

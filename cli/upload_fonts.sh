@@ -7,7 +7,7 @@ set -e
 PORT="${1:-/dev/ttyACM0}"
 BAUD="${2:-115200}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FONTS_DIR="${SCRIPT_DIR}/../../crates/xteink-ui/assets/fonts/bookerly"
+FONTS_DIR="${SCRIPT_DIR}/../../einked/crates/einked-ereader/assets/fonts/bookerly"
 CLI="${SCRIPT_DIR}/xteink_cli.py"
 
 echo "📤 Uploading Bookerly fonts to device..."

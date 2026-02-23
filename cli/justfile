@@ -44,7 +44,7 @@ load-samples:
     @echo "Checking Bookerly fonts on device..."
     @uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} ls /fonts/bookerly/ 2>/dev/null || echo "❌ /fonts/bookerly/ directory not found or empty"
 
-fonts_dir := root_dir / ".." / "crates" / "xteink-ui" / "assets" / "fonts" / "bookerly"
+fonts_dir := root_dir / ".." / "einked" / "crates" / "einked-ereader" / "assets" / "fonts" / "bookerly"
 
 # Load Bookerly fonts to SD card via serial (checks existence, idempotent)
 load-fonts:

@@ -139,14 +139,14 @@ just sim-web
 ```
 ox4/
 ├── crates/
-│   ├── xteink-ui/           # Core UI library (no_std)
-│   │   ├── epub/            # EPUB parser and layout engine
-│   │   ├── ui/              # UI components and activities
-│   │   └── ...              # File browser, settings, rendering
-│   │
 │   ├── xteink-firmware/     # ESP32-C3 firmware binary
-│   ├── xteink-sim-desktop/  # SDL-based simulator
-│   └── xteink-sim-web/      # WASM browser simulator
+│   └── xteink-scenario-harness/ # Integration test harness
+│
+├── einked/                  # Generic UI library + e-reader app + simulators
+│   └── crates/
+│       ├── einked-ereader   # E-reader app crate (reusable UI)
+│       ├── einked-sim-desktop
+│       └── einked-sim-web
 │
 ├── docs/                    # Documentation
 │   ├── epub/                # EPUB implementation
@@ -200,7 +200,7 @@ just test
 just test-ui
 
 # Run EPUB tests
-cargo test -p xteink-ui --features std epub
+cargo test -p einked-ereader --target <host-target>
 ```
 
 ### Building
@@ -344,7 +344,7 @@ See [AGENTS.md](AGENTS.md) for code style guidelines.
 Key requirements:
 - Follow standard Rust formatting (`cargo fmt`)
 - Pass clippy lints (`cargo clippy -- -D warnings`)
-- Use `no_std` patterns for `xteink-ui` crate
+- Use `no_std` patterns for UI/runtime crates where applicable
 - Test changes in simulators before device
 - Document memory usage for embedded code
 

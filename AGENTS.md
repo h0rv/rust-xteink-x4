@@ -35,14 +35,14 @@ just all-full     # Includes firmware check
 ```bash
 # Run all unit tests (in #[cfg(test)] modules)
 just test-ui
-cargo test -p xteink-ui --features std --target <host-target>
+cargo test -p einked-ereader --target <host-target>
 
 # Run only diff tests (fast subset)
 just test-diff
-cargo test -p xteink-ui --features std --target <host-target> diff
+cargo test -p einked --all-features --target <host-target> diff
 
 # Run a single unit test by name
-cargo test -p xteink-ui --features std --target <host-target> <test_name>
+cargo test -p einked-ereader --target <host-target> <test_name>
 
 # Run all integration/scenario tests
 just sim-scenarios
@@ -60,11 +60,11 @@ cargo test -p xteink-scenario-harness --target <host-target> --test fundamental_
 ```bash
 # Run desktop simulator (SDL-based, fastest for UI iteration)
 just sim-desktop
-cargo run -p xteink-sim-desktop
+cargo run --manifest-path einked/crates/einked-sim-desktop/Cargo.toml --target <host-target>
 
 # Run web simulator (WASM browser-based)
 just sim-web
-cd crates/xteink-sim-web && trunk serve --release
+cd einked/crates/einked-sim-web && trunk serve --release
 
 # Build web simulator
 just build-web
@@ -95,18 +95,16 @@ Order imports as follows:
 3. Internal crate modules (`crate::`)
 4. Re-exports (`pub use`)
 
-Example from `crates/xteink-ui/src/app.rs`:
+Example from `einked/crates/einked-ereader/src/lib.rs`:
 ```rust
 extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
-
-use crate::file_browser_activity::FileBrowserActivity;
-use crate::input::InputEvent;
-use crate::ui::{Activity, ActivityRefreshMode};
+use einked::activity_stack::{Activity, Context, Transition, Ui};
+use einked::core::DefaultTheme;
+use einked::input::{Button, InputEvent};
 ```
 
 ### Formatting
@@ -127,7 +125,7 @@ use crate::ui::{Activity, ActivityRefreshMode};
 - **Display Operations**: Use `Infallible` error type where applicable
 
 ### Unsafe Code
-- **Forbidden** in xteink-ui: `#![forbid(unsafe_code)]`
+- **Forbidden** in UI crates: prefer `#![forbid(unsafe_code)]`
 - Use safe abstractions over hardware registers
 
 ### Documentation
@@ -151,16 +149,14 @@ use crate::ui::{Activity, ActivityRefreshMode};
 - **Unit tests**: In `#[cfg(test)]` modules within source files
 - **Integration tests**: In `crates/xteink-scenario-harness/tests/`
 - Use `MockFileSystem` for filesystem-dependent tests
-- Tests require `std` feature: `cargo test -p xteink-ui --features std`
+- Host tests: `cargo test -p einked-ereader --target <host-target>`
 
 ### Workspace Structure
 ```
 crates/
-├── xteink-ui/              # Core UI (no_std, embedded-graphics)
 ├── xteink-firmware/        # ESP32 binary
-├── xteink-sim-desktop/     # SDL simulator
-├── xteink-sim-web/         # WASM simulator
 └── xteink-scenario-harness/ # Integration test harness
+einked/                     # Generic UI library + sims + ereader app crate
 ssd1677/                    # Display driver (no_std)
 epub-stream/                    # EPUB parsing library
 ```

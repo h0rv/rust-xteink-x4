@@ -3,7 +3,8 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use esp_idf_svc::sys;
-use xteink_ui::filesystem::FileSystemError;
+
+use crate::filesystem::FileSystemError;
 
 pub struct SerialCli {
     buffer: Vec<u8>,

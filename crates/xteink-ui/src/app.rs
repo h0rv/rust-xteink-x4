@@ -18,8 +18,9 @@ use crate::reader_settings_activity::{
     FooterAutoHide, FooterDensity, LineSpacing, MarginSize, RefreshFrequency, TapZoneConfig,
     TextAlignment, VolumeButtonAction,
 };
+use crate::settings_activity::SleepScreenMode;
 #[cfg(feature = "std")]
-use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize, SleepScreenMode};
+use crate::settings_activity::{AutoSleepDuration, FontFamily, FontSize};
 use crate::system_menu_activity::DeviceStatus;
 use crate::ui::{Activity, ActivityRefreshMode, ActivityResult};
 use crate::FileSystem;

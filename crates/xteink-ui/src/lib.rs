@@ -21,6 +21,8 @@ pub mod app;
 pub mod buffered_display;
 pub mod eink;
 pub mod embedded_fonts;
+pub mod feed;
+pub mod feed_browser_activity;
 pub mod file_browser;
 pub mod file_browser_activity;
 pub mod filesystem;
@@ -91,6 +93,11 @@ pub use eink::{
     Builder, Dimensions, DisplayInterface, EinkDisplay, EinkError, EinkInterface, RamXAddressing,
     RefreshMode, Region, Rotation, UpdateRegion,
 };
+pub use feed::{
+    all_preloaded_sources, get_reader_url, FeedSource, FeedType, OpdsCatalog, OpdsEntry, OpdsLink,
+    JINA_READER_BASE, PRELOADED_OPDS_SOURCES, PRELOADED_RSS_SOURCES,
+};
+pub use feed_browser_activity::{BrowserState, FeedBrowserActivity};
 pub use file_browser::{FileBrowser, TextViewer};
 pub use file_browser_activity::FileBrowserActivity;
 pub use filesystem::{FileInfo, FileSystem, FileSystemError};

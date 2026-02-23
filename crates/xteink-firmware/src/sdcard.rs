@@ -8,7 +8,8 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use esp_idf_svc::sys;
-use xteink_ui::filesystem::{resolve_mount_path, FileInfo, FileSystem, FileSystemError};
+
+use crate::filesystem::{resolve_mount_path, FileInfo, FileSystem, FileSystemError};
 
 const SD_MOUNT_POINT: &str = "/sd";
 const SD_MAX_FILES: i32 = 4;

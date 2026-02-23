@@ -550,6 +550,7 @@ impl LibraryActivity {
                 }
                 continue;
             }
+            #[cfg(feature = "std")]
             if lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") {
                 if let Some(thumb) =
                     Self::decode_raster_thumbnail(&data, Self::COVER_WIDTH, Self::COVER_MAX_HEIGHT)

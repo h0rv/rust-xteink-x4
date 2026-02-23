@@ -1,8 +1,10 @@
 extern crate alloc;
 
+mod buffered_display;
 mod cli;
 mod cli_commands;
 mod einked_slice;
+mod filesystem;
 mod input;
 mod runtime_diagnostics;
 mod sdcard;
@@ -19,14 +21,16 @@ use esp_idf_svc::hal::{
 use esp_idf_svc::sys;
 
 use einked::input::{Button, InputEvent};
-use xteink_ui::{
-    BufferedDisplay, Builder, Dimensions, DisplayInterface, EinkDisplay, EinkInterface,
+use ssd1677::{
+    Builder, Dimensions, Display as EinkDisplay, DisplayInterface, Interface as EinkInterface,
     RamXAddressing, RefreshMode, Rotation,
 };
 
+use buffered_display::BufferedDisplay;
 use cli::SerialCli;
 use cli_commands::handle_cli_command;
 use einked_slice::EinkedSlice;
+use filesystem::FileSystem;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, configure_pthread_defaults, log_heap};
 use sdcard::SdCardFs;
@@ -45,6 +49,8 @@ const BATTERY_ADC_FULL: i32 = 3200;
 const ENABLE_WEB_UPLOAD_SERVER: bool = false;
 const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
 const AUTO_SLEEP_DURATION_MS: u32 = 10 * 60 * 1000;
+const DISPLAY_WIDTH: u32 = 480;
+const DISPLAY_HEIGHT: u32 = 800;
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -68,8 +74,6 @@ struct SleepImage {
 }
 
 fn load_custom_sleep_image(fs: &mut SdCardFs) -> Option<SleepImage> {
-    use xteink_ui::filesystem::FileSystem;
-
     let entries = fs.list_files(SLEEP_IMAGES_DIR).ok()?;
     let image_files: Vec<_> = entries
         .into_iter()
@@ -102,8 +106,8 @@ fn load_custom_sleep_image(fs: &mut SdCardFs) -> Option<SleepImage> {
 fn decode_image_to_binary(bytes: &[u8]) -> Option<SleepImage> {
     let img = image::load_from_memory(bytes).ok()?;
 
-    let target_width = xteink_ui::DISPLAY_WIDTH;
-    let target_height = xteink_ui::DISPLAY_HEIGHT;
+    let target_width = DISPLAY_WIDTH;
+    let target_height = DISPLAY_HEIGHT;
 
     let resized = img.resize_to_fill(
         target_width,

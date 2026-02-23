@@ -1,0 +1,9 @@
+[package]
+name = "xteink-scenario-harness"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+xteink-ui = { path = "../xteink-ui", features = ["std"] }
+
+[dev-dependencies]

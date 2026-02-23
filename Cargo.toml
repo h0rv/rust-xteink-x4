@@ -3,6 +3,7 @@ resolver = "2"
 exclude = ["epub-stream"]
 members = [
     "crates/xteink-firmware",
+    "crates/xteink-scenario-harness",
     "einked",
 ]
 

@@ -1,7 +1,8 @@
-use xteink_ui::filesystem::FileSystemError;
-use xteink_ui::{BufferedDisplay, DisplayInterface, EinkDisplay, FileSystem, RefreshMode};
+use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 
+use crate::buffered_display::BufferedDisplay;
 use crate::cli::SerialCli;
+use crate::filesystem::{FileSystem, FileSystemError};
 use crate::sdcard::SdCardFs;
 use crate::wifi_manager::{WifiManager, WifiMode};
 

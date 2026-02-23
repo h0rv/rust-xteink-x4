@@ -5,6 +5,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
+use std::boxed::Box;
 
 use einked::core::Color;
 use einked::input::InputEvent;
@@ -19,17 +20,17 @@ use std::path::PathBuf;
 use crate::buffered_display::BufferedDisplay;
 
 pub struct EinkedSlice {
-    runtime: EreaderRuntime,
+    runtime: Box<EreaderRuntime>,
 }
 
 impl EinkedSlice {
     pub fn new() -> Self {
         Self {
-            runtime: EreaderRuntime::with_backends(
+            runtime: Box::new(EreaderRuntime::with_backends(
                 DeviceConfig::xteink_x4(),
                 Box::new(FirmwareSettings::default()),
                 Box::new(FirmwareFiles::new("/sd".to_string())),
-            ),
+            )),
         }
     }
 
@@ -149,7 +150,7 @@ where
             RefreshHint::Adaptive | RefreshHint::Partial => RefreshMode::Partial,
         };
         self.display
-            .update_with_mode_no_lut(self.buffered_display.buffer(), &[], mode, self.delay)
+            .update_with_mode(self.buffered_display.buffer(), &[], mode, self.delay)
             .is_ok()
     }
 }

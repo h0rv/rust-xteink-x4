@@ -13,7 +13,7 @@ experimental = ["esp-idf-svc/experimental"]
 
 [dependencies]
 log = "0.4"
-esp-idf-svc = "0.51"
+esp-idf-svc = { version = "0.51", default-features = false, features = ["std", "binstart"] }
 einked = { path = "../../einked", features = ["std"] }
 einked-ereader = { path = "../../einked/crates/einked-ereader", features = ["std"] }
 ssd1677 = { workspace = true }

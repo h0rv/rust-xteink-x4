@@ -12,12 +12,10 @@ fn main() {
     // Tell cargo to rerun if sdkconfig.defaults changes
     println!("cargo:rerun-if-changed=sdkconfig.defaults");
 
-    // Check if the environment variable is set (it should be by justfile)
-    let env_set = env::var("ESP_IDF_SDKCONFIG_DEFAULTS").is_ok();
-    if !env_set {
-        eprintln!("WARNING: ESP_IDF_SDKCONFIG_DEFAULTS not set! Stack size may be wrong.");
-        eprintln!("Make sure to build with: export ESP_IDF_SDKCONFIG_DEFAULTS=crates/xteink-firmware/sdkconfig.defaults");
-    }
+    // Enforce sdkconfig defaults usage so firmware stack/watchdog settings are deterministic.
+    env::var("ESP_IDF_SDKCONFIG_DEFAULTS").expect(
+        "ESP_IDF_SDKCONFIG_DEFAULTS must be set (use justfile commands so sdkconfig.defaults is applied)",
+    );
 
     // CRITICAL: Find and check the cached sdkconfig in target directory
     // If sdkconfig.defaults is newer, we must force regeneration

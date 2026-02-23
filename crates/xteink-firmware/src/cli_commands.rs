@@ -26,7 +26,7 @@ fn cli_redraw<I, D>(
     D: embedded_hal::delay::DelayNs,
 {
     display
-        .update_with_mode_no_lut(buffered_display.buffer(), &[], mode, delay)
+        .update_with_mode(buffered_display.buffer(), &[], mode, delay)
         .ok();
 }
 

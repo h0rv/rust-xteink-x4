@@ -32,7 +32,7 @@ use cli_commands::handle_cli_command;
 use einked_slice::EinkedSlice;
 use filesystem::FileSystem;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
-use runtime_diagnostics::{append_diag, configure_pthread_defaults, log_heap};
+use runtime_diagnostics::{append_diag, log_heap};
 use sdcard::SdCardFs;
 use web_upload::{PollError, WebUploadServer};
 use wifi_manager::WifiManager;
@@ -51,6 +51,11 @@ const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
 const AUTO_SLEEP_DURATION_MS: u32 = 10 * 60 * 1000;
 const DISPLAY_WIDTH: u32 = 480;
 const DISPLAY_HEIGHT: u32 = 800;
+const ENABLE_BOOT_PROBE_FRAME: bool = false;
+
+fn boot_mark(step: u8, msg: &str) {
+    log::warn!("[BOOT:{:02}] {}", step, msg);
+}
 
 fn battery_percent_from_adc(raw: i32) -> u8 {
     let clamped = raw.clamp(BATTERY_ADC_EMPTY, BATTERY_ADC_FULL);
@@ -147,6 +152,64 @@ fn render_sleep_image_on_buffer(buffered_display: &mut BufferedDisplay, image: &
     }
 }
 
+fn draw_boot_probe_frame<I, D>(
+    display: &mut EinkDisplay<I>,
+    delay: &mut D,
+    buffered_display: &mut BufferedDisplay,
+) where
+    I: DisplayInterface,
+    D: embedded_hal::delay::DelayNs,
+{
+    buffered_display.clear();
+    // Draw a simple border + center cross so boot-time panel updates are obvious.
+    for x in 0..DISPLAY_WIDTH {
+        buffered_display.set_pixel(x, 0, embedded_graphics::pixelcolor::BinaryColor::On);
+        buffered_display.set_pixel(
+            x,
+            DISPLAY_HEIGHT - 1,
+            embedded_graphics::pixelcolor::BinaryColor::On,
+        );
+    }
+    for y in 0..DISPLAY_HEIGHT {
+        buffered_display.set_pixel(0, y, embedded_graphics::pixelcolor::BinaryColor::On);
+        buffered_display.set_pixel(
+            DISPLAY_WIDTH - 1,
+            y,
+            embedded_graphics::pixelcolor::BinaryColor::On,
+        );
+    }
+    let mid_x = DISPLAY_WIDTH / 2;
+    let mid_y = DISPLAY_HEIGHT / 2;
+    for off in 0..80 {
+        buffered_display.set_pixel(
+            mid_x + off,
+            mid_y,
+            embedded_graphics::pixelcolor::BinaryColor::On,
+        );
+        buffered_display.set_pixel(
+            mid_x - off,
+            mid_y,
+            embedded_graphics::pixelcolor::BinaryColor::On,
+        );
+        buffered_display.set_pixel(
+            mid_x,
+            mid_y + off,
+            embedded_graphics::pixelcolor::BinaryColor::On,
+        );
+        buffered_display.set_pixel(
+            mid_x,
+            mid_y - off,
+            embedded_graphics::pixelcolor::BinaryColor::On,
+        );
+    }
+    if display
+        .update_with_mode(buffered_display.buffer(), &[], RefreshMode::Full, delay)
+        .is_err()
+    {
+        log::warn!("[DISPLAY] boot probe refresh failed");
+    }
+}
+
 fn show_sleep_screen_with_cover<I, D>(
     display: &mut EinkDisplay<I>,
     delay: &mut D,
@@ -186,9 +249,11 @@ fn stop_web_upload_server(web_upload_server: &mut Option<WebUploadServer>) {
     }
 }
 
-fn main() {
+fn firmware_main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    boot_mark(1, "logger init done");
+    log::warn!("[BOOT] rust main entered");
     let reset_reason = unsafe { sys::esp_reset_reason() };
     let wake_cause = unsafe { sys::esp_sleep_get_wakeup_cause() };
     log::info!(
@@ -196,11 +261,9 @@ fn main() {
         reset_reason,
         wake_cause
     );
-    append_diag(&format!(
-        "boot reset={:?} wake={:?}",
-        reset_reason, wake_cause
-    ));
-    configure_pthread_defaults();
+    // Avoid touching /sd diagnostics before the SD stack is initialized.
+    // Defer optional pthread tuning during boot isolation.
+    // configure_pthread_defaults();
     log_heap("startup");
 
     // Stack size verification (runtime log).
@@ -219,11 +282,14 @@ fn main() {
         "Starting firmware with {} bytes stack",
         esp_idf_svc::sys::CONFIG_ESP_MAIN_TASK_STACK_SIZE
     );
+    boot_mark(2, "about to take peripherals");
 
     let peripherals = Peripherals::take().unwrap();
+    boot_mark(3, "peripherals acquired");
+
     let sys_loop = EspSystemEventLoop::take().unwrap();
     let mut wifi_manager = WifiManager::new(peripherals.modem, sys_loop);
-
+    boot_mark(4, "wifi manager initialized");
     let spi = SpiDriver::new(
         peripherals.spi2,
         peripherals.pins.gpio8,
@@ -232,6 +298,7 @@ fn main() {
         &SpiDriverConfig::default().dma(Dma::Auto(4096)),
     )
     .unwrap();
+    boot_mark(5, "spi driver created");
 
     let spi_config = Config::default()
         .baudrate(esp_idf_svc::hal::units::Hertz(40_000_000))
@@ -242,18 +309,24 @@ fn main() {
 
     let spi_device =
         SpiDeviceDriver::new(&spi, Some(peripherals.pins.gpio21), &spi_config).unwrap();
+    boot_mark(6, "spi device created");
     let dc = PinDriver::output(peripherals.pins.gpio4).unwrap();
     let rst = PinDriver::output(peripherals.pins.gpio5).unwrap();
     let busy = PinDriver::input(peripherals.pins.gpio6).unwrap();
+    boot_mark(7, "display pins ready");
 
     let mut power_btn = PinDriver::input(peripherals.pins.gpio3).unwrap();
     power_btn.set_pull(Pull::Up).unwrap();
+    boot_mark(8, "power button pin ready");
 
     init_adc();
+    boot_mark(9, "adc init done");
 
     // Initialize display
     let mut delay = FreeRtos;
-    let interface = EinkInterface::new(spi_device, dc, rst, busy);
+    let mut interface = EinkInterface::new(spi_device, dc, rst, busy);
+    // Keep boot responsive even when BUSY is noisy; timeouts fail-open with warning.
+    interface.set_busy_timeout(2_000);
     // Use 480x800 dimensions (rows x cols format for SSD1677 driver)
     // Rows must be <= 680 (gates), cols must be <= 960 (sources) and multiple of 8
     // Physical display is 800x480 but driver uses rows=gates, cols=sources
@@ -270,14 +343,27 @@ fn main() {
         .display_update_ctrl2_fast(0x1C)
         .build()
         .unwrap();
+    boot_mark(10, "display config built");
     let mut display = EinkDisplay::new(interface, config);
+    boot_mark(11, "display object created");
 
     log::info!("Resetting display...");
-    display.reset(&mut delay).ok();
+    boot_mark(12, "before display.reset");
+    if display.reset(&mut delay).is_err() {
+        log::warn!("[DISPLAY] reset/init failed");
+    }
+    boot_mark(13, "after display.reset");
 
     // Create buffered display for UI rendering (avoids stack overflow from iterator chains)
     let mut buffered_display = BufferedDisplay::new();
+    boot_mark(14, "buffered display allocated");
+    if ENABLE_BOOT_PROBE_FRAME {
+        boot_mark(15, "before boot probe frame");
+        draw_boot_probe_frame(&mut display, &mut delay, &mut buffered_display);
+        boot_mark(16, "after boot probe frame");
+    }
     let mut einked_slice = EinkedSlice::new();
+    boot_mark(17, "einked runtime created");
 
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
@@ -292,7 +378,37 @@ fn main() {
             SdCardFs::unavailable(err.to_string())
         }
     };
+    boot_mark(18, "sd init attempted");
+    append_diag(&format!(
+        "boot reset={:?} wake={:?}",
+        reset_reason, wake_cause
+    ));
 
+    // Initialize runtime and render initial screen
+    if let Some(initial_battery_raw) = read_battery_raw() {
+        append_diag(&format!(
+            "battery_init raw={} pct={}",
+            initial_battery_raw,
+            battery_percent_from_adc(initial_battery_raw)
+        ));
+    } else {
+        append_diag("battery_init skipped (adc-disabled)");
+    }
+
+    log::warn!("[BOOT] starting first einked render");
+    log_heap("before_app_init");
+    buffered_display.clear();
+    boot_mark(19, "before first einked tick_and_flush");
+    let first_ok =
+        einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display);
+    boot_mark(20, "after first einked tick_and_flush");
+    if !first_ok {
+        log::warn!("[EINKED] initial render/flush failed");
+    } else {
+        log::warn!("[BOOT] first einked render complete");
+    }
+    log_heap("after_first_render");
+    boot_mark(21, "after first render bookkeeping");
     let mut web_upload_server = if ENABLE_WEB_UPLOAD_SERVER {
         let _ = wifi_manager.start_transfer_network();
         match WebUploadServer::start() {
@@ -306,31 +422,12 @@ fn main() {
         None
     };
 
-    // Initialize runtime and render initial screen
-    if let Some(initial_battery_raw) = read_battery_raw() {
-        append_diag(&format!(
-            "battery_init raw={} pct={}",
-            initial_battery_raw,
-            battery_percent_from_adc(initial_battery_raw)
-        ));
-    } else {
-        append_diag("battery_init skipped (adc-disabled)");
-    }
-
-    log_heap("before_app_init");
-    buffered_display.clear();
-    let first_ok =
-        einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display);
-    if !first_ok {
-        log::warn!("[EINKED] initial render/flush failed");
-    }
-    log_heap("after_first_render");
-
     log::info!("Starting event loop with adaptive refresh strategy");
 
     log::info!("Starting event loop... Press a button!");
     log::info!("Hold POWER for 2 seconds to sleep...");
     log::info!("CLI: connect via USB-Serial/JTAG @ 115200 (type 'help')");
+    boot_mark(22, "entering main event loop");
 
     let mut power_press_counter: u32 = 0;
     let mut is_power_pressed: bool = false;
@@ -621,4 +718,8 @@ fn main() {
 
         FreeRtos::delay_ms(LOOP_DELAY_MS);
     }
+}
+
+fn main() {
+    firmware_main();
 }

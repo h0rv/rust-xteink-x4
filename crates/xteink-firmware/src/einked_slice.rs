@@ -5,6 +5,7 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::boxed::Box;
 
 use einked::core::Color;
@@ -21,6 +22,19 @@ use crate::buffered_display::BufferedDisplay;
 
 pub struct EinkedSlice {
     runtime: Box<EreaderRuntime>,
+}
+
+const SETTING_KEY_WIFI_ACTIVE: u8 = 240;
+const SETTING_KEY_WIFI_ENABLE_REQUEST: u8 = 241;
+static WIFI_ACTIVE: AtomicU8 = AtomicU8::new(0);
+static WIFI_ENABLE_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_wifi_active(active: bool) {
+    WIFI_ACTIVE.store(if active { 1 } else { 0 }, Ordering::Relaxed);
+}
+
+pub fn take_wifi_enable_request() -> bool {
+    WIFI_ENABLE_REQUESTED.swap(false, Ordering::Relaxed)
 }
 
 impl EinkedSlice {
@@ -72,8 +86,15 @@ impl Default for FirmwareSettings {
 
 impl SettingsStore for FirmwareSettings {
     fn load_raw(&self, key: u8, buf: &mut [u8]) -> usize {
+        if buf.is_empty() {
+            return 0;
+        }
+        if key == SETTING_KEY_WIFI_ACTIVE {
+            buf[0] = WIFI_ACTIVE.load(Ordering::Relaxed);
+            return 1;
+        }
         let idx = key as usize;
-        if idx >= self.slots.len() || buf.is_empty() {
+        if idx >= self.slots.len() {
             return 0;
         }
         buf[0] = self.slots[idx];
@@ -81,6 +102,12 @@ impl SettingsStore for FirmwareSettings {
     }
 
     fn save_raw(&mut self, key: u8, data: &[u8]) {
+        if key == SETTING_KEY_WIFI_ENABLE_REQUEST {
+            if !data.is_empty() && data[0] != 0 {
+                WIFI_ENABLE_REQUESTED.store(true, Ordering::Relaxed);
+            }
+            return;
+        }
         let idx = key as usize;
         if idx < self.slots.len() && !data.is_empty() {
             self.slots[idx] = data[0];
@@ -137,21 +164,67 @@ struct FirmwareSink<'a, I: DisplayInterface, D> {
     buffered_display: &'a mut BufferedDisplay,
 }
 
+static FLUSH_SEQ: AtomicU32 = AtomicU32::new(0);
+
 impl<I, D> FrameSink for FirmwareSink<'_, I, D>
 where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
 {
     fn render_and_flush(&mut self, cmds: &[DrawCmd<'static>], hint: RefreshHint) -> bool {
+        let seq = FLUSH_SEQ.fetch_add(1, Ordering::Relaxed);
+        if seq < 24 || cmds.is_empty() {
+            log::warn!(
+                "[EINKED] flush seq={} cmds={} hint={:?}",
+                seq,
+                cmds.len(),
+                hint
+            );
+        }
+
+        if cmds.is_empty() {
+            self.buffered_display.clear();
+            let _ = Rectangle::new(Point::new(0, 0), Size::new(480, 800))
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
+                .draw(self.buffered_display);
+            let style = MonoTextStyleBuilder::new()
+                .font(&ascii::FONT_8X13_BOLD)
+                .text_color(BinaryColor::On)
+                .build();
+            let _ = Text::new("EINKED EMPTY FRAME", Point::new(24, 80), style)
+                .draw(self.buffered_display);
+            return self
+                .display
+                .update_with_mode_no_lut(
+                    self.buffered_display.buffer(),
+                    &[],
+                    RefreshMode::Full,
+                    self.delay,
+                )
+                .is_ok();
+        }
         rasterize_commands(cmds, self.buffered_display);
         let mode = match hint {
             RefreshHint::Full => RefreshMode::Full,
             RefreshHint::Fast => RefreshMode::Fast,
             RefreshHint::Adaptive | RefreshHint::Partial => RefreshMode::Partial,
         };
-        self.display
-            .update_with_mode(self.buffered_display.buffer(), &[], mode, self.delay)
-            .is_ok()
+        let mode = if seq == 0 { RefreshMode::Full } else { mode };
+        match self
+            .display
+            .update_with_mode_no_lut(
+                self.buffered_display.buffer(),
+                &[],
+                mode,
+                self.delay,
+            )
+        {
+            Ok(()) => true,
+            Err(_) => {
+                log::warn!("[EINKED] display update_with_mode_no_lut failed mode={:?}", mode);
+                false
+            }
+        }
     }
 }
 

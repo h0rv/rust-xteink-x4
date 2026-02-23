@@ -29,7 +29,7 @@ use ssd1677::{
 use buffered_display::BufferedDisplay;
 use cli::SerialCli;
 use cli_commands::handle_cli_command;
-use einked_slice::EinkedSlice;
+use einked_slice::{EinkedSlice, set_wifi_active, take_wifi_enable_request};
 use filesystem::FileSystem;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, log_heap};
@@ -203,7 +203,7 @@ fn draw_boot_probe_frame<I, D>(
         );
     }
     if display
-        .update_with_mode(buffered_display.buffer(), &[], RefreshMode::Full, delay)
+        .update_with_mode_no_lut(buffered_display.buffer(), &[], RefreshMode::Full, delay)
         .is_err()
     {
         log::warn!("[DISPLAY] boot probe refresh failed");
@@ -227,7 +227,7 @@ fn show_sleep_screen_with_cover<I, D>(
     }
 
     display
-        .update_with_mode(buffered_display.buffer(), &[], RefreshMode::Full, delay)
+        .update_with_mode_no_lut(buffered_display.buffer(), &[], RefreshMode::Full, delay)
         .ok();
 }
 
@@ -363,11 +363,6 @@ fn firmware_main() {
         draw_boot_probe_frame(&mut display, &mut delay, &mut buffered_display);
         boot_mark(16, "after boot probe frame");
     }
-    log_heap("before_einked_runtime");
-    let mut einked_slice = EinkedSlice::new();
-    boot_mark(17, "einked runtime created");
-    log_heap("after_einked_runtime");
-
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
     let mut fs = match SdCardFs::new(spi.host() as i32, 12) {
@@ -381,7 +376,12 @@ fn firmware_main() {
             SdCardFs::unavailable(err.to_string())
         }
     };
-    boot_mark(18, "sd init attempted");
+    boot_mark(17, "sd init attempted");
+    log_heap("before_einked_runtime");
+
+    let mut einked_slice = EinkedSlice::new();
+    boot_mark(18, "einked runtime created");
+    log_heap("after_einked_runtime");
     append_diag(&format!(
         "boot reset={:?} wake={:?}",
         reset_reason, wake_cause
@@ -466,6 +466,16 @@ fn firmware_main() {
     const POWER_LINE_STABLE_BEFORE_SLEEP_MS: u32 = 2_000;
 
     loop {
+        set_wifi_active(wifi_manager.is_network_active());
+
+        if take_wifi_enable_request() {
+            match wifi_manager.start_transfer_network() {
+                Ok(()) => log::info!("[WIFI] started from einked feed request"),
+                Err(err) => log::warn!("[WIFI] feed request start failed: {}", err),
+            }
+            set_wifi_active(wifi_manager.is_network_active());
+        }
+
         if let Some(cli) = cli.as_mut() {
             if let Some(line) = cli.poll_line() {
                 handle_cli_command(

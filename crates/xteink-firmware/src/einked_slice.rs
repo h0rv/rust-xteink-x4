@@ -1,3 +1,4 @@
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use embedded_graphics::{
     mono_font::{ascii, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
@@ -5,7 +6,6 @@ use embedded_graphics::{
     primitives::{PrimitiveStyle, Rectangle},
     text::Text,
 };
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::boxed::Box;
 
 use einked::core::Color;
@@ -183,25 +183,7 @@ where
         }
 
         if cmds.is_empty() {
-            self.buffered_display.clear();
-            let _ = Rectangle::new(Point::new(0, 0), Size::new(480, 800))
-                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 2))
-                .draw(self.buffered_display);
-            let style = MonoTextStyleBuilder::new()
-                .font(&ascii::FONT_8X13_BOLD)
-                .text_color(BinaryColor::On)
-                .build();
-            let _ = Text::new("EINKED EMPTY FRAME", Point::new(24, 80), style)
-                .draw(self.buffered_display);
-            return self
-                .display
-                .update_with_mode_no_lut(
-                    self.buffered_display.buffer(),
-                    &[],
-                    RefreshMode::Full,
-                    self.delay,
-                )
-                .is_ok();
+            return true;
         }
         rasterize_commands(cmds, self.buffered_display);
         let mode = match hint {
@@ -210,18 +192,18 @@ where
             RefreshHint::Adaptive | RefreshHint::Partial => RefreshMode::Partial,
         };
         let mode = if seq == 0 { RefreshMode::Full } else { mode };
-        match self
-            .display
-            .update_with_mode_no_lut(
-                self.buffered_display.buffer(),
-                &[],
-                mode,
-                self.delay,
-            )
-        {
+        match self.display.update_with_mode_no_lut(
+            self.buffered_display.buffer(),
+            &[],
+            mode,
+            self.delay,
+        ) {
             Ok(()) => true,
             Err(_) => {
-                log::warn!("[EINKED] display update_with_mode_no_lut failed mode={:?}", mode);
+                log::warn!(
+                    "[EINKED] display update_with_mode_no_lut failed mode={:?}",
+                    mode
+                );
                 false
             }
         }

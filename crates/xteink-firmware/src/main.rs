@@ -29,7 +29,7 @@ use ssd1677::{
 use buffered_display::BufferedDisplay;
 use cli::SerialCli;
 use cli_commands::handle_cli_command;
-use einked_slice::{EinkedSlice, set_wifi_active, take_wifi_enable_request};
+use einked_slice::{set_wifi_active, take_wifi_enable_request, EinkedSlice};
 use filesystem::FileSystem;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, log_heap};

@@ -6,17 +6,14 @@ use embedded_graphics::{
     text::Text,
 };
 
-use einked::core::{Color, Rect};
+use einked::core::Color;
 use einked::input::InputEvent;
 use einked::refresh::RefreshHint;
 use einked::render_ir::DrawCmd;
-use einked_ereader::{EreaderRuntime, FrameSink};
+use einked_ereader::{DeviceConfig, EreaderRuntime, FrameSink};
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 
 use crate::buffered_display::BufferedDisplay;
-
-const WIDTH: u16 = 480;
-const HEIGHT: u16 = 800;
 
 pub struct EinkedSlice {
     runtime: EreaderRuntime,
@@ -25,12 +22,7 @@ pub struct EinkedSlice {
 impl EinkedSlice {
     pub fn new() -> Self {
         Self {
-            runtime: EreaderRuntime::new(Rect {
-                x: 0,
-                y: 0,
-                width: WIDTH,
-                height: HEIGHT,
-            }),
+            runtime: EreaderRuntime::new(DeviceConfig::xteink_x4()),
         }
     }
 

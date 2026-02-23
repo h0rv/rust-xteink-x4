@@ -357,13 +357,16 @@ fn firmware_main() {
     // Create buffered display for UI rendering (avoids stack overflow from iterator chains)
     let mut buffered_display = BufferedDisplay::new();
     boot_mark(14, "buffered display allocated");
+    log_heap("after_buffered_display");
     if ENABLE_BOOT_PROBE_FRAME {
         boot_mark(15, "before boot probe frame");
         draw_boot_probe_frame(&mut display, &mut delay, &mut buffered_display);
         boot_mark(16, "after boot probe frame");
     }
+    log_heap("before_einked_runtime");
     let mut einked_slice = EinkedSlice::new();
     boot_mark(17, "einked runtime created");
+    log_heap("after_einked_runtime");
 
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.

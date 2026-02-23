@@ -10,7 +10,7 @@ if [[ -z "${target}" ]]; then
 fi
 
 # Regex used to focus function-level reports on project code.
-stack_filter="${STACK_FILTER:-xteink_ui|xteink_scenario_harness|xteink_firmware}"
+stack_filter="${STACK_FILTER:-einked|einked_ereader|xteink_scenario_harness|xteink_firmware}"
 # Optional hard gate (bytes). If set, script exits non-zero when a matching function exceeds it.
 stack_max_bytes="${STACK_MAX_BYTES:-}"
 

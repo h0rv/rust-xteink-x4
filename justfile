@@ -213,13 +213,13 @@ fmt:
 lint:
     cargo clippy --workspace --exclude xteink-firmware -- -D warnings
 
-# Run tests for UI logic (std feature enabled, host target)
+# Run tests for einked e-reader UI logic (host target)
 test-ui:
-    cargo test -p xteink-ui --features std --target {{ host_target }}
+    cargo test -p einked-ereader --target {{ host_target }}
 
 # Run only diff tests (fast, host target)
 test-diff:
-    cargo test -p xteink-ui --features std --target {{ host_target }} diff
+    cargo test -p einked --all-features --target {{ host_target }} diff
 
 # Run all tests (host target)
 test:

@@ -1,5 +1,3 @@
-//! Scenario test harness for Xteink X4 e-reader UI.
-//!
-//! Integration tests for UI activities using a test display and mock data.
+//! Scenario test harness for einked e-reader UI primitives.
 
-pub use xteink_ui::*;
+pub use einked_ereader::*;

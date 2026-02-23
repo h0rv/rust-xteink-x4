@@ -1,6 +1,6 @@
 //! Integration tests for `FeedBrowserActivity`.
 
-use xteink_ui::{BrowserState, FeedBrowserActivity, OpdsCatalog, OpdsEntry};
+use einked_ereader::{BrowserState, FeedBrowserActivity, OpdsCatalog, OpdsEntry};
 
 fn mock_catalog() -> OpdsCatalog {
     OpdsCatalog {

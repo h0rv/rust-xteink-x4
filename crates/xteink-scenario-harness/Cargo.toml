@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-xteink-ui = { path = "../xteink-ui", features = ["std"] }
+einked-ereader = { path = "../../einked/crates/einked-ereader", features = ["std"] }
 
 [dev-dependencies]

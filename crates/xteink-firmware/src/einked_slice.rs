@@ -10,8 +10,10 @@ use einked::core::Color;
 use einked::input::InputEvent;
 use einked::refresh::RefreshHint;
 use einked::render_ir::DrawCmd;
+use einked::storage::{FileStore, FileStoreError, SettingsStore};
 use einked_ereader::{DeviceConfig, EreaderRuntime, FrameSink};
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
+use std::path::PathBuf;
 
 use crate::buffered_display::BufferedDisplay;
 
@@ -22,7 +24,11 @@ pub struct EinkedSlice {
 impl EinkedSlice {
     pub fn new() -> Self {
         Self {
-            runtime: EreaderRuntime::new(DeviceConfig::xteink_x4()),
+            runtime: EreaderRuntime::with_backends(
+                DeviceConfig::xteink_x4(),
+                Box::new(FirmwareSettings::default()),
+                Box::new(FirmwareFiles::new("/sd".to_string())),
+            ),
         }
     }
 
@@ -49,6 +55,78 @@ impl EinkedSlice {
 impl Default for EinkedSlice {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+struct FirmwareSettings {
+    slots: [u8; 64],
+}
+
+impl Default for FirmwareSettings {
+    fn default() -> Self {
+        Self { slots: [0; 64] }
+    }
+}
+
+impl SettingsStore for FirmwareSettings {
+    fn load_raw(&self, key: u8, buf: &mut [u8]) -> usize {
+        let idx = key as usize;
+        if idx >= self.slots.len() || buf.is_empty() {
+            return 0;
+        }
+        buf[0] = self.slots[idx];
+        1
+    }
+
+    fn save_raw(&mut self, key: u8, data: &[u8]) {
+        let idx = key as usize;
+        if idx < self.slots.len() && !data.is_empty() {
+            self.slots[idx] = data[0];
+        }
+    }
+}
+
+struct FirmwareFiles {
+    root: String,
+}
+
+impl FirmwareFiles {
+    fn new(root: String) -> Self {
+        Self { root }
+    }
+
+    fn resolve(&self, path: &str) -> PathBuf {
+        if path == "/" || path.is_empty() {
+            return PathBuf::from(&self.root);
+        }
+        let trimmed = path.trim_start_matches('/');
+        PathBuf::from(&self.root).join(trimmed)
+    }
+}
+
+impl FileStore for FirmwareFiles {
+    fn list(&self, path: &str, out: &mut dyn FnMut(&str)) {
+        let dir = self.resolve(path);
+        if let Ok(read_dir) = std::fs::read_dir(dir) {
+            for entry in read_dir.flatten() {
+                let name = entry.file_name();
+                if let Some(name) = name.to_str() {
+                    out(name);
+                }
+            }
+        }
+    }
+
+    fn read<'a>(&self, path: &str, buf: &'a mut [u8]) -> Result<&'a [u8], FileStoreError> {
+        let full = self.resolve(path);
+        let data = std::fs::read(full).map_err(|_| FileStoreError::Io)?;
+        let n = data.len().min(buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        Ok(&buf[..n])
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.resolve(path).exists()
     }
 }
 

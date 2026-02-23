@@ -8,9 +8,14 @@ use alloc::vec::Vec;
 
 use embedded_svc::http::client::Client as HttpClient;
 use embedded_svc::io::Read;
+use einked_ereader::{OpdsCatalog, OpdsEntry, OpdsLink};
 use esp_idf_svc::http::client::{Configuration as HttpConfiguration, EspHttpConnection};
 
-use xteink_ui::{OpdsCatalog, OpdsEntry, OpdsLink};
+/// Maximum size for OPDS/RSS feed XML response (256 KB)
+const MAX_FEED_BYTES: usize = 256 * 1024;
+
+/// Maximum number of entries to parse from a feed
+const MAX_ENTRIES: usize = 200;
 
 #[derive(Debug)]
 pub enum FeedError {
@@ -18,6 +23,7 @@ pub enum FeedError {
     Parse(String),
     Network(String),
     Io(String),
+    ResponseTooLarge(usize),
 }
 
 pub struct FeedService {
@@ -38,7 +44,7 @@ impl FeedService {
     }
 
     pub fn fetch_catalog(&mut self, url: &str) -> Result<OpdsCatalog, FeedError> {
-        let bytes = self.http_get(url)?;
+        let bytes = self.http_get_feed(url)?;
         self.parse_opds(&bytes)
     }
 
@@ -48,24 +54,14 @@ impl FeedService {
         dest_path: &str,
         mut progress: F,
     ) -> Result<(), FeedError> {
-        let bytes = self.http_get(url)?;
-        progress(bytes.len() as u64, bytes.len() as u64);
-
         if let Some(parent) = std::path::Path::new(dest_path).parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| FeedError::Io(format!("Create dir failed: {:?}", e)))?;
         }
 
-        std::fs::write(dest_path, &bytes)
-            .map_err(|e| FeedError::Io(format!("Write failed: {:?}", e)))?;
-
-        Ok(())
-    }
-
-    fn http_get(&mut self, url: &str) -> Result<Vec<u8>, FeedError> {
         let request = self
             .client
-            .get(url, &[])
+            .get(url)
             .map_err(|e| FeedError::Http(format!("{:?}", e)))?;
 
         let mut response = request
@@ -77,14 +73,61 @@ impl FeedService {
             return Err(FeedError::Http(format!("HTTP {}", status)));
         }
 
-        let mut body = Vec::new();
+        let total_size = response.content_length().unwrap_or(0);
+        let mut file = std::fs::File::create(dest_path)
+            .map_err(|e| FeedError::Io(format!("Create file failed: {:?}", e)))?;
+        let mut downloaded: u64 = 0;
         let mut buf = [0u8; 4096];
+
         loop {
             let read = response
                 .read(&mut buf)
                 .map_err(|e| FeedError::Io(format!("{:?}", e)))?;
             if read == 0 {
                 break;
+            }
+            std::io::Write::write_all(&mut file, &buf[..read])
+                .map_err(|e| FeedError::Io(format!("Write failed: {:?}", e)))?;
+            downloaded += read as u64;
+            progress(downloaded, total_size.max(downloaded));
+        }
+
+        Ok(())
+    }
+
+    fn http_get_feed(&mut self, url: &str) -> Result<Vec<u8>, FeedError> {
+        let request = self
+            .client
+            .get(url)
+            .map_err(|e| FeedError::Http(format!("{:?}", e)))?;
+
+        let mut response = request
+            .submit()
+            .map_err(|e| FeedError::Network(format!("{:?}", e)))?;
+
+        let status = response.status();
+        if status != 200 {
+            return Err(FeedError::Http(format!("HTTP {}", status)));
+        }
+
+        let content_length = response.content_length().unwrap_or(0) as usize;
+        if content_length > MAX_FEED_BYTES {
+            return Err(FeedError::ResponseTooLarge(content_length));
+        }
+
+        let estimated_size = content_length.min(MAX_FEED_BYTES).max(1024);
+        let mut body = Vec::with_capacity(estimated_size);
+        let mut buf = [0u8; 4096];
+
+        loop {
+            let read = response
+                .read(&mut buf)
+                .map_err(|e| FeedError::Io(format!("{:?}", e)))?;
+            if read == 0 {
+                break;
+            }
+            if body.len() + read > MAX_FEED_BYTES {
+                return Err(FeedError::ResponseTooLarge(body.len() + read));
             }
             body.extend_from_slice(&buf[..read]);
         }
@@ -105,6 +148,7 @@ impl FeedService {
         let entries: Vec<OpdsEntry> = feed
             .entries
             .iter()
+            .take(MAX_ENTRIES)
             .map(|entry| {
                 let (download_url, format, size) = entry
                     .links

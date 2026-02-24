@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use embedded_graphics::{
     mono_font::{ascii, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
@@ -13,12 +13,15 @@ use einked::input::InputEvent;
 use einked::refresh::RefreshHint;
 use einked::render_ir::DrawCmd;
 use einked::storage::{FileStore, FileStoreError, SettingsStore};
-use einked_ereader::{DeviceConfig, EreaderRuntime, FrameSink};
+use einked_ereader::{
+    DeviceConfig, EreaderRuntime, FeedClient, FeedEntryData, FeedType, FrameSink,
+};
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 use std::io::Read;
 use std::path::PathBuf;
 
 use crate::buffered_display::BufferedDisplay;
+use crate::feed_service::FeedService;
 
 pub struct EinkedSlice {
     runtime: Box<EreaderRuntime>,
@@ -39,11 +42,13 @@ pub fn take_wifi_enable_request() -> bool {
 
 impl EinkedSlice {
     pub fn new() -> Self {
+        FIRST_NON_EMPTY_FRAME_PENDING.store(true, Ordering::Relaxed);
         Self {
-            runtime: Box::new(EreaderRuntime::with_backends(
+            runtime: Box::new(EreaderRuntime::with_backends_and_feed(
                 DeviceConfig::xteink_x4(),
                 Box::new(FirmwareSettings::default()),
                 Box::new(FirmwareFiles::new("/sd".to_string())),
+                Box::new(FirmwareFeedClient::default()),
             )),
         }
     }
@@ -71,6 +76,58 @@ impl EinkedSlice {
 impl Default for EinkedSlice {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Default)]
+struct FirmwareFeedClient {
+    service: Option<FeedService>,
+}
+
+impl FirmwareFeedClient {
+    fn service(&mut self) -> Result<&mut FeedService, String> {
+        if self.service.is_none() {
+            self.service =
+                Some(FeedService::new().map_err(|e| format!("Feed service init failed: {:?}", e))?);
+        }
+        self.service
+            .as_mut()
+            .ok_or_else(|| "Feed service unavailable".to_string())
+    }
+}
+
+impl FeedClient for FirmwareFeedClient {
+    fn fetch_entries(
+        &mut self,
+        _source_name: &str,
+        source_url: &str,
+        source_type: FeedType,
+    ) -> Result<Vec<FeedEntryData>, String> {
+        let service = self.service()?;
+        service
+            .fetch_entries(source_url, source_type)
+            .map_err(|e| format!("Feed fetch failed: {:?}", e))
+    }
+
+    fn fetch_article_lines(&mut self, url: &str) -> Result<Vec<String>, String> {
+        let service = self.service()?;
+        let text: String = service
+            .fetch_article_text(url)
+            .map_err(|e| format!("Article fetch failed: {:?}", e))?;
+        let mut lines: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                lines.push(String::new());
+            } else {
+                lines.push(trimmed.to_string());
+            }
+        }
+        if lines.is_empty() {
+            Err("Article had no readable text.".to_string())
+        } else {
+            Ok(lines)
+        }
     }
 }
 
@@ -146,6 +203,12 @@ impl FileStore for FirmwareFiles {
         }
     }
 
+    fn is_dir(&self, path: &str) -> Option<bool> {
+        std::fs::metadata(self.resolve(path))
+            .ok()
+            .map(|metadata| metadata.is_dir())
+    }
+
     fn read<'a>(&self, path: &str, buf: &'a mut [u8]) -> Result<&'a [u8], FileStoreError> {
         let full = self.resolve(path);
         let mut file = std::fs::File::open(full).map_err(|_| FileStoreError::Io)?;
@@ -156,6 +219,19 @@ impl FileStore for FirmwareFiles {
     fn exists(&self, path: &str) -> bool {
         self.resolve(path).exists()
     }
+
+    fn open_read_seek(
+        &self,
+        path: &str,
+    ) -> Result<Box<dyn einked::storage::ReadSeek>, FileStoreError> {
+        let full = self.resolve(path);
+        let file = std::fs::File::open(full).map_err(|_| FileStoreError::Io)?;
+        Ok(Box::new(file))
+    }
+
+    fn native_path(&self, path: &str) -> Option<String> {
+        self.resolve(path).to_str().map(|value| value.to_string())
+    }
 }
 
 struct FirmwareSink<'a, I: DisplayInterface, D> {
@@ -164,7 +240,7 @@ struct FirmwareSink<'a, I: DisplayInterface, D> {
     buffered_display: &'a mut BufferedDisplay,
 }
 
-static FLUSH_SEQ: AtomicU32 = AtomicU32::new(0);
+static FIRST_NON_EMPTY_FRAME_PENDING: AtomicBool = AtomicBool::new(true);
 
 impl<I, D> FrameSink for FirmwareSink<'_, I, D>
 where
@@ -172,33 +248,33 @@ where
     D: embedded_hal::delay::DelayNs,
 {
     fn render_and_flush(&mut self, cmds: &[DrawCmd<'static>], hint: RefreshHint) -> bool {
-        let seq = FLUSH_SEQ.fetch_add(1, Ordering::Relaxed);
-        if seq < 24 || cmds.is_empty() {
-            log::warn!(
-                "[EINKED] flush seq={} cmds={} hint={:?}",
-                seq,
-                cmds.len(),
-                hint
-            );
-        }
-
         if cmds.is_empty() {
             return true;
         }
         rasterize_commands(cmds, self.buffered_display);
-        let mode = match hint {
+        let hint_mode = match hint {
             RefreshHint::Full => RefreshMode::Full,
             RefreshHint::Fast => RefreshMode::Fast,
             RefreshHint::Adaptive | RefreshHint::Partial => RefreshMode::Partial,
         };
-        let mode = if seq == 0 { RefreshMode::Full } else { mode };
+        let force_full = FIRST_NON_EMPTY_FRAME_PENDING.load(Ordering::Relaxed);
+        let mode = if force_full {
+            RefreshMode::Full
+        } else {
+            hint_mode
+        };
         match self.display.update_with_mode_no_lut(
             self.buffered_display.buffer(),
             &[],
             mode,
             self.delay,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                if force_full {
+                    FIRST_NON_EMPTY_FRAME_PENDING.store(false, Ordering::Relaxed);
+                }
+                true
+            }
             Err(_) => {
                 log::warn!(
                     "[EINKED] display update_with_mode_no_lut failed mode={:?}",

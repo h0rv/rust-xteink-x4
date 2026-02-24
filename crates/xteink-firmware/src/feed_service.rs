@@ -6,9 +6,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use einked_ereader::{get_reader_url, FeedEntryData, FeedType, OpdsCatalog, OpdsEntry, OpdsLink};
 use embedded_svc::http::client::Client as HttpClient;
-use embedded_svc::io::Read;
-use einked_ereader::{OpdsCatalog, OpdsEntry, OpdsLink};
+use embedded_svc::http::Headers;
 use esp_idf_svc::http::client::{Configuration as HttpConfiguration, EspHttpConnection};
 
 /// Maximum size for OPDS/RSS feed XML response (256 KB)
@@ -48,6 +48,54 @@ impl FeedService {
         self.parse_opds(&bytes)
     }
 
+    pub fn fetch_entries(
+        &mut self,
+        url: &str,
+        feed_type: FeedType,
+    ) -> Result<Vec<FeedEntryData>, FeedError> {
+        match feed_type {
+            FeedType::Opds => {
+                let catalog = self.fetch_catalog(url)?;
+                let mut entries = Vec::new();
+                for entry in catalog.entries.iter().take(64) {
+                    entries.push(FeedEntryData {
+                        title: entry.title.clone(),
+                        url: entry
+                            .download_url
+                            .clone()
+                            .or_else(|| entry.cover_url.clone()),
+                        summary: entry.summary.clone(),
+                    });
+                }
+                Ok(entries)
+            }
+            FeedType::Rss => {
+                let bytes = self.http_get_feed(url)?;
+                let feed = feed_rs::parser::parse(&bytes[..])
+                    .map_err(|e| FeedError::Parse(format!("{:?}", e)))?;
+                let mut entries = Vec::new();
+                for entry in feed.entries.iter().take(64) {
+                    entries.push(FeedEntryData {
+                        title: entry
+                            .title
+                            .as_ref()
+                            .map(|t| t.content.clone())
+                            .unwrap_or_default(),
+                        url: entry.links.first().map(|link| link.href.clone()),
+                        summary: entry.summary.as_ref().map(|s| s.content.clone()),
+                    });
+                }
+                Ok(entries)
+            }
+        }
+    }
+
+    pub fn fetch_article_text(&mut self, url: &str) -> Result<String, FeedError> {
+        let reader_url = get_reader_url(url);
+        let bytes = self.http_get_feed(&reader_url)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     pub fn download_book<F: FnMut(u64, u64)>(
         &mut self,
         url: &str,
@@ -73,7 +121,7 @@ impl FeedService {
             return Err(FeedError::Http(format!("HTTP {}", status)));
         }
 
-        let total_size = response.content_length().unwrap_or(0);
+        let total_size = response.content_len().unwrap_or(0);
         let mut file = std::fs::File::create(dest_path)
             .map_err(|e| FeedError::Io(format!("Create file failed: {:?}", e)))?;
         let mut downloaded: u64 = 0;
@@ -110,7 +158,7 @@ impl FeedService {
             return Err(FeedError::Http(format!("HTTP {}", status)));
         }
 
-        let content_length = response.content_length().unwrap_or(0) as usize;
+        let content_length = response.content_len().unwrap_or(0) as usize;
         if content_length > MAX_FEED_BYTES {
             return Err(FeedError::ResponseTooLarge(content_length));
         }

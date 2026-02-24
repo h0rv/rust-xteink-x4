@@ -4,6 +4,7 @@ mod buffered_display;
 mod cli;
 mod cli_commands;
 mod einked_slice;
+mod feed_service;
 mod filesystem;
 mod input;
 mod runtime_diagnostics;
@@ -51,7 +52,6 @@ const WEB_UPLOAD_MAX_EVENTS_PER_LOOP: usize = 8;
 const AUTO_SLEEP_DURATION_MS: u32 = 10 * 60 * 1000;
 const DISPLAY_WIDTH: u32 = 480;
 const DISPLAY_HEIGHT: u32 = 800;
-const ENABLE_BOOT_PROBE_FRAME: bool = false;
 
 fn boot_mark(step: u8, msg: &str) {
     log::warn!("[BOOT:{:02}] {}", step, msg);
@@ -149,64 +149,6 @@ fn render_sleep_image_on_buffer(buffered_display: &mut BufferedDisplay, image: &
                 buffered_display.set_pixel(x, y, embedded_graphics::pixelcolor::BinaryColor::On);
             }
         }
-    }
-}
-
-fn draw_boot_probe_frame<I, D>(
-    display: &mut EinkDisplay<I>,
-    delay: &mut D,
-    buffered_display: &mut BufferedDisplay,
-) where
-    I: DisplayInterface,
-    D: embedded_hal::delay::DelayNs,
-{
-    buffered_display.clear();
-    // Draw a simple border + center cross so boot-time panel updates are obvious.
-    for x in 0..DISPLAY_WIDTH {
-        buffered_display.set_pixel(x, 0, embedded_graphics::pixelcolor::BinaryColor::On);
-        buffered_display.set_pixel(
-            x,
-            DISPLAY_HEIGHT - 1,
-            embedded_graphics::pixelcolor::BinaryColor::On,
-        );
-    }
-    for y in 0..DISPLAY_HEIGHT {
-        buffered_display.set_pixel(0, y, embedded_graphics::pixelcolor::BinaryColor::On);
-        buffered_display.set_pixel(
-            DISPLAY_WIDTH - 1,
-            y,
-            embedded_graphics::pixelcolor::BinaryColor::On,
-        );
-    }
-    let mid_x = DISPLAY_WIDTH / 2;
-    let mid_y = DISPLAY_HEIGHT / 2;
-    for off in 0..80 {
-        buffered_display.set_pixel(
-            mid_x + off,
-            mid_y,
-            embedded_graphics::pixelcolor::BinaryColor::On,
-        );
-        buffered_display.set_pixel(
-            mid_x - off,
-            mid_y,
-            embedded_graphics::pixelcolor::BinaryColor::On,
-        );
-        buffered_display.set_pixel(
-            mid_x,
-            mid_y + off,
-            embedded_graphics::pixelcolor::BinaryColor::On,
-        );
-        buffered_display.set_pixel(
-            mid_x,
-            mid_y - off,
-            embedded_graphics::pixelcolor::BinaryColor::On,
-        );
-    }
-    if display
-        .update_with_mode_no_lut(buffered_display.buffer(), &[], RefreshMode::Full, delay)
-        .is_err()
-    {
-        log::warn!("[DISPLAY] boot probe refresh failed");
     }
 }
 
@@ -358,11 +300,6 @@ fn firmware_main() {
     let mut buffered_display = BufferedDisplay::new();
     boot_mark(14, "buffered display allocated");
     log_heap("after_buffered_display");
-    if ENABLE_BOOT_PROBE_FRAME {
-        boot_mark(15, "before boot probe frame");
-        draw_boot_probe_frame(&mut display, &mut delay, &mut buffered_display);
-        boot_mark(16, "after boot probe frame");
-    }
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
     let mut fs = match SdCardFs::new(spi.host() as i32, 12) {
@@ -457,6 +394,9 @@ fn firmware_main() {
     let mut input_debug_ticks: u32 = 0;
     let mut battery_sample_elapsed_ms: u32 = 0;
     let mut sleep_requested = false;
+    let mut last_wifi_active = wifi_manager.is_network_active();
+    set_wifi_active(last_wifi_active);
+    let mut wifi_state_dirty = false;
 
     // Auto-sleep tracking
     let mut inactivity_ms: u32 = 0;
@@ -466,14 +406,31 @@ fn firmware_main() {
     const POWER_LINE_STABLE_BEFORE_SLEEP_MS: u32 = 2_000;
 
     loop {
-        set_wifi_active(wifi_manager.is_network_active());
+        let mut current_wifi_active = wifi_manager.is_network_active();
+        if current_wifi_active != last_wifi_active {
+            last_wifi_active = current_wifi_active;
+            set_wifi_active(current_wifi_active);
+            wifi_state_dirty = true;
+        }
 
         if take_wifi_enable_request() {
             match wifi_manager.start_transfer_network() {
                 Ok(()) => log::info!("[WIFI] started from einked feed request"),
                 Err(err) => log::warn!("[WIFI] feed request start failed: {}", err),
             }
-            set_wifi_active(wifi_manager.is_network_active());
+            current_wifi_active = wifi_manager.is_network_active();
+            if current_wifi_active != last_wifi_active {
+                last_wifi_active = current_wifi_active;
+                set_wifi_active(current_wifi_active);
+                wifi_state_dirty = true;
+            }
+        }
+
+        if wifi_state_dirty {
+            wifi_state_dirty = false;
+            if !einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display) {
+                log::warn!("[EINKED] wifi state update flush failed");
+            }
         }
 
         if let Some(cli) = cli.as_mut() {

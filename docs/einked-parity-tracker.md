@@ -47,6 +47,7 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
 ## Validation Gates
 - [x] `cargo check --workspace --exclude xteink-firmware`
 - [ ] `just check-firmware`
+- [ ] `just check-firmware-minireader` (isolated side-path; no hard migration)
 - [ ] Device flash + log verification for:
   - [ ] boot first-frame visible
   - [ ] open EPUB without crash
@@ -71,3 +72,7 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
   - Re-applied pre-migration ESP open behavior of deferring EPUB working-buffer allocation (`chapter_buf` + `ScratchBuffers`) until first page stream, instead of eager allocation at open.
   - Reduced ESP initial EPUB page-window prefetch pressure (`EPUB_PAGE_WINDOW=2` on ESP only).
   - Released large non-reader list allocations right before EPUB open to recover contiguous heap for parser/open phases.
+- Isolated runtime swap added in firmware (2026-02-24):
+  - Default firmware path remains `einked-ereader`.
+  - `minireader-ui` feature compiles and runs `einked-minireader` without touching the default UI path.
+  - Added `just` commands for side-by-side validation: `check-firmware-minireader`, `build-firmware-minireader`, `flash-minireader`.

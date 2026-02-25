@@ -127,10 +127,20 @@ check-firmware:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo check -p xteink-firmware --target {{ esp_target }} {{ esp_build_std_flags }}
 
+# Check firmware with isolated minireader runtime (requires esp toolchain)
+check-firmware-minireader:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo check -p xteink-firmware --features minireader-ui --target {{ esp_target }} {{ esp_build_std_flags }}
+
 # Build firmware
 build-firmware:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
+
+# Build firmware with isolated minireader runtime
+build-firmware-minireader:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features minireader-ui --target {{ esp_target }} {{ esp_build_std_flags }}
 
 # Build firmware and enforce app-partition size gate.
 test-firmware-size:
@@ -144,6 +154,13 @@ flash:
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+
+# Flash firmware with isolated minireader runtime (incremental build)
+flash-minireader:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features minireader-ui --target {{ esp_target }} {{ esp_build_std_flags }}
+    just size-check
+    cd crates/xteink-firmware && cargo espflash flash --release --features minireader-ui --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:

@@ -30,7 +30,7 @@ use ssd1677::{
 use buffered_display::BufferedDisplay;
 use cli::SerialCli;
 use cli_commands::handle_cli_command;
-use einked_slice::{set_wifi_active, take_wifi_enable_request, EinkedSlice};
+use einked_slice::{set_battery_percent, set_wifi_active, take_wifi_enable_request, EinkedSlice};
 use filesystem::FileSystem;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
 use runtime_diagnostics::{append_diag, log_heap};
@@ -326,6 +326,7 @@ fn firmware_main() {
 
     // Initialize runtime and render initial screen
     if let Some(initial_battery_raw) = read_battery_raw() {
+        set_battery_percent(battery_percent_from_adc(initial_battery_raw));
         append_diag(&format!(
             "battery_init raw={} pct={}",
             initial_battery_raw,
@@ -521,6 +522,7 @@ fn firmware_main() {
         if battery_sample_elapsed_ms >= BATTERY_SAMPLE_INTERVAL_MS {
             battery_sample_elapsed_ms = 0;
             if let Some(battery_raw) = read_battery_raw() {
+                set_battery_percent(battery_percent_from_adc(battery_raw));
                 append_diag(&format!(
                     "battery_sample raw={} pct={}",
                     battery_raw,

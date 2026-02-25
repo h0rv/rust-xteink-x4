@@ -10,12 +10,14 @@ harness = false
 [features]
 default = []
 experimental = ["esp-idf-svc/experimental"]
+minireader-ui = ["dep:einked-minireader"]
 
 [dependencies]
 log = "0.4"
 esp-idf-svc = { version = "0.51", default-features = false, features = ["std", "binstart"] }
 einked = { path = "../../einked", features = ["std"] }
 einked-ereader = { path = "../../einked/crates/einked-ereader", features = ["std"] }
+einked-minireader = { path = "../../einked/crates/einked-minireader", features = ["std"], optional = true }
 ssd1677 = { workspace = true }
 embedded-hal = "1.0.0"
 embedded-graphics = "0.8.0"

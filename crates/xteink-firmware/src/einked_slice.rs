@@ -13,24 +13,33 @@ use einked::input::InputEvent;
 use einked::refresh::RefreshHint;
 use einked::render_ir::DrawCmd;
 use einked::storage::{FileStore, FileStoreError, SettingsStore};
+#[cfg(not(feature = "minireader-ui"))]
 use einked_ereader::{
-    DeviceConfig, EreaderRuntime, FeedClient, FeedEntryData, FeedType, FrameSink,
+    DeviceConfig as ActiveConfig, EreaderRuntime as ActiveRuntime, FeedClient, FeedEntryData,
+    FeedType, FrameSink,
+};
+#[cfg(feature = "minireader-ui")]
+use einked_minireader::{
+    FrameSink, MiniReaderConfig as ActiveConfig, MiniReaderRuntime as ActiveRuntime,
 };
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 use std::io::Read;
 use std::path::PathBuf;
 
 use crate::buffered_display::BufferedDisplay;
+#[cfg(not(feature = "minireader-ui"))]
 use crate::feed_service::FeedService;
 
 pub struct EinkedSlice {
-    runtime: Box<EreaderRuntime>,
+    runtime: Box<ActiveRuntime>,
 }
 
 const SETTING_KEY_WIFI_ACTIVE: u8 = 240;
 const SETTING_KEY_WIFI_ENABLE_REQUEST: u8 = 241;
+const SETTING_KEY_BATTERY_PERCENT: u8 = 242;
 static WIFI_ACTIVE: AtomicU8 = AtomicU8::new(0);
 static WIFI_ENABLE_REQUESTED: AtomicBool = AtomicBool::new(false);
+static BATTERY_PERCENT: AtomicU8 = AtomicU8::new(100);
 
 pub fn set_wifi_active(active: bool) {
     WIFI_ACTIVE.store(if active { 1 } else { 0 }, Ordering::Relaxed);
@@ -40,16 +49,32 @@ pub fn take_wifi_enable_request() -> bool {
     WIFI_ENABLE_REQUESTED.swap(false, Ordering::Relaxed)
 }
 
+pub fn set_battery_percent(percent: u8) {
+    BATTERY_PERCENT.store(percent.min(100), Ordering::Relaxed);
+}
+
 impl EinkedSlice {
     pub fn new() -> Self {
         FIRST_NON_EMPTY_FRAME_PENDING.store(true, Ordering::Relaxed);
+        #[cfg(not(feature = "minireader-ui"))]
+        log::info!("[UI] runtime=einked-ereader");
+        #[cfg(feature = "minireader-ui")]
+        log::info!("[UI] runtime=einked-minireader");
+        #[cfg(not(feature = "minireader-ui"))]
+        let runtime = ActiveRuntime::with_backends_and_feed(
+            ActiveConfig::xteink_x4(),
+            Box::new(FirmwareSettings::default()),
+            Box::new(FirmwareFiles::new("/sd".to_string())),
+            Box::new(FirmwareFeedClient::default()),
+        );
+        #[cfg(feature = "minireader-ui")]
+        let runtime = ActiveRuntime::with_backends(
+            ActiveConfig::xteink_x4(),
+            Box::new(FirmwareSettings::default()),
+            Box::new(FirmwareFiles::new("/sd".to_string())),
+        );
         Self {
-            runtime: Box::new(EreaderRuntime::with_backends_and_feed(
-                DeviceConfig::xteink_x4(),
-                Box::new(FirmwareSettings::default()),
-                Box::new(FirmwareFiles::new("/sd".to_string())),
-                Box::new(FirmwareFeedClient::default()),
-            )),
+            runtime: Box::new(runtime),
         }
     }
 
@@ -79,11 +104,13 @@ impl Default for EinkedSlice {
     }
 }
 
+#[cfg(not(feature = "minireader-ui"))]
 #[derive(Default)]
 struct FirmwareFeedClient {
     service: Option<FeedService>,
 }
 
+#[cfg(not(feature = "minireader-ui"))]
 impl FirmwareFeedClient {
     fn service(&mut self) -> Result<&mut FeedService, String> {
         if self.service.is_none() {
@@ -96,6 +123,7 @@ impl FirmwareFeedClient {
     }
 }
 
+#[cfg(not(feature = "minireader-ui"))]
 impl FeedClient for FirmwareFeedClient {
     fn fetch_entries(
         &mut self,
@@ -148,6 +176,10 @@ impl SettingsStore for FirmwareSettings {
         }
         if key == SETTING_KEY_WIFI_ACTIVE {
             buf[0] = WIFI_ACTIVE.load(Ordering::Relaxed);
+            return 1;
+        }
+        if key == SETTING_KEY_BATTERY_PERCENT {
+            buf[0] = BATTERY_PERCENT.load(Ordering::Relaxed);
             return 1;
         }
         let idx = key as usize;

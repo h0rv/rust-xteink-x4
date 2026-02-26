@@ -33,6 +33,9 @@ refresh mode="fast":
 sleep:
     uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} sleep
 
+btn name:
+    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} btn {{name}}
+
 load-samples:
     if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} exists /books)" = "0" ]; then uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir /books; else echo "exists: /books"; fi
     if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} stat /books/sample.txt | awk '{print $2}')" = "$(stat -c %s {{samples_dir}}/sample.txt)" ]; then echo "exists: /books/sample.txt"; else uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{samples_dir}}/sample.txt /books/sample.txt; fi

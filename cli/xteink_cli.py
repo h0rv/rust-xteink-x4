@@ -98,6 +98,11 @@ def cmd_sleep(ser: serial.Serial, timeout: float) -> None:
     read_response(ser, timeout)
 
 
+def cmd_btn(ser: serial.Serial, button: str, timeout: float) -> None:
+    write_line(ser, f"btn {button}")
+    read_response(ser, timeout)
+
+
 def cmd_put(
     ser: serial.Serial, local_path: str, remote_path: str, timeout: float
 ) -> None:
@@ -186,6 +191,11 @@ def main() -> int:
     stat_cmd.add_argument("path")
 
     sub.add_parser("sleep")
+    btn_cmd = sub.add_parser("btn")
+    btn_cmd.add_argument(
+        "button",
+        choices=["confirm", "back", "left", "right", "aux1", "aux2", "aux3"],
+    )
     sub.add_parser("help")
 
     args = parser.parse_args()
@@ -212,6 +222,8 @@ def main() -> int:
                 cmd_stat(ser, args.path, args.timeout)
             elif args.cmd == "sleep":
                 cmd_sleep(ser, args.timeout)
+            elif args.cmd == "btn":
+                cmd_btn(ser, args.button, args.timeout)
             elif args.cmd == "help":
                 write_line(ser, "help")
                 for line in read_response(ser, args.timeout):

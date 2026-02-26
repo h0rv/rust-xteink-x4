@@ -376,6 +376,7 @@ fn firmware_main() {
     let mut held_button: Option<Button> = None;
     let mut held_button_ticks: u32 = 0;
     let mut next_repeat_tick: u32 = 0;
+    let mut injected_button: Option<Button> = None;
     const DEBUG_ADC: bool = false;
     const DEBUG_INPUT: bool = false;
     const LOOP_DELAY_MS: u32 = 20;
@@ -445,6 +446,7 @@ fn firmware_main() {
                     &mut buffered_display,
                     &mut sleep_requested,
                     &mut wifi_manager,
+                    &mut injected_button,
                 );
             }
         }
@@ -488,7 +490,8 @@ fn firmware_main() {
             enter_deep_sleep(3);
         }
 
-        let (button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
+        let (physical_button, power_pressed) = read_buttons(&mut power_btn, DEBUG_ADC);
+        let button = injected_button.take().or(physical_button);
         if power_pressed {
             power_line_high_stable_ms = 0;
         } else {

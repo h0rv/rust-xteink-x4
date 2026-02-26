@@ -1,3 +1,4 @@
+use einked::input::Button;
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 
 use crate::buffered_display::BufferedDisplay;
@@ -39,6 +40,7 @@ pub fn handle_cli_command<I, D>(
     buffered_display: &mut BufferedDisplay,
     sleep_requested: &mut bool,
     wifi_manager: &mut WifiManager,
+    injected_button: &mut Option<Button>,
 ) where
     I: DisplayInterface,
     D: embedded_hal::delay::DelayNs,
@@ -57,6 +59,7 @@ pub fn handle_cli_command<I, D>(
             cli.write_line(
                 "          wifi status|show|mode <ap|sta>|ap <ssid> [pass]|sta <ssid> <pass>|clear",
             );
+            cli.write_line("          btn <confirm|back|left|right|aux1|aux2|aux3>");
             cli.write_line("OK");
         }
         "ls" => {
@@ -255,6 +258,28 @@ pub fn handle_cli_command<I, D>(
         "sleep" => {
             cli.write_line("OK sleeping");
             *sleep_requested = true;
+        }
+        "btn" => {
+            let Some(name) = parts.next() else {
+                cli.write_line("ERR missing button");
+                return;
+            };
+            let parsed = match name {
+                "confirm" => Some(Button::Confirm),
+                "back" => Some(Button::Back),
+                "left" => Some(Button::Left),
+                "right" => Some(Button::Right),
+                "aux1" => Some(Button::Aux1),
+                "aux2" => Some(Button::Aux2),
+                "aux3" => Some(Button::Aux3),
+                _ => None,
+            };
+            let Some(btn) = parsed else {
+                cli.write_line("ERR button must be confirm|back|left|right|aux1|aux2|aux3");
+                return;
+            };
+            *injected_button = Some(btn);
+            cli.write_line("OK");
         }
         "wifi" => {
             let sub = parts.next().unwrap_or("status");

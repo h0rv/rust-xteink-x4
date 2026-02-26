@@ -187,6 +187,10 @@ monitor:
 tail-log:
     tail -f flash.log
 
+# Hardware smoke: flash + monitor + CLI button injection + log assertions for EPUB open flow
+smoke-epub-hw:
+    ./scripts/hw_smoke_epub.sh
+
 # View last 100 lines of flash log
 view-log:
     tail -100 flash.log

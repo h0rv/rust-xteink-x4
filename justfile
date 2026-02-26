@@ -234,6 +234,14 @@ lint:
 test-ui:
     cargo test -p einked-ereader --target {{ host_target }}
 
+# Run UI memory-budget + fragmentation harness (host, no flash required)
+test-ui-memory:
+    RUSTC_WRAPPER= cargo test --manifest-path einked/crates/einked-ui-harness/Cargo.toml --test memory_budget -- --nocapture
+
+# Run allocator-based heap profiles for key UI flows (host, no flash required)
+ui-heap-profile out_dir="target/ui-memory":
+    RUSTC_WRAPPER= cargo run --manifest-path einked/crates/einked-ui-harness/Cargo.toml --bin ui-heap-profile -- --out-dir {{ out_dir }}
+
 # Run only diff tests (fast, host target)
 test-diff:
     cargo test -p einked --all-features --target {{ host_target }} diff
@@ -264,6 +272,7 @@ ui-loop:
     just fmt
     just lint
     just sim-scenarios
+    just test-ui-memory
     just stack-report
 
 # Show CLI helpers

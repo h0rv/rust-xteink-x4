@@ -76,3 +76,6 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
   - Default firmware path remains `einked-ereader`.
   - `minireader-ui` feature compiles and runs `einked-minireader` without touching the default UI path.
   - Added `just` commands for side-by-side validation: `check-firmware-minireader`, `build-firmware-minireader`, `flash-minireader`.
+- API hardening sync (2026-02-26):
+  - Updated `einked-ereader` and `einked-minireader` to pass explicit `navigation_limits` and `metadata_limits` in `EpubBookOptions` so embedded open paths stay bounded and compile against hardened `epub-stream`.
+  - Fixed `epub-stream-render-web` `BlockRole` mapping for `Preformatted` to keep tooling and preview builds in sync with new render-prep roles.

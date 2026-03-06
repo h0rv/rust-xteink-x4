@@ -90,9 +90,9 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
   - local fix landed in `epub-stream`: enable `miniz_oxide` `with-alloc` and use `InflateState::new_boxed(...)` for heap-first initialization
 - Latest post-open follow-up (2026-03-06):
   - device log now confirms the ZIP/open fix worked: temp-backed open reaches `[EPUB-TEMP] open_ready`
-  - the remaining fault moved to post-open reader interaction on device after further input, with a main-task stack fault
+  - the first remaining post-open failure after that was still earlier than expected: right after `session_box_ready`, open still failed on a `12656`-byte allocation before `session_init_begin`
   - current local fix set:
     - EPUB reader release-phase markers are now always on for ESP
     - page prepare and page bitmap raster paths are wrapped in non-inlined helpers
-    - transient worker heavy members are heap-owned (`Box<EpubSessionBook>`, `Box<RenderEngine>`) instead of by-value stack fields
-  - next validation target is a fresh flash to identify the exact post-open phase marker that still faults, if any
+    - session open no longer allocates the transient worker at all; it now returns only the compact session handle and defers first-page bootstrap until after the temp-open book has dropped
+  - next validation target is a fresh flash to see whether the failure finally moves past `session_init_begin`

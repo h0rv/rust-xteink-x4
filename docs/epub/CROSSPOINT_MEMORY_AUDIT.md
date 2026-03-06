@@ -39,7 +39,7 @@ Latest follow-up after the ZIP fix:
 - current mitigation work in flight:
   - always-on ESP release markers in the reader runtime
   - no-inline boundaries around page prepare and page bitmap raster
-  - heap-owned transient worker members to avoid rebuilding `RenderEngine` and `EpubSessionBook` as large stack locals
+  - session open no longer eagerly allocates the transient worker while temp-open book state is still live
 
 ### Highest-Value Refactor Order
 

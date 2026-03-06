@@ -11,7 +11,7 @@ Scope:
 
 CrossPoint is more robust on-device because it treats RAM as transient working space and SD as the long-lived backing store for book state. It streams metadata and chapter inputs to temporary files early, persists section/page artifacts to disk, and reloads only the current page on demand. It accepts some small temporary heap allocations, but it avoids keeping large EPUB-derived working sets alive across the session.
 
-The current Rust stack is better factored at the library boundary, but its runtime shape is still more RAM-centric than CrossPoint's. `epub-stream` exposes caller-controlled scratch and has a temp-storage open path, but the hot chapter path still wants a contiguous uncompressed chapter buffer, the ereader still rebuilds page windows from live `RenderPage` values, and the page cache is page-by-page JSON rather than a chapter artifact optimized for bounded reuse. The result is a system that is architecturally cleaner, but still more sensitive to heap shape and large-chapter worst cases.
+The current Rust stack is better factored at the library boundary, but its runtime shape is still more RAM-centric than CrossPoint's. `epub-stream` exposes caller-controlled scratch and has a temp-storage open path, and the reader now uses upstream binary chapter artifacts instead of app-owned page JSON, but the hot chapter path still wants a contiguous uncompressed chapter buffer and render prep still does too much one-shot chapter work on cache miss. The result is a system that is architecturally cleaner, but still more sensitive to heap shape and large-chapter first-open worst cases.
 
 The practical target should be:
 - keep metadata and structure caches on SD
@@ -19,6 +19,121 @@ The practical target should be:
 - avoid full-chapter pinned buffers across the session
 - remove JSON-heavy cache write/read paths from the embedded hot path
 - shift from "page fetch by rerender" toward "chapter artifact + page lookup"
+
+## Current Boundary And Execution Tracker
+
+Latest confirmed device state from `flash.log`:
+- the earlier post-`open_ready` heap OOM in ereader session assembly was real and drove the transient-session refactor
+- the latest device failure moved earlier again and now crashes on the first temp-backed ZIP entry read:
+  - `[EPUB-TEMP] open_begin`
+  - `[EPUB-TEMP] zip_ready`
+  - then `Stack protection fault`
+- the highest-confidence root cause is the ZIP inflate state being constructed with `Box::new(InflateState::new(...))`, which builds a large `InflateState` on the stack before moving it to the heap
+- the current fix is to enable `miniz_oxide`'s `with-alloc` feature and use its heap-first `InflateState::new_boxed(...)` constructor in `epub-stream/src/zip.rs`
+
+This changes the immediate priority order. The next validation target is the ZIP open path itself, not the ereader session shape.
+
+### Highest-Value Refactor Order
+
+1. `In progress`: remove the monolithic boxed ereader session allocation.
+Current shape:
+- `EpubSession` owns `EpubBook`, `RenderEngine`, cache store, resources, and reader state together
+- that pushes the embedded reader toward one large contiguous allocation after book open
+
+Current progress:
+- the ereader session has been moved toward a compact handle shape
+- heavy `EpubBook` and `RenderEngine` ownership is being removed from persistent session state
+- cache-store creation is now deferred/lazy instead of happening during session open
+
+Target shape:
+- persistent reader state holds only:
+  - book identity/path
+  - pagination profile
+  - chapter/page cursor
+  - optional current page bitmap
+  - cache root path or cache key
+- heavy open/layout state becomes transient
+
+Reason:
+- this is now the most likely source of the `13160` byte device failure
+- even if it is not the only allocation there, it is the wrong memory shape for a fragmented embedded heap
+
+2. Defer cache-store creation until first actual cache use.
+Current shape:
+- cache store is created during session open
+
+Target shape:
+- opening a book should not allocate cache machinery
+- create `FileRenderCacheStore` only on first page artifact read/write
+
+Reason:
+- the cache store is policy, not mandatory live state
+- this is consistent with CrossPoint's “book opens first, section artifacts become active when needed” shape
+
+3. Stop keeping parser/layout machinery in long-lived UI state.
+Current shape:
+- `EpubBook` and `RenderEngine` live inside the reader session
+
+Target shape:
+- persistent session stores tiny reader state only
+- uncached chapter work uses transient open/layout workers that are dropped immediately after:
+  - page artifact build
+  - first-page load
+  - cache miss recovery
+
+Reason:
+- this is the maintainable embedded boundary
+- it decouples UI state lifetime from parser/layout lifetime
+
+4. Move from “session object” thinking to “reader service” thinking.
+Target internal model:
+- `open_book_compact(path) -> compact session state`
+- `load_page_artifact(session, chapter, page) -> page`
+- `build_chapter_artifact_if_missing(session, chapter) -> artifact metadata`
+
+Reason:
+- CrossPoint's real strength is artifact-backed page service, not a large live session object
+- this also removes policy leakage from `HomeActivity`
+
+5. After the session shape is fixed, attack the remaining upstream long pole.
+Still remaining after the above:
+- uncached chapter build still relies on a full contiguous uncompressed chapter buffer upstream
+
+Reason:
+- this is still the last major architectural risk for large chapters
+- but it is now the second blocker, not the first one
+
+### Local Validation Loop
+
+Use local tooling for almost all iteration:
+- `just ui-heap-profile-epub`
+- `just ui-heap-profile-epub phase=epub_open_first_page fragment=1`
+- `just test-ui-memory`
+- `just epub-temp-open-profile`
+
+What those local tools now cover:
+- exact failing accessibility EPUB fixture
+- temp-backed open path with embedded limits
+- fragmented allocator regression on host
+- host-side first-page runtime peak tracking
+- DHAT ownership for temp-open allocations
+
+What still requires device confirmation:
+- ESP-specific allocator shape after temp-open succeeds
+- any final stack/heap interactions that host allocators do not reproduce
+
+### Robust Target State
+
+The durable end state should be:
+- `epub-stream` owns parsing, temp-backed open, chapter artifact build, and page artifact IO
+- `einked-ereader` owns only reader cursor state and UI policy
+- heavy book/layout/cache machinery is transient and file-backed
+- steady-state live RAM is:
+  - framebuffer
+  - current page bitmap or current page data
+  - bounded decode/layout scratch
+
+That is the closest maintainable Rust equivalent to CrossPoint's behavior without copying CrossPoint's code structure directly.
 
 ## What CrossPoint Does Well
 
@@ -151,22 +266,22 @@ That part is good and should be kept.
 
 ### 3. Reader state ownership is cleaner than before
 
-The current ereader now keeps live reader cursor/window state in `EpubSession.reader` rather than leaking it through modal state.
+The current ereader now keeps live reader cursor state in `EpubSession.reader` rather than leaking it through modal state, and it no longer keeps a live `Vec<RenderPage>` window in session state.
 
 Examples:
-- session-owned reader state lives in `einked/crates/einked-ereader/src/lib.rs:536`
-- modal state is just `EpubReader` mode in `einked/crates/einked-ereader/src/lib.rs:399`
-- page bitmap and page window are owned under `EpubResources` in `einked/crates/einked-ereader/src/lib.rs:529`
+- session-owned reader state lives in `einked/crates/einked-ereader/src/lib.rs`
+- modal state is just `EpubReader` mode in `einked/crates/einked-ereader/src/lib.rs`
+- `EpubResources` now keeps only the optional page bitmap, not a retained page window, in `einked/crates/einked-ereader/src/lib.rs`
 
 This is better than the older split modal/session design.
 
 ### 4. The current stack already degrades under pressure better than before
 
 Examples:
-- page bitmap allocation is lazy in `einked/crates/einked-ereader/src/lib.rs:1788`
-- bitmap rasterization falls back to non-streamed page rendering in `einked/crates/einked-ereader/src/lib.rs:2099`
-- image fallback is outline-only in low-memory rasterization in `einked/crates/einked-ereader/src/lib.rs:2081`
-- EPUB open and navigation can be moved to dedicated worker threads with explicit stack sizes in `einked/crates/einked-ereader/src/lib.rs:761` and `einked/crates/einked-ereader/src/lib.rs:1991`
+- page bitmap allocation is lazy in `einked/crates/einked-ereader/src/lib.rs`
+- streamed image rasterization degrades cleanly to non-streamed page rasterization when image decoding fails in `einked/crates/einked-ereader/src/lib.rs`
+- embedded render prep now skips intrinsic image-dimension pre-scan, so image assets stay on-demand instead of being inventoried up front in `epub-stream/src/render_prep.rs`
+- EPUB open/navigation are now synchronous on the reader path rather than bouncing between main and worker thread policies in `einked/crates/einked-ereader/src/lib.rs`
 
 This is the right survival behavior. It just does not yet remove the underlying chapter-buffer problem.
 
@@ -180,12 +295,17 @@ Completed in the current refactor:
 - `einked-ereader` now uses the upstream artifact store instead of an app-owned per-page JSON cache
 - native-path opens now prefer the temp-storage path on both host and device
 - the leaked raw-pointer page bitmap wrapper has been replaced with an owned buffer
+- embedded temp open now parses spine first and only retains manifest entries needed for spine/nav/cover lookup
+- the ereader session no longer retains a live `Vec<RenderPage>` page window or text fallback page; only reader position plus optional bitmap survive between page turns
+- embedded render prep no longer inventories chapter image sources and intrinsic image dimensions up front
+- the reader no longer switches EPUB navigation/open between synchronous and worker-thread execution models
 
 Still meaningfully behind CrossPoint:
 - first-open and first-cache-build still require a full chapter reflow before page turns become cheap
 - `HomeActivity` still owns too much EPUB session/open/navigation policy
-- reader navigation still keeps a live page window in RAM instead of making artifact lookup the only first-class model
 - metadata/index caching is still weaker than CrossPoint's `book.bin`-style structure cache
+- `epub-stream` still retains more package metadata than a true compact section index
+- `chapter_events_with_scratch` still requires a full contiguous uncompressed chapter buffer on cache miss
 
 ## 1. First-open still pays too much live chapter work
 
@@ -222,35 +342,35 @@ CrossPoint behavior:
 
 Impact:
 - the artifact format divergence is mostly closed
-- the remaining divergence is behavioral: the reader still thinks in terms of windows of `RenderPage`s, not "artifact as the source of truth"
-- page-window rebuild logic still exists, even though it now uses a better backing store
+- the remaining divergence is behavioral: the reader now navigates by cursor state and artifact lookups, but `HomeActivity` still owns too much of that policy
+- artifact build is still coupled to full chapter reflow on miss
 
 Target:
-- make artifact lookup the primary navigation model and demote page windows to a UI convenience only if still needed
+- extract the remaining artifact/open/navigation policy out of `HomeActivity` so the reader path becomes one deterministic session machine
 
-## 3. Our reader still thinks in page windows, not persistent chapter artifacts
+## 3. Reader session state is now close; the remaining gap is first-build cost
 
 Current behavior:
-- `EpubPageWindow` stores live `Vec<RenderPage>` pages in RAM in `einked/crates/einked-ereader/src/lib.rs:472`
-- on ESP, `EPUB_PAGE_WINDOW` is `1` in `einked/crates/einked-ereader/src/lib.rs:637`
-- chapter reloads and fallback navigation depend on rebuilding those windows in `einked/crates/einked-ereader/src/lib.rs:1816` and `einked/crates/einked-ereader/src/lib.rs:1867`
+- the ereader session now keeps only chapter/page cursor state and an optional page bitmap
+- page turns go through artifact lookup or page-at-a-time rerender; they do not keep a live `RenderPage` window around
+- the remaining expensive path is the first cache miss for a chapter, not steady-state page-turn retention
 
-CrossPoint does not keep a live vector of chapter pages in memory as its primary navigation model. It keeps a section file and only materializes the current page.
+CrossPoint also keeps only the current page live. The main remaining difference is that CrossPoint's section build path is more aggressively file-backed end to end.
 
 Impact:
-- our in-memory state is small, but page turns remain render-centric rather than artifact-centric
-- `EPUB_PAGE_WINDOW = 1` keeps RAM down, but it also means we are often re-entering the expensive path
+- our steady-state in-memory state is now much closer to CrossPoint
+- the long pole is still the one-time chapter build path, especially for large chapters
 
 Target:
-- session state should hold "current chapter artifact + current page index", not "page window of live `RenderPage`s"
+- move the remaining chapter-build peak down by replacing full-chapter contiguous prep with a more file-backed or chunked path
 
 ## 4. Our caches and session policy still leak into the app layer
 
 The Rust code is cleaner than before, but `HomeActivity` still owns too much EPUB orchestration.
 
 Examples:
-- open policy, worker policy, cache creation, snapshot policy, chapter buffer sizing, bitmap allocation, and navigation policy all live in `einked/crates/einked-ereader/src/lib.rs:1488` through `einked/crates/einked-ereader/src/lib.rs:2258`
-- `release_non_reader_state` explicitly drops files and feed sources before EPUB open in `einked/crates/einked-ereader/src/lib.rs:755`
+- open policy, cache creation, bitmap allocation, and navigation policy still largely live in `einked/crates/einked-ereader/src/lib.rs`
+- `release_non_reader_state` still explicitly drops files and feed sources before EPUB open in `einked/crates/einked-ereader/src/lib.rs`
 
 CrossPoint is not cleaner globally, but its reader path is more opinionated around one concrete artifact model: build cache, open section, load page.
 

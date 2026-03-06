@@ -75,3 +75,16 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
   - Default firmware path remains `einked-ereader`.
 - API hardening sync (2026-02-26):
   - Fixed `epub-stream-render-web` `BlockRole` mapping for `Preformatted` to keep tooling and preview builds in sync with new render-prep roles.
+- Latest confirmed boundary (2026-03-06):
+  - device log now shows temp-backed EPUB open completes successfully through `[EPUB-TEMP] open_ready`
+  - current crash is after open, during ereader session assembly, on `memory allocation of 13160 bytes failed`
+  - highest-value next refactor is to remove the monolithic boxed `EpubSession` shape and make cache/engine/book machinery transient or lazy
+- Latest transient-session follow-up (2026-03-06):
+  - after slimming persistent session state, the device failure moved from post-open heap OOM to a second transient EPUB open causing a main-task stack fault during first-page bootstrap
+  - first-page bootstrap now reuses a single transient open/render worker instead of reopening the EPUB immediately after `open_ready`
+  - next validation requires device flash/log confirmation; local harnesses still pass
+- Latest ZIP-open root cause (2026-03-06):
+  - new device log now crashes earlier, at `[EPUB-TEMP] zip_ready`, before `container_streamed`
+  - this points back into `epub-stream` ZIP entry streaming rather than ereader session assembly
+  - the most likely culprit is `Box::new(InflateState::new(...))`, which constructs a very large DEFLATE state on the stack before boxing it
+  - local fix landed in `epub-stream`: enable `miniz_oxide` `with-alloc` and use `InflateState::new_boxed(...)` for heap-first initialization

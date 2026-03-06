@@ -245,8 +245,16 @@ test-ui-memory:
     RUSTC_WRAPPER= cargo test --manifest-path einked/crates/einked-ui-harness/Cargo.toml --test memory_budget -- --nocapture
 
 # Run allocator-based heap profiles for key UI flows (host, no flash required)
-ui-heap-profile out_dir="target/ui-memory":
-    RUSTC_WRAPPER= cargo run --manifest-path einked/crates/einked-ui-harness/Cargo.toml --bin ui-heap-profile -- --out-dir {{ out_dir }}
+ui-heap-profile out_dir="target/ui-memory" args="":
+    RUSTC_WRAPPER= cargo run --manifest-path einked/crates/einked-ui-harness/Cargo.toml --bin ui-heap-profile -- --out-dir {{ out_dir }} {{ args }}
+
+# Profile the exact device-failing EPUB open path through the host UI harness.
+ui-heap-profile-epub book="Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub" out_dir="target/ui-memory" phase="epub_open_first_page" fragment="0":
+    RUSTC_WRAPPER= cargo run --manifest-path einked/crates/einked-ui-harness/Cargo.toml --bin ui-heap-profile -- --out-dir {{ out_dir }} --book {{ book }} --phase {{ phase }} {{ if fragment == "1" { "--fragment" } else { "" } }}
+
+# Run DHAT on the temp-backed EPUB open path that matches embedded settings.
+epub-temp-open-profile book="epub-stream/tests/fixtures/Fundamental-Accessibility-Tests-Basic-Functionality-v2.0.0.epub" out_dir="epub-stream/target/memory":
+    cd epub-stream && EPUB_TEMP_TRACE=1 RUSTC_WRAPPER= cargo run -p epub-stream-heap-profile --release -- --phase open_temp --out-dir {{ out_dir }} {{ book }}
 
 # Run only diff tests (fast, host target)
 test-diff:

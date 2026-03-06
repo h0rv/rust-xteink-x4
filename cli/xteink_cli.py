@@ -8,7 +8,13 @@ import serial
 
 
 def open_serial(port: str, baud: int, timeout: float) -> serial.Serial:
-    return serial.Serial(port=port, baudrate=baud, timeout=timeout)
+    ser = serial.Serial(port=port, baudrate=baud, timeout=timeout)
+    try:
+        ser.dtr = False
+        ser.rts = False
+    except Exception:
+        pass
+    return ser
 
 
 def write_line(ser: serial.Serial, line: str) -> None:
@@ -98,9 +104,66 @@ def cmd_sleep(ser: serial.Serial, timeout: float) -> None:
     read_response(ser, timeout)
 
 
+def cmd_state(ser: serial.Serial, timeout: float) -> None:
+    write_line(ser, "state")
+    for line in read_response(ser, timeout):
+        print(line)
+
+
+def cmd_heap(ser: serial.Serial, timeout: float) -> None:
+    write_line(ser, "heap")
+    for line in read_response(ser, timeout):
+        print(line)
+
+
 def cmd_btn(ser: serial.Serial, button: str, timeout: float) -> None:
     write_line(ser, f"btn {button}")
     read_response(ser, timeout)
+
+
+def drain_serial(ser: serial.Serial, seconds: float) -> list[str]:
+    deadline = time.time() + seconds
+    lines: list[str] = []
+    while time.time() < deadline:
+        raw = ser.readline()
+        if not raw:
+            continue
+        line = raw.decode(errors="replace").strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def cmd_repl(ser: serial.Serial, timeout: float) -> None:
+    print(f"Connected to {ser.port} @ {ser.baudrate}. Type 'exit' or Ctrl-D to quit.")
+    initial = drain_serial(ser, 0.5)
+    for line in initial:
+        print(line)
+
+    while True:
+        try:
+            line = input("xteink> ").strip()
+        except EOFError:
+            print()
+            return
+        except KeyboardInterrupt:
+            print()
+            return
+
+        if not line:
+            continue
+        if line in {"exit", "quit"}:
+            return
+
+        write_line(ser, line)
+        try:
+            for response in read_response(ser, timeout):
+                print(response)
+            print("OK")
+        except RuntimeError as exc:
+            print(exc)
+        except TimeoutError as exc:
+            print(f"ERR {exc}")
 
 
 def cmd_put(
@@ -191,6 +254,9 @@ def main() -> int:
     stat_cmd.add_argument("path")
 
     sub.add_parser("sleep")
+    sub.add_parser("state")
+    sub.add_parser("heap")
+    sub.add_parser("repl")
     btn_cmd = sub.add_parser("btn")
     btn_cmd.add_argument(
         "button",
@@ -222,6 +288,12 @@ def main() -> int:
                 cmd_stat(ser, args.path, args.timeout)
             elif args.cmd == "sleep":
                 cmd_sleep(ser, args.timeout)
+            elif args.cmd == "state":
+                cmd_state(ser, args.timeout)
+            elif args.cmd == "heap":
+                cmd_heap(ser, args.timeout)
+            elif args.cmd == "repl":
+                cmd_repl(ser, args.timeout)
             elif args.cmd == "btn":
                 cmd_btn(ser, args.button, args.timeout)
             elif args.cmd == "help":

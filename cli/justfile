@@ -1,4 +1,19 @@
-cli_port := env_var_or_default("XTEINK_PORT", "/dev/ttyACM0")
+cli_port := `if [ -n "${XTEINK_PORT:-}" ]; then \
+    echo "$XTEINK_PORT"; \
+elif [ -n "${ESPFLASH_PORT:-}" ]; then \
+    echo "$ESPFLASH_PORT"; \
+elif command -v espflash >/dev/null 2>&1; then \
+    for p in /dev/cu.usbmodem* /dev/cu.usbserial* /dev/ttyUSB* /dev/ttyACM*; do \
+        [ -e "$p" ] || continue; \
+        if espflash board-info --non-interactive --port "$p" >/dev/null 2>&1; then \
+            echo "$p"; \
+            exit 0; \
+        fi; \
+    done; \
+    echo "/dev/ttyACM0"; \
+else \
+    echo "/dev/ttyACM0"; \
+fi`
 cli_baud := env_var_or_default("XTEINK_BAUD", "115200")
 root_dir := justfile_directory()
 samples_dir := root_dir / "sample_books"
@@ -7,34 +22,46 @@ default:
     @just --list
 
 help:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} help
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} help
+
+term:
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run python -m serial.tools.miniterm {{cli_port}} {{cli_baud}}
+
+repl:
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run python xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} --timeout 10 repl
 
 ls path="/":
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} ls {{path}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} ls {{path}}
 
 rm path:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} rm {{path}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} rm {{path}}
 
 rmdir path:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} rmdir {{path}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} rmdir {{path}}
 
 mkdir path:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir {{path}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir {{path}}
 
 cat path:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} cat {{path}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} cat {{path}}
+
+state:
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} state
+
+heap:
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} heap
 
 put local remote:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{local}} {{remote}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} put {{local}} {{remote}}
 
 refresh mode="fast":
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} refresh {{mode}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} refresh {{mode}}
 
 sleep:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} sleep
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} sleep
 
 btn name:
-    uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} btn {{name}}
+    UV_CACHE_DIR="{{root_dir}}/.uv-cache" uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} btn {{name}}
 
 load-samples:
     if [ "$(uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} exists /books)" = "0" ]; then uv run xteink_cli.py --port {{cli_port}} --baud {{cli_baud}} mkdir /books; else echo "exists: /books"; fi

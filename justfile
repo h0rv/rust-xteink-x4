@@ -189,6 +189,10 @@ flash-reader-clean:
 monitor:
     espflash monitor --port {{ port }} 2>&1 | tee flash.log
 
+# Interactive serial CLI (for firmware `help`, `state`, `heap`, `btn ...`)
+serial-cli:
+    just cli::repl
+
 # Tail the flash log
 tail-log:
     tail -f flash.log

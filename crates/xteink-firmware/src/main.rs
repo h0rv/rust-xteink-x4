@@ -33,7 +33,7 @@ use cli_commands::handle_cli_command;
 use einked_slice::{set_battery_percent, set_wifi_active, take_wifi_enable_request, EinkedSlice};
 use filesystem::FileSystem;
 use input::{init_adc, read_adc, read_battery_raw, read_buttons};
-use runtime_diagnostics::{append_diag, log_heap};
+use runtime_diagnostics::log_heap;
 use sdcard::SdCardFs;
 use web_upload::{PollError, WebUploadServer};
 use wifi_manager::WifiManager;
@@ -174,7 +174,6 @@ fn show_sleep_screen_with_cover<I, D>(
 }
 
 fn enter_deep_sleep(power_btn_pin: i32) {
-    append_diag("deep_sleep_enter");
     log::info!("Entering deep sleep...");
     unsafe {
         sys::esp_deep_sleep_enable_gpio_wakeup(
@@ -303,13 +302,9 @@ fn firmware_main() {
     // Initialize SD card filesystem.
     // Boot must remain usable even when SD card is absent or mount fails.
     let mut fs = match SdCardFs::new(spi.host() as i32, 12) {
-        Ok(fs) => {
-            append_diag("sd_mount_ok");
-            fs
-        }
+        Ok(fs) => fs,
         Err(err) => {
             log::warn!("SD card mount failed: {}", err);
-            append_diag(&format!("sd_mount_failed: {}", err));
             SdCardFs::unavailable(err.to_string())
         }
     };
@@ -319,21 +314,9 @@ fn firmware_main() {
     let mut einked_slice = EinkedSlice::new();
     boot_mark(18, "einked runtime created");
     log_heap("after_einked_runtime");
-    append_diag(&format!(
-        "boot reset={:?} wake={:?}",
-        reset_reason, wake_cause
-    ));
-
     // Initialize runtime and render initial screen
     if let Some(initial_battery_raw) = read_battery_raw() {
         set_battery_percent(battery_percent_from_adc(initial_battery_raw));
-        append_diag(&format!(
-            "battery_init raw={} pct={}",
-            initial_battery_raw,
-            battery_percent_from_adc(initial_battery_raw)
-        ));
-    } else {
-        append_diag("battery_init skipped (adc-disabled)");
     }
 
     log::warn!("[BOOT] starting first einked render");
@@ -467,7 +450,6 @@ fn firmware_main() {
                                 "[WEB] poll capped at {} events this loop",
                                 WEB_UPLOAD_MAX_EVENTS_PER_LOOP
                             );
-                            append_diag("web_poll_capped");
                             break;
                         }
                     }
@@ -526,11 +508,6 @@ fn firmware_main() {
             battery_sample_elapsed_ms = 0;
             if let Some(battery_raw) = read_battery_raw() {
                 set_battery_percent(battery_percent_from_adc(battery_raw));
-                append_diag(&format!(
-                    "battery_sample raw={} pct={}",
-                    battery_raw,
-                    battery_percent_from_adc(battery_raw)
-                ));
             }
         }
 
@@ -540,12 +517,10 @@ fn firmware_main() {
                 is_power_pressed = true;
                 long_press_triggered = false;
                 log::info!("Power button pressed...");
-                append_diag("power_press");
             } else if !long_press_triggered {
                 power_press_counter += 1;
                 if power_press_counter >= POWER_LONG_PRESS_ITERATIONS {
                     log::info!("Power button held for 2s - powering off!");
-                    append_diag("power_long_press");
                     long_press_triggered = true;
 
                     show_sleep_screen_with_cover(
@@ -568,7 +543,6 @@ fn firmware_main() {
         } else {
             if is_power_pressed && !long_press_triggered {
                 log::info!("Power button short press");
-                append_diag("power_short_press");
 
                 if !einked_slice.tick_and_flush(
                     Some(InputEvent::Press(Button::Aux3)),
@@ -653,7 +627,6 @@ fn firmware_main() {
                     "Auto-sleep: entering deep sleep after {}ms of inactivity",
                     inactivity_ms
                 );
-                append_diag(&format!("auto_sleep_enter inactivity_ms={}", inactivity_ms));
 
                 // Require the wake line to be stably high before sleeping. This avoids
                 // immediate wake/reboot loops on noisy or floating button lines.

@@ -18,7 +18,3 @@ pub fn log_heap(label: &str) {
         stack_hwm_bytes
     );
 }
-
-pub fn append_diag(event: &str) {
-    let _ = event;
-}

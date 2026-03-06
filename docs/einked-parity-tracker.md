@@ -88,3 +88,11 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
   - this points back into `epub-stream` ZIP entry streaming rather than ereader session assembly
   - the most likely culprit is `Box::new(InflateState::new(...))`, which constructs a very large DEFLATE state on the stack before boxing it
   - local fix landed in `epub-stream`: enable `miniz_oxide` `with-alloc` and use `InflateState::new_boxed(...)` for heap-first initialization
+- Latest post-open follow-up (2026-03-06):
+  - device log now confirms the ZIP/open fix worked: temp-backed open reaches `[EPUB-TEMP] open_ready`
+  - the remaining fault moved to post-open reader interaction on device after further input, with a main-task stack fault
+  - current local fix set:
+    - EPUB reader release-phase markers are now always on for ESP
+    - page prepare and page bitmap raster paths are wrapped in non-inlined helpers
+    - transient worker heavy members are heap-owned (`Box<EpubSessionBook>`, `Box<RenderEngine>`) instead of by-value stack fields
+  - next validation target is a fresh flash to identify the exact post-open phase marker that still faults, if any

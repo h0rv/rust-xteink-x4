@@ -33,6 +33,14 @@ Latest confirmed device state from `flash.log`:
 
 This changes the immediate priority order. The next validation target is the ZIP open path itself, not the ereader session shape.
 
+Latest follow-up after the ZIP fix:
+- the ZIP/open stack fault is gone
+- the remaining device fault is now in post-open reader work after `[EPUB-TEMP] open_ready`
+- current mitigation work in flight:
+  - always-on ESP release markers in the reader runtime
+  - no-inline boundaries around page prepare and page bitmap raster
+  - heap-owned transient worker members to avoid rebuilding `RenderEngine` and `EpubSessionBook` as large stack locals
+
 ### Highest-Value Refactor Order
 
 1. `In progress`: remove the monolithic boxed ereader session allocation.

@@ -22,105 +22,53 @@ The practical target should be:
 
 ## Current Boundary And Execution Tracker
 
-Latest confirmed device state from `flash.log`:
-- the ZIP/open stack fault is gone
-- temp-backed open now reaches `[EPUB-TEMP] open_ready`
-- the reader can now enter EPUB mode without crashing
-- the current device-visible gap is post-open reader work:
-  - when the 48 KB page bitmap cannot be allocated, the UI drops into low-memory mode
-  - the most recent confirmed crash on device was triggered by `NextPage` right after `[EPUB] nav_begin`
+Latest confirmed direction:
+- the temporary ZIP/open and post-open stack faults were traced to the defensive migrated reader path, not to the core temp-backed open itself
+- the deferred EPUB work queue, idle-hook firmware glue, low-memory text fallback, and page-bitmap-first rendering path have now been removed locally
+- the reader has been moved back toward the older persistent-session shape:
+  - one live `EpubBook`
+  - one live `RenderEngine`
+  - one live `current_page`
+  - synchronous open and page-turn actions
 
-Latest local mitigation work in flight:
-- open no longer renders the first page immediately
-- nav no longer performs page-load/render work directly
-- the reader now schedules pending EPUB work and processes it from a deferred `on_idle` phase
-- low-memory mode now has a bounded text fallback path instead of an empty placeholder when bitmap allocation fails
-
-This changes the immediate priority order again. The next validation target is no longer ZIP open or session boxing; it is deferred post-open page load/navigation.
+This is materially closer to CrossPoint's behavioral model even though the implementation is different:
+- open does the work needed to open
+- page turns do the work needed to turn the page
+- firmware no longer needs EPUB-specific idle plumbing just to finish a core reader action
 
 ### Highest-Value Refactor Order
 
-1. `In progress`: keep post-open reader work out of open/input-handler paths.
+1. `In progress`: keep the persistent reader session and direct page model.
 Current shape:
-- open and button handlers were still able to trigger chapter probe/page load/render directly
-- that coupled the deepest UI call paths to the heaviest EPUB work
-
-Current progress:
-- open now schedules first-page work instead of rendering immediately
-- nav now schedules page work instead of executing it directly
-- `on_idle` is becoming the shallow reader work phase
+- the migrated deferred/fallback path has been removed again
+- `einked-ereader` now owns a persistent EPUB session with:
+  - `EpubBook`
+  - `RenderEngine`
+  - `current_page`
 
 Reason:
-- this is the closest runtime shape to CrossPoint without reintroducing firmware-specific glue
-- it reduces stack pressure at the exact device boundary still failing
+- this matches the older working reader model much more closely
+- it removes intermittent “pending work” hops that CrossPoint does not need
+- it restores a reader runtime where user actions correspond directly to reader actions
 
-2. `In progress`: remove the monolithic boxed ereader session allocation.
-Current shape:
-- `EpubSession` owns `EpubBook`, `RenderEngine`, cache store, resources, and reader state together
-- that pushes the embedded reader toward one large contiguous allocation after book open
-
-Current progress:
-- the ereader session has been moved toward a compact handle shape
-- heavy `EpubBook` and `RenderEngine` ownership is being removed from persistent session state
-- cache-store creation is now deferred/lazy instead of happening during session open
-
-Target shape:
-- persistent reader state holds only:
-  - book identity/path
-  - pagination profile
-  - chapter/page cursor
-  - optional current page bitmap
-  - cache root path or cache key
-- heavy open/layout state becomes transient
+2. `In progress`: validate that the restored persistent session is stable on-device.
+What changed:
+- `pending_action` is gone
+- the 48 KB page bitmap is no longer the primary EPUB view state
+- the low-memory text fallback path is gone
+- firmware `tick_and_flush(None, ...)` is no longer driven by EPUB-specific pending work
 
 Reason:
-- this is now the most likely source of the `13160` byte device failure
-- even if it is not the only allocation there, it is the wrong memory shape for a fragmented embedded heap
+- this is the shortest path back to “opening and turning pages should just work”
+- it removes the framework-era indirection that obscured where the reader was really failing
 
-3. Defer cache-store creation until first actual cache use.
-Current shape:
-- cache store is created during session open
-
-Target shape:
-- opening a book should not allocate cache machinery
-- create `FileRenderCacheStore` only on first page artifact read/write
-
-Reason:
-- the cache store is policy, not mandatory live state
-- this is consistent with CrossPoint's “book opens first, section artifacts become active when needed” shape
-
-4. Stop keeping parser/layout machinery in long-lived UI state.
-Current shape:
-- `EpubBook` and `RenderEngine` live inside the reader session
-
-Target shape:
-- persistent session stores tiny reader state only
-- uncached chapter work uses transient open/layout workers that are dropped immediately after:
-  - page artifact build
-  - first-page load
-  - cache miss recovery
-
-Reason:
-- this is the maintainable embedded boundary
-- it decouples UI state lifetime from parser/layout lifetime
-
-4. Move from “session object” thinking to “reader service” thinking.
-Target internal model:
-- `open_book_compact(path) -> compact session state`
-- `load_page_artifact(session, chapter, page) -> page`
-- `build_chapter_artifact_if_missing(session, chapter) -> artifact metadata`
-
-Reason:
-- CrossPoint's real strength is artifact-backed page service, not a large live session object
-- this also removes policy leakage from `HomeActivity`
-
-5. After the session shape is fixed, attack the remaining upstream long pole.
+3. After persistent session stability is confirmed, attack the remaining upstream long pole.
 Still remaining after the above:
 - uncached chapter build still relies on a full contiguous uncompressed chapter buffer upstream
 
 Reason:
 - this is still the last major architectural risk for large chapters
-- but it is now the second blocker, not the first one
+- but it is now downstream of restoring the correct reader runtime shape
 
 ### Local Validation Loop
 

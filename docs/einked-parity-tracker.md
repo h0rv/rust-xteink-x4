@@ -7,7 +7,7 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
 - `einked-ereader` is app-level and configurable, not target-coupled.
 
 ## Current High-Risk Gaps
-- [~] EPUB open/read path still unstable on device memory pressure.
+- [~] EPUB open is stable again, but direct page-turn validation on device is still pending after the persistent-session restore.
 - [x] Library scan/listing parity is incomplete (pre-migration recursive behavior missing).
 - [~] Feed offline/enable UX needs fully event-driven behavior (single clear flow).
 - [~] Refresh/runtime policy has migration-era debug artifacts and needs final hardening.
@@ -22,9 +22,10 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
 
 ### A) EPUB Streaming + Memory (Owner: Subagent A)
 - [x] Eliminate whole-file/chapter materialization on firmware path.
-- [x] Keep allocations bounded and recover gracefully on low memory.
-- [x] Preserve chapter/page navigation UX parity (left/right pages, aux chapter jump).
-- [ ] Validate no OOM on open/navigation in `flash.log`.
+- [x] Remove deferred/fallback EPUB runtime path (`pending_action`, low-memory text mode, bitmap-first render path).
+- [x] Restore persistent per-book session ownership of `EpubBook` + `RenderEngine` + current page in `einked-ereader`.
+- [~] Preserve chapter/page navigation UX parity (left/right pages, aux chapter jump).
+- [ ] Validate direct open/navigation path on device with the restored persistent session.
 
 ### B) Library Scan Parity (Owner: Subagent B)
 - [x] Restore recursive scan capability in generic storage abstraction.
@@ -96,11 +97,10 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
     - page prepare and page bitmap raster paths are wrapped in non-inlined helpers
     - session open no longer allocates the transient worker at all; it now returns only the compact session handle and defers first-page bootstrap until after the temp-open book has dropped
   - next validation target is a fresh flash to see whether the failure finally moves past `session_init_begin`
-- Latest deferred-reader-work pass (2026-03-06):
-  - device log now reaches EPUB reader mode without crashing, but still faults on `NextPage` after `[EPUB] nav_begin`
-  - the remaining issue is that page-load/render work was still being triggered from the input-handler path
-  - current local fix set:
-    - open and nav now schedule EPUB work instead of performing it directly
-    - `on_idle` processes pending refresh/navigation work
-    - low-memory mode now stores a bounded text fallback when the 48 KB page bitmap cannot be allocated
-  - next validation target is a device flash to confirm page load now progresses from the deferred idle path instead of faulting on button press
+- Latest direct-session reset (2026-03-06):
+  - the deferred EPUB runtime path was removed again
+  - `einked-ereader` now keeps a persistent EPUB session with live `EpubBook`, `RenderEngine`, and `current_page`
+  - open and nav are synchronous again; the EPUB-specific firmware idle hook was removed
+  - the 48 KB page-bitmap path and low-memory text fallback were deleted from the reader path
+  - current render path draws `RenderPage` commands directly into the `einked` UI runtime instead of rasterizing a full page bitmap first
+  - next validation target is a device flash to confirm open + page turns now behave like the old persistent reader model again

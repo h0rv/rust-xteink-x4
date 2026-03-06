@@ -14,8 +14,8 @@ use einked::refresh::RefreshHint;
 use einked::render_ir::{DrawCmd, ImageFormat};
 use einked::storage::{FileStore, FileStoreError, SettingsStore};
 use einked_ereader::{
-    has_pending_epub_work, DeviceConfig as ActiveConfig, EreaderRuntime as ActiveRuntime,
-    FeedClient, FeedEntryData, FeedType, FrameSink,
+    DeviceConfig as ActiveConfig, EreaderRuntime as ActiveRuntime, FeedClient, FeedEntryData,
+    FeedType, FrameSink,
 };
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 use std::io::Read;
@@ -84,10 +84,6 @@ impl EinkedSlice {
             buffered_display,
         };
         self.runtime.tick(input, &mut sink)
-    }
-
-    pub fn has_pending_epub_work(&self) -> bool {
-        has_pending_epub_work()
     }
 }
 

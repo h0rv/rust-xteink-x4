@@ -219,6 +219,40 @@ Preferred direction:
   - optional acceleration state
   - transient open/layout scratch
 
+### 11. Deferred UI work queues for core reader actions
+
+Pattern:
+- open does not actually load the first page
+- nav does not actually turn the page
+- the reader stores `pending_action` and waits for some later idle/tick hook
+
+Why it is bad:
+- the visible reader model stops matching the code model
+- device bugs become “why did nothing happen?” instead of “what failed?”
+- firmware has to grow EPUB-specific idle plumbing just to make page turns happen
+
+Preferred direction:
+- opening an EPUB should open the book and load the first page
+- pressing next/previous should turn the page immediately
+- use deferred work only for true background tasks, not the core reader path
+
+### 12. Full-page bitmap as the primary EPUB view model
+
+Pattern:
+- keep only a rasterized page bitmap in session state
+- throw away the actual `RenderPage`
+- require a full 1bpp page buffer before anything can be shown
+
+Why it is bad:
+- introduces a hard late allocation boundary unrelated to pagination correctness
+- hides the underlying page model behind a second representation
+- encourages “fallback text mode” when the bitmap cannot be allocated
+
+Preferred direction:
+- keep the structured `RenderPage` as the primary live page state
+- render directly from that page model when possible
+- treat raster buffers as optional acceleration, not the canonical page representation
+
 ### 11. Doing page-load/render work directly in open or input handlers
 
 Pattern:

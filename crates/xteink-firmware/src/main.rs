@@ -435,12 +435,6 @@ fn firmware_main() {
             }
         }
 
-        if einked_slice.has_pending_epub_work() {
-            if !einked_slice.tick_and_flush(None, &mut display, &mut delay, &mut buffered_display) {
-                log::warn!("[EINKED] pending epub idle flush failed");
-            }
-        }
-
         if let Some(cli) = cli.as_mut() {
             if let Some(line) = cli.poll_line() {
                 handle_cli_command(

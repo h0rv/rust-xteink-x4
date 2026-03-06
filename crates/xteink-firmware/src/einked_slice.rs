@@ -11,7 +11,7 @@ use std::boxed::Box;
 use einked::core::Color;
 use einked::input::InputEvent;
 use einked::refresh::RefreshHint;
-use einked::render_ir::DrawCmd;
+use einked::render_ir::{DrawCmd, ImageFormat};
 use einked::storage::{FileStore, FileStoreError, SettingsStore};
 #[cfg(not(feature = "minireader-ui"))]
 use einked_ereader::{
@@ -354,7 +354,62 @@ fn rasterize_commands(cmds: &[DrawCmd<'static>], buffered_display: &mut Buffered
                 .into_styled(PrimitiveStyle::with_fill(to_binary(*color)))
                 .draw(buffered_display);
             }
-            DrawCmd::DrawImage { .. } | DrawCmd::Clip { .. } | DrawCmd::Unclip => {}
+            DrawCmd::DrawImage {
+                rect, data, format, ..
+            } => draw_image(buffered_display, *rect, data, *format),
+            DrawCmd::Clip { .. } | DrawCmd::Unclip => {}
+        }
+    }
+}
+
+fn draw_image(
+    buffered_display: &mut BufferedDisplay,
+    rect: einked::core::Rect,
+    data: &[u8],
+    format: ImageFormat,
+) {
+    match format {
+        ImageFormat::Mono1bpp => {
+            let stride = (rect.width as usize).div_ceil(8);
+            for y in 0..rect.height as usize {
+                let row = data
+                    .get(y.saturating_mul(stride)..((y + 1).saturating_mul(stride)).min(data.len()))
+                    .unwrap_or(&[]);
+                for x in 0..rect.width as usize {
+                    let byte = row.get(x / 8).copied().unwrap_or(0);
+                    let bit = 7 - (x % 8);
+                    let color = if (byte >> bit) & 1 == 1 {
+                        BinaryColor::On
+                    } else {
+                        BinaryColor::Off
+                    };
+                    buffered_display.set_pixel(
+                        rect.x.saturating_add(x as i16) as u32,
+                        rect.y.saturating_add(y as i16) as u32,
+                        color,
+                    );
+                }
+            }
+        }
+        ImageFormat::Gray8 => {
+            let stride = rect.width as usize;
+            for y in 0..rect.height as usize {
+                let row = data
+                    .get(y.saturating_mul(stride)..((y + 1).saturating_mul(stride)).min(data.len()))
+                    .unwrap_or(&[]);
+                for x in 0..rect.width as usize {
+                    let color = if row.get(x).copied().unwrap_or(255) < 128 {
+                        BinaryColor::On
+                    } else {
+                        BinaryColor::Off
+                    };
+                    buffered_display.set_pixel(
+                        rect.x.saturating_add(x as i16) as u32,
+                        rect.y.saturating_add(y as i16) as u32,
+                        color,
+                    );
+                }
+            }
         }
     }
 }

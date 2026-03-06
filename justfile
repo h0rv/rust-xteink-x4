@@ -128,10 +128,18 @@ check-firmware:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo check -p xteink-firmware --target {{ esp_target }} {{ esp_build_std_flags }}
 
+check-firmware-reader:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo check -p xteink-firmware --features reader-only --target {{ esp_target }} {{ esp_build_std_flags }}
+
 # Build firmware
 build-firmware:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
+
+build-firmware-reader:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features reader-only --target {{ esp_target }} {{ esp_build_std_flags }}
 
 # Build firmware and enforce app-partition size gate.
 test-firmware-size:
@@ -145,6 +153,12 @@ flash:
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+
+flash-reader:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features reader-only --target {{ esp_target }} {{ esp_build_std_flags }}
+    just size-check
+    cd crates/xteink-firmware && cargo espflash flash --release --features reader-only --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
@@ -162,6 +176,14 @@ flash-clean:
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
+
+flash-reader-clean:
+    cargo clean -p xteink-firmware
+    rm -rf target/riscv32imc-esp-espidf/release/build/esp-idf-sys-*
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features reader-only --target {{ esp_target }} {{ esp_build_std_flags }}
+    just size-check
+    cd crates/xteink-firmware && cargo espflash flash --release --features reader-only --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Just monitor serial output
 monitor:

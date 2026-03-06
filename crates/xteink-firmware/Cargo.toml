@@ -10,6 +10,7 @@ harness = false
 [features]
 default = []
 experimental = ["esp-idf-svc/experimental"]
+reader-only = ["einked-ereader/reader-only"]
 
 [dependencies]
 log = "0.4"

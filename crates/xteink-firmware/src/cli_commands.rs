@@ -1,4 +1,6 @@
 use einked::input::Button;
+use einked_ereader::debug_snapshot;
+use esp_idf_svc::sys;
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 
 use crate::buffered_display::BufferedDisplay;
@@ -56,6 +58,7 @@ pub fn handle_cli_command<I, D>(
             cli.write_line(
                 "          put <path> <size> [chunk], refresh <full|partial|fast>, sleep",
             );
+            cli.write_line("          state, heap");
             cli.write_line(
                 "          wifi status|show|mode <ap|sta>|ap <ssid> [pass]|sta <ssid> <pass>|clear",
             );
@@ -258,6 +261,26 @@ pub fn handle_cli_command<I, D>(
         "sleep" => {
             cli.write_line("OK sleeping");
             *sleep_requested = true;
+        }
+        "state" => {
+            cli.write_line(&debug_snapshot());
+            cli.write_line("OK");
+        }
+        "heap" => {
+            let free_heap = unsafe { sys::esp_get_free_heap_size() };
+            let min_free = unsafe { sys::esp_get_minimum_free_heap_size() };
+            let free_8bit = unsafe { sys::heap_caps_get_free_size(sys::MALLOC_CAP_8BIT) };
+            let largest_8bit =
+                unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) };
+            let stack_hwm_words =
+                unsafe { sys::uxTaskGetStackHighWaterMark(core::ptr::null_mut()) };
+            let stack_hwm_bytes =
+                (stack_hwm_words as usize) * core::mem::size_of::<sys::StackType_t>();
+            cli.write_line(&format!(
+                "free_heap={} min_free={} free_8bit={} largest_8bit={} stack_hwm={}",
+                free_heap, min_free, free_8bit, largest_8bit, stack_hwm_bytes
+            ));
+            cli.write_line("OK");
         }
         "btn" => {
             let Some(name) = parts.next() else {

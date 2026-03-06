@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use esp_idf_svc::sys;
 
 use crate::filesystem::{resolve_mount_path, FileInfo, FileSystem, FileSystemError};
+use crate::runtime_diagnostics::log_heap;
 
 const SD_MOUNT_POINT: &str = "/sd";
 const SD_MAX_FILES: i32 = 4;
@@ -59,6 +60,7 @@ impl SdCardFs {
             let mut card_ptr: *mut c_void = core::ptr::null_mut();
 
             log::info!("[SD] mount attempt: freq_khz={}", freq);
+            log_heap("sd_before_mount_call");
             let err = unsafe {
                 sys::esp_vfs_fat_sdspi_mount(
                     mount_path.as_ptr(),
@@ -68,9 +70,11 @@ impl SdCardFs {
                     &mut card_ptr as *mut *mut c_void as *mut *mut sys::sdmmc_card_t,
                 )
             };
+            log_heap("sd_after_mount_call");
 
             if err == sys::ESP_OK {
                 log::info!("[SD] mount success at {} kHz", freq);
+                log_heap("sd_after_mount_success");
                 let mut fs = Self {
                     mounted: true,
                     mount_error: None,
@@ -78,6 +82,7 @@ impl SdCardFs {
                     card_ptr,
                 };
                 // Extra sanity logs to help future SD issues.
+                log_heap("sd_before_root_probe");
                 match fs.list_files("/") {
                     Ok(entries) => {
                         log::info!("[SD] root probe: {} entries", entries.len());
@@ -92,6 +97,7 @@ impl SdCardFs {
                     }
                     Err(e) => log::warn!("[SD] root probe failed: {}", e),
                 }
+                log_heap("sd_after_root_probe");
                 return Ok(fs);
             }
 

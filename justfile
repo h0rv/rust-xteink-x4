@@ -42,7 +42,7 @@ setup:
     @echo "🔧 Setting up ox4 development environment..."
     @echo ""
     @echo "📦 Installing Rust tools..."
-    cargo install espflash espup trunk
+    cargo install cargo-bloat espflash espup trunk
     @echo ""
     @echo "🔨 Installing ESP-IDF toolchain..."
     espup install
@@ -82,6 +82,7 @@ check-deps:
     @echo "Checking system dependencies..."
     @command -v rustc >/dev/null 2>&1 || (echo "❌ Rust not found. Install from https://rustup.rs" && exit 1)
     @command -v cargo >/dev/null 2>&1 || (echo "❌ Cargo not found" && exit 1)
+    @cargo bloat --version >/dev/null 2>&1 || echo "⚠️  cargo-bloat not found (run: cargo install cargo-bloat)"
     @command -v espflash >/dev/null 2>&1 || echo "⚠️  espflash not found (run: cargo install espflash)"
     @command -v espup >/dev/null 2>&1 || echo "⚠️  espup not found (run: cargo install espup)"
     @command -v trunk >/dev/null 2>&1 || echo "⚠️  trunk not found (run: cargo install trunk)"
@@ -127,20 +128,10 @@ check-firmware:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo check -p xteink-firmware --target {{ esp_target }} {{ esp_build_std_flags }}
 
-# Check firmware with isolated minireader runtime (requires esp toolchain)
-check-firmware-minireader:
-    mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo check -p xteink-firmware --features minireader-ui --target {{ esp_target }} {{ esp_build_std_flags }}
-
 # Build firmware
 build-firmware:
     mkdir -p "$PWD/.embuild/tmp"
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
-
-# Build firmware with isolated minireader runtime
-build-firmware-minireader:
-    mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features minireader-ui --target {{ esp_target }} {{ esp_build_std_flags }}
 
 # Build firmware and enforce app-partition size gate.
 test-firmware-size:
@@ -154,13 +145,6 @@ flash:
     TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }}
     just size-check
     cd crates/xteink-firmware && cargo espflash flash --release --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
-
-# Flash firmware with isolated minireader runtime (incremental build)
-flash-minireader:
-    mkdir -p "$PWD/.embuild/tmp"
-    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" cargo build -p xteink-firmware --release --features minireader-ui --target {{ esp_target }} {{ esp_build_std_flags }}
-    just size-check
-    cd crates/xteink-firmware && cargo espflash flash --release --features minireader-ui --target {{ esp_target }} --target-dir ../../target {{ esp_build_std_flags }} --monitor --non-interactive --port {{ port }} --partition-table partitions.csv --target-app-partition factory 2>&1 | tee ../../flash.log
 
 # Flash and monitor (always rebuilds to ensure latest code)
 flash-monitor:
@@ -225,6 +209,24 @@ clean-firmware:
 # Check firmware binary size against partition limits
 size-check:
     python3 scripts/check_binary_size.py {{ partition_table }} target/riscv32imc-esp-espidf/release/xteink-firmware factory
+
+# Show top firmware symbols by size (requires cargo-bloat)
+bloat-firmware:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" RUSTC_WRAPPER= cargo bloat -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }} -n 20
+
+# Show firmware size contribution by crate (requires cargo-bloat)
+bloat-firmware-crates:
+    mkdir -p "$PWD/.embuild/tmp"
+    TMPDIR="$PWD/.embuild/tmp" TEMP="$PWD/.embuild/tmp" TMP="$PWD/.embuild/tmp" ESP_IDF_SDKCONFIG_DEFAULTS="{{ esp_sdkconfig_defaults }}" RUSTC_WRAPPER= cargo bloat -p xteink-firmware --release --target {{ esp_target }} {{ esp_build_std_flags }} --crates -n 20
+
+# Show top host-side ereader stack symbols via the UI harness binary
+bloat-ereader:
+    CARGO_NET_OFFLINE=true RUSTC_WRAPPER= cargo bloat --manifest-path einked/crates/einked-ui-harness/Cargo.toml --bin ui-boot-phase-profile --release --target {{ host_target }} -n 20
+
+# Show host-side ereader stack size contribution by crate via the UI harness binary
+bloat-ereader-crates:
+    CARGO_NET_OFFLINE=true RUSTC_WRAPPER= cargo bloat --manifest-path einked/crates/einked-ui-harness/Cargo.toml --bin ui-boot-phase-profile --release --target {{ host_target }} --crates -n 20
 
 # Format code
 fmt:

@@ -13,22 +13,17 @@ use einked::input::InputEvent;
 use einked::refresh::RefreshHint;
 use einked::render_ir::{DrawCmd, ImageFormat};
 use einked::storage::{FileStore, FileStoreError, SettingsStore};
-#[cfg(not(feature = "minireader-ui"))]
 use einked_ereader::{
     DeviceConfig as ActiveConfig, EreaderRuntime as ActiveRuntime, FeedClient, FeedEntryData,
     FeedType, FrameSink,
-};
-#[cfg(feature = "minireader-ui")]
-use einked_minireader::{
-    FrameSink, MiniReaderConfig as ActiveConfig, MiniReaderRuntime as ActiveRuntime,
 };
 use ssd1677::{Display as EinkDisplay, DisplayInterface, RefreshMode};
 use std::io::Read;
 use std::path::PathBuf;
 
 use crate::buffered_display::BufferedDisplay;
-#[cfg(not(feature = "minireader-ui"))]
 use crate::feed_service::FeedService;
+use crate::runtime_diagnostics::log_heap;
 
 pub struct EinkedSlice {
     runtime: Box<ActiveRuntime>,
@@ -56,23 +51,17 @@ pub fn set_battery_percent(percent: u8) {
 impl EinkedSlice {
     pub fn new() -> Self {
         FIRST_NON_EMPTY_FRAME_PENDING.store(true, Ordering::Relaxed);
-        #[cfg(not(feature = "minireader-ui"))]
         log::info!("[UI] runtime=einked-ereader");
-        #[cfg(feature = "minireader-ui")]
-        log::info!("[UI] runtime=einked-minireader");
-        #[cfg(not(feature = "minireader-ui"))]
-        let runtime = ActiveRuntime::with_backends_and_feed(
-            ActiveConfig::xteink_x4(),
-            Box::new(FirmwareSettings::default()),
-            Box::new(FirmwareFiles::new("/sd".to_string())),
-            Box::new(FirmwareFeedClient::default()),
-        );
-        #[cfg(feature = "minireader-ui")]
-        let runtime = ActiveRuntime::with_backends(
-            ActiveConfig::xteink_x4(),
-            Box::new(FirmwareSettings::default()),
-            Box::new(FirmwareFiles::new("/sd".to_string())),
-        );
+        let runtime = {
+            let mut probe = |label: &'static str| log_heap(label);
+            ActiveRuntime::with_backends_and_feed_with_probe(
+                ActiveConfig::xteink_x4(),
+                Box::new(FirmwareSettings::default()),
+                Box::new(FirmwareFiles::new("/sd".to_string())),
+                Box::new(FirmwareFeedClient::default()),
+                &mut probe,
+            )
+        };
         Self {
             runtime: Box::new(runtime),
         }
@@ -104,13 +93,11 @@ impl Default for EinkedSlice {
     }
 }
 
-#[cfg(not(feature = "minireader-ui"))]
 #[derive(Default)]
 struct FirmwareFeedClient {
     service: Option<FeedService>,
 }
 
-#[cfg(not(feature = "minireader-ui"))]
 impl FirmwareFeedClient {
     fn service(&mut self) -> Result<&mut FeedService, String> {
         if self.service.is_none() {
@@ -123,7 +110,6 @@ impl FirmwareFeedClient {
     }
 }
 
-#[cfg(not(feature = "minireader-ui"))]
 impl FeedClient for FirmwareFeedClient {
     fn fetch_entries(
         &mut self,

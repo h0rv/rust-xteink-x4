@@ -6,6 +6,8 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=114688
 # while we isolate the long blocking path in display init/update.
 CONFIG_ESP_TASK_WDT_EN=n
 CONFIG_ESP_INT_WDT=n
+CONFIG_LOG_COLORS=n
+CONFIG_BOOTLOADER_LOG_COLORS=n
 
 # Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
 # This allows to use 1 ms granularity for thread sleeps (10 ms by default).

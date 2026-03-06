@@ -1,7 +1,4 @@
 use esp_idf_svc::sys;
-use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
 
 /// Log heap usage statistics and current task stack headroom.
 pub fn log_heap(label: &str) {
@@ -22,60 +19,6 @@ pub fn log_heap(label: &str) {
     );
 }
 
-const DIAG_LOG_PATH: &str = "/sd/.xteink/logs/runtime.log";
-const DIAG_LOG_MAX_BYTES: usize = 32 * 1024;
-const DIAG_LOG_KEEP_TAIL_BYTES: usize = 16 * 1024;
-const DIAG_MIN_FREE_HEAP_BYTES: u32 = 24 * 1024;
-const DIAG_MIN_LARGEST_BLOCK_BYTES: usize = 12 * 1024;
-const ENABLE_RUNTIME_DIAG_LOG: bool = false;
-
 pub fn append_diag(event: &str) {
-    if !ENABLE_RUNTIME_DIAG_LOG {
-        let _ = event;
-        return;
-    }
-
-    let free_heap = unsafe { sys::esp_get_free_heap_size() };
-    let largest_8bit = unsafe { sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_8BIT) };
-    if free_heap < DIAG_MIN_FREE_HEAP_BYTES || largest_8bit < DIAG_MIN_LARGEST_BLOCK_BYTES {
-        return;
-    }
-
-    let path = Path::new(DIAG_LOG_PATH);
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let now_ms = unsafe { sys::esp_timer_get_time() / 1_000 };
-    let mut line = String::new();
-    line.push_str(&now_ms.to_string());
-    line.push('\t');
-    line.push_str(event);
-    line.push('\n');
-
-    // Append first to avoid re-reading the whole log on every event.
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = file.write_all(line.as_bytes());
-    }
-
-    let Ok(meta) = fs::metadata(path) else {
-        return;
-    };
-    let len = meta.len() as usize;
-    if len <= DIAG_LOG_MAX_BYTES {
-        return;
-    }
-
-    let keep = DIAG_LOG_KEEP_TAIL_BYTES.min(len);
-    let start = len.saturating_sub(keep) as u64;
-    let Ok(mut file) = fs::OpenOptions::new().read(true).open(path) else {
-        return;
-    };
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return;
-    }
-    let mut tail = Vec::with_capacity(keep);
-    if file.read_to_end(&mut tail).is_err() {
-        return;
-    }
-    let _ = fs::write(path, tail);
+    let _ = event;
 }

@@ -219,6 +219,23 @@ Preferred direction:
   - optional acceleration state
   - transient open/layout scratch
 
+### 11. Doing page-load/render work directly in open or input handlers
+
+Pattern:
+- open path immediately tries to discover/render the first page
+- button handler directly performs chapter probe, page load, or bitmap raster
+
+Why it is bad:
+- the deepest UI call path becomes the heaviest EPUB path
+- stack faults show up on `Confirm`/`Right` instead of inside a dedicated reader phase
+- low-memory fallback cannot engage cleanly because the app commits to render too early
+
+Preferred direction:
+- open only constructs compact reader session state
+- open/nav schedule pending EPUB work
+- a shallow deferred reader phase (for example `on_idle`) performs page load/render
+- fallback content can be populated without coupling it to the button-handler stack
+
 ### 11. Non-local ownership tricks for buffers
 
 Pattern:

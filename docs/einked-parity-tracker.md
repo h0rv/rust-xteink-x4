@@ -96,3 +96,11 @@ Restore firmware UX/runtime behavior to at least pre-einked quality while keepin
     - page prepare and page bitmap raster paths are wrapped in non-inlined helpers
     - session open no longer allocates the transient worker at all; it now returns only the compact session handle and defers first-page bootstrap until after the temp-open book has dropped
   - next validation target is a fresh flash to see whether the failure finally moves past `session_init_begin`
+- Latest deferred-reader-work pass (2026-03-06):
+  - device log now reaches EPUB reader mode without crashing, but still faults on `NextPage` after `[EPUB] nav_begin`
+  - the remaining issue is that page-load/render work was still being triggered from the input-handler path
+  - current local fix set:
+    - open and nav now schedule EPUB work instead of performing it directly
+    - `on_idle` processes pending refresh/navigation work
+    - low-memory mode now stores a bounded text fallback when the 48 KB page bitmap cannot be allocated
+  - next validation target is a device flash to confirm page load now progresses from the deferred idle path instead of faulting on button press

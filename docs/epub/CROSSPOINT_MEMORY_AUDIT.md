@@ -23,27 +23,38 @@ The practical target should be:
 ## Current Boundary And Execution Tracker
 
 Latest confirmed device state from `flash.log`:
-- the earlier post-`open_ready` heap OOM in ereader session assembly was real and drove the transient-session refactor
-- the latest device failure moved earlier again and now crashes on the first temp-backed ZIP entry read:
-  - `[EPUB-TEMP] open_begin`
-  - `[EPUB-TEMP] zip_ready`
-  - then `Stack protection fault`
-- the highest-confidence root cause is the ZIP inflate state being constructed with `Box::new(InflateState::new(...))`, which builds a large `InflateState` on the stack before moving it to the heap
-- the current fix is to enable `miniz_oxide`'s `with-alloc` feature and use its heap-first `InflateState::new_boxed(...)` constructor in `epub-stream/src/zip.rs`
-
-This changes the immediate priority order. The next validation target is the ZIP open path itself, not the ereader session shape.
-
-Latest follow-up after the ZIP fix:
 - the ZIP/open stack fault is gone
-- the remaining device fault is now in post-open reader work after `[EPUB-TEMP] open_ready`
-- current mitigation work in flight:
-  - always-on ESP release markers in the reader runtime
-  - no-inline boundaries around page prepare and page bitmap raster
-  - session open no longer eagerly allocates the transient worker while temp-open book state is still live
+- temp-backed open now reaches `[EPUB-TEMP] open_ready`
+- the reader can now enter EPUB mode without crashing
+- the current device-visible gap is post-open reader work:
+  - when the 48 KB page bitmap cannot be allocated, the UI drops into low-memory mode
+  - the most recent confirmed crash on device was triggered by `NextPage` right after `[EPUB] nav_begin`
+
+Latest local mitigation work in flight:
+- open no longer renders the first page immediately
+- nav no longer performs page-load/render work directly
+- the reader now schedules pending EPUB work and processes it from a deferred `on_idle` phase
+- low-memory mode now has a bounded text fallback path instead of an empty placeholder when bitmap allocation fails
+
+This changes the immediate priority order again. The next validation target is no longer ZIP open or session boxing; it is deferred post-open page load/navigation.
 
 ### Highest-Value Refactor Order
 
-1. `In progress`: remove the monolithic boxed ereader session allocation.
+1. `In progress`: keep post-open reader work out of open/input-handler paths.
+Current shape:
+- open and button handlers were still able to trigger chapter probe/page load/render directly
+- that coupled the deepest UI call paths to the heaviest EPUB work
+
+Current progress:
+- open now schedules first-page work instead of rendering immediately
+- nav now schedules page work instead of executing it directly
+- `on_idle` is becoming the shallow reader work phase
+
+Reason:
+- this is the closest runtime shape to CrossPoint without reintroducing firmware-specific glue
+- it reduces stack pressure at the exact device boundary still failing
+
+2. `In progress`: remove the monolithic boxed ereader session allocation.
 Current shape:
 - `EpubSession` owns `EpubBook`, `RenderEngine`, cache store, resources, and reader state together
 - that pushes the embedded reader toward one large contiguous allocation after book open
@@ -66,7 +77,7 @@ Reason:
 - this is now the most likely source of the `13160` byte device failure
 - even if it is not the only allocation there, it is the wrong memory shape for a fragmented embedded heap
 
-2. Defer cache-store creation until first actual cache use.
+3. Defer cache-store creation until first actual cache use.
 Current shape:
 - cache store is created during session open
 
@@ -78,7 +89,7 @@ Reason:
 - the cache store is policy, not mandatory live state
 - this is consistent with CrossPoint's “book opens first, section artifacts become active when needed” shape
 
-3. Stop keeping parser/layout machinery in long-lived UI state.
+4. Stop keeping parser/layout machinery in long-lived UI state.
 Current shape:
 - `EpubBook` and `RenderEngine` live inside the reader session
 

@@ -1,10 +1,7 @@
-use esp_idf_svc::hal::task::thread::ThreadSpawnConfiguration;
 use esp_idf_svc::sys;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-
-const EPUB_WORKER_THREAD_STACK_BYTES: usize = 72 * 1024;
 
 /// Log heap usage statistics and current task stack headroom.
 pub fn log_heap(label: &str) {
@@ -23,24 +20,6 @@ pub fn log_heap(label: &str) {
         largest_8bit,
         stack_hwm_bytes
     );
-}
-
-/// Configure pthread defaults used by `std::thread` workers on ESP-IDF.
-pub fn configure_pthread_defaults() {
-    let mut config = ThreadSpawnConfiguration::default();
-    config.stack_size = EPUB_WORKER_THREAD_STACK_BYTES;
-    config.priority = 1;
-    config.inherit = false;
-
-    if let Err(err) = config.set() {
-        log::warn!("Failed to configure pthread defaults: {}", err);
-    } else {
-        log::info!(
-            "Configured pthread defaults: stack_size={} priority={}",
-            config.stack_size,
-            config.priority
-        );
-    }
 }
 
 const DIAG_LOG_PATH: &str = "/sd/.xteink/logs/runtime.log";
